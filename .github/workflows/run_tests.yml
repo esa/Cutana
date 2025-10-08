@@ -1,0 +1,99 @@
+#   Copyright (c) European Space Agency, 2025.
+#
+#   This file is subject to the terms and conditions defined in file 'LICENCE.txt', which
+#   is part of this source code package. No part of the package, including
+#   this file, may be copied, modified, propagated, or distributed except according to
+#   the terms contained in the file 'LICENCE.txt'.
+# This workflow will install Python dependencies, run tests and lint with a single version of Python
+# For more information see: https://help.github.com/actions/language-and-framework-guides/using-python-with-github-actions
+name: Running tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+jobs:
+  lint_flake8:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v2
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.11
+      - name: Lint with flake8
+        run: |
+          pip install flake8
+          flake8 . --count --show-source --statistics --max-line-length=127 --ignore=E402,W503,E203
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v2
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.11
+      - name: Search for severe code errors with flake8
+        run: |
+          # stop the build if there are Python syntax errors or undefined names
+          pip install flake8
+          flake8 . --count --select=E9,F63,F7,F82,F541 --show-source --statistics --max-line-length=127
+      - name: provision-with-micromamba
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: environment.yml
+          environment-name: cutana
+          cache-downloads: true
+      - name: Generate test data
+        shell: bash -l {0}
+        run: |
+          set -e
+          micromamba activate cutana
+          cd tests/test_data
+
+          # Generate the actual test data (all sizes for comprehensive testing)
+          # Generate 3 tiles to ensure we have euclid_tile_001.fits, 002.fits, 003.fits
+          python generate_test_data.py
+
+          # List generated files for debugging
+          echo "Generated files:"
+          ls -la *.csv *.fits *.json | head -20
+      - name: Run deployment validation
+        shell: bash -l {0}
+        run: |
+          set -e
+          micromamba activate cutana
+          python -m cutana.deployment_validator
+      - name: Test with pytest
+        shell: bash -l {0}
+        run: |
+          set -e
+          set -o pipefail
+          micromamba activate cutana
+          micromamba install pytest pytest-cov
+          # playwright install  # Temporarily disabled
+          pip install -e .
+          pytest --junitxml=pytest.xml --cov-report=xml:coverage.xml --cov-report=term --cov=cutana tests/ --ignore=tests/playwright/ | tee pytest-coverage.txt
+          echo "===== Coverage report ====="
+          cat pytest-coverage.txt      
+      - name: Pytest coverage comment
+        uses: MishaKav/pytest-coverage-comment@main
+        if: always() && github.event_name == 'pull_request'
+        with:
+          pytest-coverage-path: ./pytest-coverage.txt
+          pytest-xml-coverage-path: ./coverage.xml
+          title: Coverage Report
+          badge-title: Overall Coverage
+          hide-badge: false
+          hide-report: false
+          create-new-comment: false
+          hide-comment: false
+          report-only-changed-files: false
+          junitxml-path: ./pytest.xml
