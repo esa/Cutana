@@ -1,0 +1,32 @@
+name: cutana
+channels:
+  - conda-forge
+dependencies:
+  - astropy                  # FITS + WCS
+  - black                    # Code formatting
+  - dotmap                   # Dot-accessible dictionaries
+  - flake8                   # Linting
+  - ipykernel                # Jupyter kernel
+  - ipywidgets               # Jupyter widgets
+  - loguru                   # Structured logging
+  - numpy                    # Array operations
+  - matplotlib               # For preview rendering
+  - pandas                   # DataFrame operations
+  - pip                      # Package installer
+  - portalocker>=2.0         # Cross-platform file locking
+  - psutil                   # System resource monitoring
+  - pytest                   # Testing
+  - pytest-cov               # Coverage testing
+  - python=3.11
+  - toml                     # TOML configuration file support
+  - tqdm                     # nice progress bar
+  - voila                    # Notebook to web app conversion
+  - pip:
+      - fitsbolt>=0.1.2        # FITS file loading and normalisation
+      - images-to-zarr>=0.3.3  # Image to Zarr conversion
+      - ipyfilechooser         # File/folder selection widget
+      - memory-profiler        # Memory usage profiling
+      - playwright>=1.40       # Browser automation for E2E testing
+      - pytest-mock            # Mocking for tests
+      - pytest-asyncio         # Async testing support
+      - pytest-playwright>=0.4 # Playwright integration with pytest
