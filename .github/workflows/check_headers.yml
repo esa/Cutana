@@ -66,13 +66,13 @@ jobs:
             esac
           }
           
-          # Find all relevant files excluding specified directories
-          PYTHON_FILES=$(find . -name "*.py" -not -path "./datalabs_setup/*" -not -path "./utility_scripts/*" -not -path "./.git/*" -not -path "./__pycache__/*" -not -path "./.*/__pycache__/*")
-          YML_FILES=$(find . -name "*.yml" -o -name "*.yaml" | grep -v "./.git/")
-          MARKDOWN_FILES=$(find . -name "*.md" -not -path "./.github/ISSUE_TEMPLATE/*" | grep -v "./.git/")
-          INI_FILES=$(find . -name "*.ini" | grep -v "./.git/")
-          GITIGNORE_FILES=$(find . -name ".gitignore" | grep -v "./.git/")
-          FLAKE8_FILES=$(find . -name ".flake8" | grep -v "./.git/")
+          # Find all relevant files excluding specified directories (matching add_license_header.py logic)
+          PYTHON_FILES=$(find . -name "*.py" -not -path "./utility_scripts/*" -not -path "./.git/*" -not -path "./__pycache__/*" -not -path "./.*/__pycache__/*" -not -path "./build/*" -not -path "./dist/*" -not -path "./.venv/*" -not -path "./.pytest_cache/*")
+          YML_FILES=$(find . \( -name "*.yml" -o -name "*.yaml" \) -not -path "./.git/*" -not -path "./build/*" -not -path "./dist/*" -not -path "./.venv/*")
+          MARKDOWN_FILES=$(find . -name "*.md" -not -path "./.github/ISSUE_TEMPLATE/*" -not -path "./benchmarking/*" -not -path "./.git/*" -not -path "./build/*" -not -path "./dist/*" -not -path "./.venv/*" -not -path "./.pytest_cache/*")
+          INI_FILES=$(find . -name "*.ini" -not -path "./.git/*" -not -path "./build/*" -not -path "./dist/*" -not -path "./.venv/*")
+          GITIGNORE_FILES=$(find . -name ".gitignore" -not -path "./.git/*" -not -path "./build/*" -not -path "./dist/*" -not -path "./.venv/*")
+          FLAKE8_FILES=$(find . -name ".flake8" -not -path "./.git/*" -not -path "./build/*" -not -path "./dist/*" -not -path "./.venv/*")
           
           # Combine all files
           ALL_FILES="$PYTHON_FILES $YML_FILES $MARKDOWN_FILES $INI_FILES $GITIGNORE_FILES $FLAKE8_FILES"

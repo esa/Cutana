@@ -4,7 +4,6 @@
 #   is part of this source code package. No part of the package, including
 #   this file, may be copied, modified, propagated, or distributed except according to
 #   the terms contained in the file 'LICENCE.txt'.
-#!/usr/bin/env python
 """
 Deployment validation for Cutana astronomical cutout pipeline.
 

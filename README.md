@@ -1,3 +1,9 @@
+[//]: # (Copyright &#40;c&#41; European Space Agency, 2025.)
+[//]: # ()
+[//]: # (This file is subject to the terms and conditions defined in file 'LICENCE.txt', which)
+[//]: # (is part of this source code package. No part of the package, including)
+[//]: # (this file, may be copied, modified, propagated, or distributed except according to)
+[//]: # (the terms contained in the file 'LICENCE.txt'.)
 # Cutana - Astronomical Cutout Pipeline
 
 **Cutana** is a high-performance Python pipeline for creating astronomical image cutouts from large FITS datasets. It provides both an interactive **Jupyter-based UI** and a **programmatic API** for efficient processing of astronomical survey data like ESA Euclid observations.

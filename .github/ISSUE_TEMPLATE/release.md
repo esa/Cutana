@@ -25,7 +25,7 @@ assignees: "gomezzz"
 - [ ] Merge `release` into `main`, and `develop`
 - [ ] Create Release on GitHub from the last commit (the one reviewed in the PR) reviewed
 - [ ] Download the release from GitHub
-- [ ] Prepare for release on the [public GitHub repo](https://github.com/ESA/Cutana) by removing non-essential folders and files in the downloaded version
+- [ ] Prepare for release on the [public GitHub repo](https://github.com/ESA/Cutana) by removing non-essential folders and files in the downloaded version i.e currently `utility_scripts`, `.claude/commands`, `docs`, `CLAUDE.md`, `examples`, `scripts`
 - [ ] Create a PR to the public repo with that version
 - [ ] Merge the PR to the public repo
 - [ ] Create a new release on the public repo
