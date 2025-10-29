@@ -12,7 +12,7 @@ dependencies:
   - black                    # Code formatting
   - dotmap                   # Dot-accessible dictionaries
   - flake8                   # Linting
-  - ipykernel                # Jupyter kernel
+  - ipykernel==6.30.1        # Jupyter kernel
   - ipywidgets               # Jupyter widgets
   - loguru                   # Structured logging
   - numpy                    # Array operations

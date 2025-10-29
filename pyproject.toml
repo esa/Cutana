@@ -8,11 +8,9 @@ version = "0.1.0"
 description = "High-performance Python pipeline for creating astronomical image cutouts"
 readme = "README.md"
 authors = [{ name = "European Space Agency", email = "pablo.gomez@esa.int" }]
-license = { text = "MIT" }
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Topic :: Scientific/Engineering :: Astronomy",
@@ -23,7 +21,7 @@ dependencies = [
     "dotmap>=1.3",
     "images-to-zarr>=0.3.3",
     "ipyfilechooser>=0.6",
-    "ipykernel",
+    "ipykernel==6.30.1",
     "ipywidgets",
     "fitsbolt>=0.1.2",
     "loguru>=0.6",
