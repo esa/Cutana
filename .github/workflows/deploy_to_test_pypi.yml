@@ -1,0 +1,35 @@
+#   Copyright (c) European Space Agency, 2025.
+#
+#   This file is subject to the terms and conditions defined in file 'LICENCE.txt', which
+#   is part of this source code package. No part of the package, including
+#   this file, may be copied, modified, propagated, or distributed except according to
+#   the terms contained in the file 'LICENCE.txt'.
+
+# This workflow will upload a Python Package using Twine when manually triggered
+# For more information see: https://help.github.com/en/actions/language-and-framework-guides/using-python-with-github-actions#publishing-to-package-registries
+
+name: Upload Python Package to testpypi
+
+on: workflow_dispatch
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install build wheel twine
+      - name: Build and publish
+        env:
+          TWINE_USERNAME: "__token__"
+          TWINE_PASSWORD: ${{ secrets.TEST_PYPI_TOKEN }}
+        run: |
+          python -m build
+          twine upload -r testpypi dist/*
