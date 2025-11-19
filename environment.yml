@@ -28,8 +28,8 @@ dependencies:
   - tqdm                     # nice progress bar
   - voila                    # Notebook to web app conversion
   - pip:
-      - fitsbolt>=0.1.4        # FITS file loading and normalisation
-      - images-to-zarr>=0.3.4  # Image to Zarr conversion
+      - fitsbolt>=0.1.5        # FITS file loading and normalisation
+      - images-to-zarr>=0.3.5  # Image to Zarr conversion
       - ipyfilechooser         # File/folder selection widget
       - memory-profiler        # Memory usage profiling
       - playwright>=1.40       # Browser automation for E2E testing
