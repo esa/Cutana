@@ -19,7 +19,6 @@ import subprocess
 import time
 from pathlib import Path
 from typing import Dict, List
-import yaml
 
 try:
     from loguru import logger
@@ -80,14 +79,14 @@ class DeploymentValidator:
             return False
 
     def _get_dependencies_from_config(self) -> List[str]:
-        """Extract dependencies from environment.yml and pyproject.toml.
+        """Extract required dependencies from pyproject.toml.
 
         Returns:
-            List of unique dependency names
+            List of unique dependency names (import-style, with underscores)
         """
         deps = set()
 
-        # Try to read from pyproject.toml
+        # Read from pyproject.toml (main dependencies only, not optional/dev)
         pyproject_path = Path(__file__).parent.parent / "pyproject.toml"
         if pyproject_path.exists():
             try:
@@ -96,53 +95,20 @@ class DeploymentValidator:
                 with open(pyproject_path, "r") as f:
                     pyproject = toml.load(f)
 
-                # Get main dependencies
+                # Get main dependencies only
                 if "project" in pyproject and "dependencies" in pyproject["project"]:
                     for dep in pyproject["project"]["dependencies"]:
                         # Parse package name from requirement string (e.g., "numpy>=1.20" -> "numpy")
                         dep_name = (
                             dep.split(">=")[0].split("==")[0].split("<")[0].split(">")[0].strip()
                         )
-                        deps.add(dep_name)
+                        # Convert hyphens to underscores for import
+                        import_name = dep_name.replace("-", "_")
+                        deps.add(import_name)
 
                 logger.debug(f"  Found {len(deps)} dependencies in pyproject.toml")
             except Exception as e:
                 logger.warning(f"  Could not read pyproject.toml: {e}")
-
-        # Try to read from environment.yml
-        env_path = Path(__file__).parent.parent / "environment.yml"
-        if env_path.exists():
-            try:
-                with open(env_path, "r") as f:
-                    env_config = yaml.safe_load(f)
-
-                if "dependencies" in env_config:
-                    for dep in env_config["dependencies"]:
-                        if isinstance(dep, str) and not dep.startswith("python"):
-                            # Parse conda package name
-                            dep_name = (
-                                dep.split("=")[0].split(">=")[0].split("<")[0].split(">")[0].strip()
-                            )
-                            # Skip non-Python packages
-                            if dep_name not in ["pip", "black", "flake8"]:
-                                deps.add(dep_name)
-                        elif isinstance(dep, dict) and "pip" in dep:
-                            # Parse pip dependencies
-                            for pip_dep in dep["pip"]:
-                                dep_name = (
-                                    pip_dep.split(">=")[0]
-                                    .split("==")[0]
-                                    .split("<")[0]
-                                    .split(">")[0]
-                                    .strip()
-                                )
-                                # Convert package names with hyphens to underscores for import
-                                import_name = dep_name.replace("-", "_")
-                                deps.add(import_name)
-
-                logger.debug(f"  Found {len(deps)} total unique dependencies")
-            except Exception as e:
-                logger.warning(f"  Could not read environment.yml: {e}")
 
         return list(deps)
 
@@ -154,43 +120,37 @@ class DeploymentValidator:
         """
         logger.info("[CHECK] Checking dependencies...")
 
-        # Get dependencies dynamically
+        # Get required dependencies from pyproject.toml
         dynamic_deps = self._get_dependencies_from_config()
 
-        # Critical dependencies that must be checked (with import aliases)
-        critical_deps = [
-            ("numpy", "np"),
-            ("pandas", "pd"),
-            ("astropy.io", "fits"),
-            ("astropy.wcs", "WCS"),
-            ("zarr", "zarr"),
-            ("dotmap", "DotMap"),
-            ("loguru", "logger"),
-            ("PIL", "Image"),
-            ("fitsbolt", None),
-            ("images_to_zarr", None),
-        ]
+        # Mapping for packages with different import names than package names
+        # Format: package_name -> (import_module, import_alias)
+        import_name_mapping = {
+            "astropy": [("astropy.io.fits", None), ("astropy.wcs", None)],
+            "pillow": [("PIL", None)],
+        }
 
-        # Additional dynamic dependencies to check (simple imports)
-        # Create a set of already included packages to avoid duplicates
-        included_packages = set()
-        for module_name, _ in critical_deps:
-            # Get base package name
-            base_name = module_name.split(".")[0] if "." in module_name else module_name
-            included_packages.add(base_name)
+        # Build list of dependencies to check
+        deps_to_check = []
+        checked_packages = set()
 
         for dep in dynamic_deps:
-            # Skip pytest plugins and packages with special characters
-            if dep.startswith("pytest") or "-" in dep:
+            if dep in checked_packages:
                 continue
-            # Skip if already in critical deps
-            if dep not in included_packages:
-                critical_deps.append((dep, None))
-                included_packages.add(dep)
+
+            if dep in import_name_mapping:
+                # Use mapped import names
+                for import_module, alias in import_name_mapping[dep]:
+                    deps_to_check.append((import_module, alias))
+            else:
+                # Direct import
+                deps_to_check.append((dep, None))
+
+            checked_packages.add(dep)
 
         missing = []
         checked = 0
-        for module_name, alias in critical_deps:
+        for module_name, alias in deps_to_check:
             try:
                 if "." in module_name:
                     parts = module_name.split(".")
@@ -200,21 +160,8 @@ class DeploymentValidator:
                 logger.debug(f"  [OK] {module_name}")
                 checked += 1
             except ImportError as e:
-                # Some packages have different import names
-                if module_name in [
-                    "pytest_cov",
-                    "pytest_mock",
-                    "pytest_asyncio",
-                    "pytest_playwright",
-                ]:
-                    # These are pytest plugins, not directly importable
-                    logger.debug(f"  [SKIP] {module_name} (pytest plugin)")
-                elif module_name in ["ipyfilechooser", "memory_profiler"]:
-                    # Optional dependencies
-                    logger.debug(f"  [SKIP] {module_name} (optional)")
-                else:
-                    logger.error(f"  [FAIL] {module_name}: {e}")
-                    missing.append(module_name)
+                logger.error(f"  [FAIL] {module_name}: {e}")
+                missing.append(module_name)
 
         logger.info(f"  Checked {checked} dependencies")
 
@@ -315,6 +262,16 @@ class DeploymentValidator:
             hdu.header["MAGZERO"] = 25.0
             hdu.writeto(fits_path, overwrite=True)
             logger.debug(f"  [OK] Created FITS: {fits_path}")
+
+            # Test fsspec-based FITS loading (catches missing fsspec dependency)
+            logger.debug("  Testing fsspec-based FITS loading...")
+            try:
+                with fits.open(fits_path, use_fsspec=True, fsspec_kwargs={"mode": "rb"}) as hdul:
+                    _ = hdul[0].data
+                logger.debug("  [OK] fsspec-based FITS loading works")
+            except Exception as e:
+                logger.error(f"  [FAIL] fsspec-based FITS loading failed: {e}")
+                return False
 
             # Create minimal catalogue
             catalogue_path = temp_data_dir / "test_catalogue.csv"
