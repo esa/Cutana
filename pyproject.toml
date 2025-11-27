@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "cutana"
 version = "0.1.0"
-description = "High-performance Python pipeline for creating astronomical image cutouts"
+description = "High-performance Python tool for creating astronomical image cutouts"
 readme = "README.md"
 authors = [{ name = "European Space Agency", email = "pablo.gomez@esa.int" }]
 classifiers = [
@@ -49,9 +49,9 @@ dev = [
 all = ["cutana[ui,dev]"]
 
 [project.urls]
-Homepage = "https://github.com/ESA-Datalabs/cutana"
-Repository = "https://github.com/ESA-Datalabs/cutana"
-Issues = "https://github.com/ESA-Datalabs/cutana/issues"
+Homepage = "https://github.com/ESA/cutana"
+Repository = "https://github.com/ESA/cutana"
+Issues = "https://github.com/ESA/cutana/issues"
 
 
 [tool.setuptools.packages.find]
