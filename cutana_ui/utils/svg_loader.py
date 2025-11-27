@@ -6,32 +6,25 @@
 #   the terms contained in the file 'LICENCE.txt'.
 """SVG loading utilities for Cutana UI."""
 
-from pathlib import Path
+from importlib.resources import files
 from loguru import logger
 
 
 def load_esa_logo() -> str:
-    """Load ESA logo SVG from assets directory.
+    """Load ESA logo SVG from assets package.
 
     Returns:
         str: SVG content as string, or empty string if loading fails
     """
     try:
-        # Find the assets directory relative to this file
-        current_file = Path(__file__)
-        project_root = (
-            current_file.parent.parent.parent
-        )  # cutana_ui/utils -> cutana_ui -> project_root
-        logo_path = project_root / "assets" / "ESA_logo.svg"
+        logo_file = files("assets").joinpath("ESA_logo.svg")
+        svg_content = logo_file.read_text(encoding="utf-8")
+        logger.debug("Successfully loaded ESA logo from assets package")
+        return svg_content
 
-        if logo_path.exists():
-            svg_content = logo_path.read_text(encoding="utf-8")
-            logger.debug(f"Successfully loaded ESA logo from: {logo_path}")
-            return svg_content
-        else:
-            logger.warning(f"ESA logo file not found at: {logo_path}")
-            return ""
-
+    except FileNotFoundError:
+        logger.warning("ESA logo file not found in assets package")
+        return ""
     except Exception as e:
         logger.error(f"Error loading ESA logo: {e}")
         return ""

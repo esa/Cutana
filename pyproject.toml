@@ -55,11 +55,12 @@ Issues = "https://github.com/ESA/cutana/issues"
 
 
 [tool.setuptools.packages.find]
-include = ["cutana*", "cutana_ui*"]
+include = ["cutana*", "cutana_ui*", "assets"]
 exclude = ["tests*", "docs*", "examples*"]
 
 [tool.setuptools.package-data]
 cutana_ui = ["*.css", "*.js", "*.html"]
+assets = ["*.svg"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
