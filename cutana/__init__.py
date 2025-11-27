@@ -11,7 +11,7 @@ This package provides tools for efficiently creating cutouts from large FITS til
 collections with parallel processing capabilities and flexible output formats.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __author__ = "ESA Datalabs"
 __email__ = "datalabs@esa.int"
 
