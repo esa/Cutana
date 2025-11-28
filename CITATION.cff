@@ -1,0 +1,45 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Cutana: A High-Performance Tool for Astronomical Image Cutout Generation at Petabyte Scale"
+type: software
+authors:
+  - family-names: "Gómez"
+    given-names: "Pablo"
+  - family-names: "Ruhberg"
+    given-names: "Laslo Erik"
+  - family-names: "Remmelgas"
+    given-names: "Kristin Anett"
+  - family-names: "O'Ryan"
+    given-names: "David"
+version: "0.1.2"
+date-released: 2025-11-28
+url: "https://github.com/ESA/Cutana"
+repository-code: "https://github.com/ESA/Cutana"
+license: "ESA-PL-Permissive-v2.4"
+keywords:
+  - astronomy
+  - image processing
+  - cutouts
+  - FITS
+  - Euclid
+  - ESA
+preferred-citation:
+  type: article
+  authors:
+    - family-names: "Gómez"
+      given-names: "Pablo"
+    - family-names: "Ruhberg"
+      given-names: "Laslo Erik"
+    - family-names: "Remmelgas"
+      given-names: "Kristin Anett"
+    - family-names: "O'Ryan"
+      given-names: "David"
+  title: "Cutana: A High-Performance Tool for Astronomical Image Cutout Generation at Petabyte Scale"
+  year: 2025
+  identifiers:
+    - type: doi
+      value: "10.48550/arXiv.2511.04429"
+    - type: other
+      value: "arXiv:2511.04429"
+      description: "arXiv preprint"
+  url: "https://arxiv.org/abs/2511.04429"

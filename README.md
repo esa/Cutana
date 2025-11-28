@@ -6,7 +6,22 @@
 [//]: # (the terms contained in the file 'LICENCE.txt'.)
 # Cutana - Astronomical Cutout Pipeline
 
+[![PyPI version](https://img.shields.io/pypi/v/cutana.svg)](https://pypi.org/project/cutana/)
+[![PyPI downloads](https://img.shields.io/pypi/dm/cutana.svg)](https://pypi.org/project/cutana/)
+[![DOI](https://img.shields.io/badge/DOI-10.48550/arXiv.2511.04429-blue)](https://doi.org/10.48550/arXiv.2511.04429)
+[![License](https://img.shields.io/badge/License-ESA--PL%20Permissive-green)](LICENSE.txt)
+[![Python](https://img.shields.io/pypi/pyversions/cutana.svg)](https://pypi.org/project/cutana/)
+
 **Cutana** is a high-performance Python pipeline for creating astronomical image cutouts from large FITS datasets. It provides both an interactive **Jupyter-based UI** and a **programmatic API** for efficient processing of astronomical survey data like ESA Euclid observations.
+
+![Cutana Demo](assets/cutana_demo_2x.gif)
+
+> **Note:** Cutana is currently optimised for **Euclid Q1/IDR1 data**. Some defaults and assumptions are Euclid-specific:
+> - Flux conversion expects the `MAGZERO` header keyword (configurable via `config.flux_conversion_keywords.AB_zeropoint`)
+> - Filter detection patterns are tuned for Euclid bands (VIS, NIR-Y, NIR-H, NIR-J)
+> - FITS structure assumes one file per channel/filter
+>
+> For other surveys, you may need to adjust these settings or disable flux conversion (`config.apply_flux_conversion = False`).
 
 ## Support for Datalabs Users
 
@@ -15,6 +30,11 @@ For users experiencing problems with Cutana in the ESA Datalabs environment, ple
 ## Quick Start
 ### Installation
 
+```bash
+pip install cutana
+```
+
+Or for development:
 ```bash
 # Create conda environment
 conda env create -f environment.yml
