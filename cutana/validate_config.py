@@ -63,7 +63,7 @@ def _return_required_and_optional_keys():
             None,
             None,
             False,
-            ["linear", "log", "asinh", "zscale", "none"],
+            ["linear", "log", "asinh", "zscale", "midtones", "none"],
         ],
         "interpolation": [
             str,

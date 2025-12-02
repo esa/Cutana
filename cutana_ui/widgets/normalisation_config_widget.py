@@ -66,7 +66,7 @@ margin: 10px 0 5px 0; border-bottom: 1px solid #335E6E; padding-bottom: 3px;">No
             layout=widgets.Layout(height="32px", width="100%"),
         )
         self.normalisation_dropdown = widgets.Dropdown(
-            options=["linear", "log", "asinh", "zscale"],
+            options=["linear", "log", "asinh", "zscale", "midtones"],
             value=normalisation_value,
             layout=widgets.Layout(width="120px", height="32px"),
         )
@@ -240,8 +240,8 @@ margin: 10px 0 5px 0; border-bottom: 1px solid #335E6E; padding-bottom: 3px;">No
         """Show/hide method-specific parameters based on selected normalisation method."""
         normalisation_method = self.normalisation_dropdown.value
 
-        # Show or hide unified 'a' parameter for ASINH and LOG
-        needs_a_param = normalisation_method in ["asinh", "log"]
+        # Show or hide unified 'a' parameter for ASINH, LOG, and MIDTONES
+        needs_a_param = normalisation_method in ["asinh", "log", "midtones"]
         self.a_label.layout.display = "block" if needs_a_param else "none"
         self.a_input.layout.display = "block" if needs_a_param else "none"
 
@@ -270,6 +270,8 @@ margin: 10px 0 5px 0; border-bottom: 1px solid #335E6E; padding-bottom: 3px;">No
                 default_val = 1000.0
             elif normalisation_method == "asinh":
                 default_val = 0.1
+            elif normalisation_method == "midtones":
+                default_val = 0.2
             else:
                 default_val = get_method_specific_a_default(normalisation_method)
 
