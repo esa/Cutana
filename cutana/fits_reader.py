@@ -15,8 +15,8 @@ This module provides optimized FITS loading strategies:
 """
 
 import os
-from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Optional, Tuple
+
 from astropy.io import fits
 from astropy.wcs import WCS
 from loguru import logger
@@ -136,68 +136,3 @@ def load_fits_file(
     except Exception as e:
         logger.error(f"Failed to load FITS file {fits_path}: {e}")
         raise ValueError(f"Invalid FITS file: {fits_path}")
-
-
-def validate_fits_file(fits_path: str) -> bool:
-    """
-    Validate that a FITS file exists and is readable.
-
-    Args:
-        fits_path: Path to the FITS file
-
-    Returns:
-        True if file is valid and readable
-    """
-    try:
-        if not Path(fits_path).exists():
-            return False
-
-        # Try to open the file briefly to validate format
-        with fits.open(fits_path, memmap=True, lazy_load_hdus=True) as hdul:
-            # Check if it has at least one valid HDU
-            return len(hdul) > 0
-
-    except Exception as e:
-        logger.debug(f"FITS file validation failed for {fits_path}: {e}")
-        return False
-
-
-def get_fits_info(fits_path: str) -> Dict[str, any]:
-    """
-    Get basic information about a FITS file.
-
-    Args:
-        fits_path: Path to the FITS file
-
-    Returns:
-        Dictionary containing file information
-    """
-    try:
-        with fits.open(fits_path, memmap=True, lazy_load_hdus=True) as hdul:
-            info = {
-                "path": fits_path,
-                "num_extensions": len(hdul),
-                "extensions": [],
-                "primary_shape": None,
-                "file_size": Path(fits_path).stat().st_size if Path(fits_path).exists() else 0,
-            }
-
-            for i, hdu in enumerate(hdul):
-                ext_info = {
-                    "index": i,
-                    "name": hdu.name if hasattr(hdu, "name") else f"HDU{i}",
-                    "type": type(hdu).__name__,
-                    "shape": hdu.data.shape if hdu.data is not None else None,
-                    "has_data": hdu.data is not None,
-                }
-                info["extensions"].append(ext_info)
-
-                # Store primary extension shape
-                if i == 0 and hdu.data is not None:
-                    info["primary_shape"] = hdu.data.shape
-
-            return info
-
-    except Exception as e:
-        logger.error(f"Failed to get FITS info for {fits_path}: {e}")
-        return {"path": fits_path, "error": str(e), "valid": False}

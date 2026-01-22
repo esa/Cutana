@@ -8,6 +8,7 @@
 
 import pytest
 from dotmap import DotMap
+
 from cutana import get_default_config, validate_config, validate_config_for_processing
 
 
@@ -66,15 +67,21 @@ class TestDefaultConfig:
         assert isinstance(config.normalisation_method, str)
         assert isinstance(config.interpolation, str)
 
-        # Integer parameters
+        # Integer parameters (required)
         assert isinstance(config.max_workers, int)
-        assert isinstance(config.loadbalancer.max_sources_per_process, int)
         assert isinstance(config.target_resolution, int)
         assert isinstance(config.N_batch_cutout_process, int)
         assert isinstance(config.max_workflow_time_seconds, int)
 
+        # Integer parameters (optional - can be None or int)
+        assert config.loadbalancer.max_sources_per_process is None or isinstance(
+            config.loadbalancer.max_sources_per_process, int
+        )
+        assert config.process_threads is None or isinstance(config.process_threads, int)
+
         # Boolean parameters
         assert isinstance(config.apply_flux_conversion, bool)
+        assert isinstance(config.loadbalancer.skip_memory_calibration_wait, bool)
 
         # List parameters
         assert isinstance(config.fits_extensions, list)
@@ -84,12 +91,17 @@ class TestDefaultConfig:
         """Test that default config parameters are within valid ranges."""
         config = get_default_config()
 
-        # Test numeric ranges
+        # Test numeric ranges (required parameters)
         assert 1 <= config.max_workers <= 32
-        assert 100 <= config.loadbalancer.max_sources_per_process <= 150000
         assert 16 <= config.target_resolution <= 2048
         assert 10 <= config.N_batch_cutout_process <= 10000
         assert 60 <= config.max_workflow_time_seconds <= 5e6
+
+        # Test optional numeric parameters (None is acceptable)
+        if config.loadbalancer.max_sources_per_process is not None:
+            assert 100 <= config.loadbalancer.max_sources_per_process <= 150000
+        if config.process_threads is not None:
+            assert 1 <= config.process_threads <= 128
 
         # Test string values
         assert config.log_level in ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "TRACE"]

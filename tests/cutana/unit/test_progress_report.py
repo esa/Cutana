@@ -27,34 +27,6 @@ class TestProgressReport:
         assert not report.is_processing
         assert report.resource_source == "system"
 
-    def test_from_dict_creation(self):
-        """Test creating ProgressReport from dictionary."""
-        data = {
-            "total_sources": 100,
-            "completed_sources": 75,
-            "failed_sources": 5,
-            "progress_percent": 80.0,
-            "throughput": 10.5,
-            "cpu_percent": 45.0,
-            "memory_total_gb": 16.0,
-            "is_processing": True,
-            "invalid_field": "should_be_ignored",  # This should be filtered out
-        }
-
-        report = ProgressReport.from_dict(data)
-
-        assert report.total_sources == 100
-        assert report.completed_sources == 75
-        assert report.failed_sources == 5
-        assert report.progress_percent == 80.0
-        assert report.throughput == 10.5
-        assert report.cpu_percent == 45.0
-        assert report.memory_total_gb == 16.0
-        assert report.is_processing is True
-        # Should use default for unspecified fields
-        assert report.memory_available_gb == 0.0
-        assert report.resource_source == "system"
-
     def test_to_dict_conversion(self):
         """Test converting ProgressReport back to dictionary."""
         report = ProgressReport(

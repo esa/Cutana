@@ -28,9 +28,9 @@ import argparse
 import json
 import sys
 import time
-from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Tuple
+from pathlib import Path
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -433,8 +433,8 @@ def generate_tile_data(
                 dec = float(row["DECLINATION"])
 
                 # Convert RA/Dec to pixel coordinates
-                from astropy.coordinates import SkyCoord
                 from astropy import units as u
+                from astropy.coordinates import SkyCoord
 
                 coord = SkyCoord(ra=ra * u.degree, dec=dec * u.degree, frame="icrs")
                 pixel_x, pixel_y = wcs.world_to_pixel(coord)

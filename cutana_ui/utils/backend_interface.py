@@ -7,26 +7,23 @@
 """Interface to cutana backend module."""
 
 import asyncio
-from typing import Dict, List, Tuple, Any
 from pathlib import Path
+from typing import Any, Dict, List, Tuple
+
 import numpy as np
-from loguru import logger
 from dotmap import DotMap
+from loguru import logger
 
 # Import cutana modules - we can presume they exist
-from cutana.catalogue_preprocessor import (
-    analyse_source_catalogue,
-    load_and_validate_catalogue,
-    CatalogueValidationError,
-)
+from cutana.catalogue_preprocessor import CatalogueValidationError, analyse_source_catalogue
 from cutana.orchestrator import Orchestrator
 from cutana.preview_generator import (
-    load_sources_for_previews,
     generate_previews,
+    load_sources_for_previews,
     regenerate_preview_seed,
 )
-from cutana.validate_config import validate_config
 from cutana.progress_report import ProgressReport
+from cutana.validate_config import validate_config
 
 
 class BackendInterface:
@@ -99,29 +96,10 @@ class BackendInterface:
             # Validate configuration
             validate_config(cutana_config, check_paths=False)
 
-            # Load and validate the source catalogue
+            # Verify catalogue path exists
             catalogue_path = cutana_config.source_catalogue
             if not catalogue_path:
                 raise ValueError("No source catalogue specified in config")
-
-            # Load and validate catalogue data using the preprocessor
-            try:
-                catalogue_df = load_and_validate_catalogue(catalogue_path)
-                logger.info(f"Loaded and validated catalogue with {len(catalogue_df)} sources")
-            except CatalogueValidationError as e:
-                logger.error(f"Catalogue validation failed: {e}")
-                return {
-                    "status": "error",
-                    "error": f"Catalogue validation failed: {e}",
-                    "error_type": "validation_error",
-                }
-            except Exception as e:
-                logger.error(f"Failed to load catalogue: {e}")
-                return {
-                    "status": "error",
-                    "error": f"Failed to load catalogue: {e}",
-                    "error_type": "load_error",
-                }
 
             # Create orchestrator with validated config and optional status panel
             logger.info("BackendInterface: Creating orchestrator with status panel reference...")
@@ -132,10 +110,10 @@ class BackendInterface:
             logger.info("BackendInterface: Storing orchestrator reference")
             BackendInterface._current_orchestrator = orchestrator
 
-            # Run processing in executor to avoid blocking
+            # Run processing in executor using streaming catalogue loading
             logger.info("BackendInterface: Starting orchestrator processing in executor...")
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, orchestrator.start_processing, catalogue_df)
+            result = await loop.run_in_executor(None, orchestrator.run)
 
             logger.info("BackendInterface: Processing completed successfully")
 
@@ -193,12 +171,6 @@ class BackendInterface:
         Delegates to cutana.preview_generator.regenerate_preview_seed().
         """
         return regenerate_preview_seed()
-
-    @staticmethod
-    def clear_orchestrator() -> None:
-        """Clear the current orchestrator reference."""
-        BackendInterface._current_orchestrator = None
-        logger.debug("Cleared orchestrator reference")
 
     @staticmethod
     async def stop_processing() -> Dict[str, Any]:

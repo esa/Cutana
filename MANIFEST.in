@@ -1,0 +1,5 @@
+include README.md
+include LICENCE.txt
+include CHANGELOG.md
+recursive-include cutana_ui *.md
+recursive-include assets *.svg

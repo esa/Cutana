@@ -6,12 +6,13 @@
 #   the terms contained in the file 'LICENCE.txt'.
 """Playwright configuration for UI testing."""
 
-import pytest
-import subprocess
-import time
 import os
+import subprocess
 import sys
+import time
 from pathlib import Path
+
+import pytest
 from playwright.sync_api import Page
 
 

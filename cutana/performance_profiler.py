@@ -12,9 +12,10 @@ processing steps within the cutout creation pipeline. Each cutout process
 instance should have one profiler to monitor performance.
 """
 
-import time
 import os
-from typing import Dict, List, Any, Optional
+import time
+from typing import Any, Dict, List, Optional
+
 from loguru import logger
 
 
@@ -146,8 +147,8 @@ class PerformanceProfiler:
                 logger.info(f"    Time per source: {step_stats['time_per_source']*1000:.1f}ms")
 
         # Write structured performance data to stderr for benchmark parsing
-        import sys
         import json
+        import sys
 
         structured_stats = {
             "type": "performance_summary",
@@ -207,26 +208,7 @@ class ContextProfiler:
             self.profiler.start_timing(self.step)
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, _exc_type, _exc_val, _exc_tb):
         """End timing when exiting context."""
         if self.profiler:
             self.duration = self.profiler.end_timing(self.step)
-
-
-def time_step(profiler: PerformanceProfiler, step: str):
-    """
-    Decorator for timing function calls.
-
-    Args:
-        profiler: PerformanceProfiler instance
-        step: Name of the step to time
-    """
-
-    def decorator(func):
-        def wrapper(*args, **kwargs):
-            with ContextProfiler(profiler, step):
-                return func(*args, **kwargs)
-
-        return wrapper
-
-    return decorator

@@ -15,18 +15,19 @@ Tests cover:
 - Error handling for preprocessing
 """
 
-import pytest
 import numpy as np
+import pytest
 from astropy.io import fits
 from dotmap import DotMap
+
 from cutana.flux_conversion import (
     apply_flux_conversion,
     convert_mosaic_to_flux,
 )
+from cutana.get_default_config import get_default_config
 from cutana.validate_config import (
     _validate_flux_conversion_config as validate_flux_conversion_config,
 )
-from cutana.get_default_config import get_default_config
 
 
 class TestPreprocessingFunctions:

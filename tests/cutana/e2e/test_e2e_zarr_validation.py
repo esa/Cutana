@@ -11,20 +11,20 @@ This test creates synthetic FITS files with known patterns and validates that
 the generated zarr files contain the exact expected values and patterns.
 """
 
-import pytest
 import tempfile
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-from pathlib import Path
+import pytest
 import zarr
 from astropy.io import fits
 from astropy.wcs import WCS
-
-from cutana.orchestrator import Orchestrator
+from dotmap import DotMap
 
 # from cutana.constants import JANSKY_AB_ZEROPONT  # Available for flux calculation reference
 from cutana.get_default_config import get_default_config
-from dotmap import DotMap
+from cutana.orchestrator import Orchestrator
 
 
 class TestE2EZarrValidationEnhanced:
@@ -198,9 +198,8 @@ class TestE2EZarrValidationEnhanced:
         config.log_level = "DEBUG"  # Get full error details
 
         orchestrator = Orchestrator(config)
-        catalogue_df = pd.read_csv(catalogue_path)
         try:
-            result = orchestrator.start_processing(catalogue_df)
+            result = orchestrator.start_processing(str(catalogue_path))
             print(f"Orchestrator result: {result}")
             assert result["status"] == "completed"
         finally:
@@ -337,9 +336,8 @@ class TestE2EZarrValidationEnhanced:
         config.apply_flux_conversion = False
 
         orchestrator = Orchestrator(config)
-        catalogue_df = pd.read_csv(catalogue_path)
         try:
-            result = orchestrator.start_processing(catalogue_df)
+            result = orchestrator.start_processing(str(catalogue_path))
             assert result["status"] == "completed"
         finally:
             # Ensure all processes are terminated
@@ -436,9 +434,8 @@ class TestE2EZarrValidationEnhanced:
         config.flux_conversion_keywords = DotMap({"AB_zeropoint": "MAGZERO"})
 
         orchestrator = Orchestrator(config)
-        catalogue_df = pd.read_csv(catalogue_path)
         try:
-            result = orchestrator.start_processing(catalogue_df)
+            result = orchestrator.start_processing(str(catalogue_path))
             assert result["status"] == "completed"
         finally:
             # Ensure all processes are terminated
@@ -515,9 +512,8 @@ class TestE2EZarrValidationEnhanced:
         config.apply_flux_conversion = False
 
         orchestrator = Orchestrator(config)
-        catalogue_df = pd.read_csv(catalogue_path)
         try:
-            result = orchestrator.start_processing(catalogue_df)
+            result = orchestrator.start_processing(str(catalogue_path))
             assert result["status"] == "completed"
         finally:
             # Ensure all processes are terminated
@@ -649,7 +645,7 @@ class TestE2EZarrValidationEnhanced:
         # Run orchestrator
         orchestrator = Orchestrator(config)
         try:
-            result = orchestrator.start_processing(catalogue_df)
+            result = orchestrator.start_processing(str(catalogue_path))
             assert result["status"] == "completed"
         finally:
             # Ensure all processes are terminated
@@ -808,9 +804,8 @@ class TestE2EZarrValidationEnhanced:
 
         # Run orchestrator
         orchestrator = Orchestrator(config)
-        catalogue_df = pd.read_csv(catalogue_path)
         try:
-            result = orchestrator.start_processing(catalogue_df)
+            result = orchestrator.start_processing(str(catalogue_path))
         finally:
             # Ensure all processes are terminated
             try:

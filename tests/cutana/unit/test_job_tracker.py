@@ -16,7 +16,9 @@ Tests cover:
 
 import time
 from unittest.mock import patch
+
 import pytest
+
 from cutana.job_tracker import JobTracker
 
 
@@ -105,30 +107,6 @@ class TestJobTracker:
 
         assert len(job_tracker.errors) == 1
         assert job_tracker.errors[0] == error_info
-
-    def test_persistence_save_load(self, job_tracker):
-        """Test state persistence across save/load cycles."""
-        # Setup job state
-        job_tracker.start_job(100)
-        job_tracker.register_process("proc1", 60)
-        job_tracker.register_process("proc2", 40)
-
-        # Update progress
-        job_tracker.update_process_progress("proc1", {"completed_sources": 30})
-
-        # Save state
-        saved = job_tracker.save_state()
-        assert saved is True
-
-        # Create new JobTracker and load state
-        new_tracker = JobTracker(progress_dir=job_tracker.progress_dir)
-        loaded = new_tracker.load_state()
-        assert loaded is True
-
-        # Verify state was restored
-        assert new_tracker.total_sources == 100
-        assert len(new_tracker.active_processes) == 2
-        assert new_tracker.active_processes["proc1"]["sources_assigned"] == 60
 
     def test_get_detailed_process_info(self, job_tracker):
         """Test getting detailed information about processes."""

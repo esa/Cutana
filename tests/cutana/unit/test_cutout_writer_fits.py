@@ -17,18 +17,20 @@ Tests cover:
 """
 
 from pathlib import Path
-import pytest
+from unittest.mock import patch
+
 import numpy as np
+import pytest
 from astropy.io import fits
 from astropy.wcs import WCS
-from unittest.mock import patch
+from dotmap import DotMap
+
 from cutana.cutout_writer_fits import (
+    create_wcs_header,
     ensure_output_directory,
     generate_fits_filename,
-    create_wcs_header,
-    write_single_fits_cutout,
     write_fits_batch,
-    validate_fits_file,
+    write_single_fits_cutout,
 )
 
 
@@ -192,6 +194,7 @@ class TestCutoutWriterFitsFunctions:
         written_files = write_fits_batch(
             batch_data,
             str(temp_output_dir),
+            config=DotMap({"do_only_cutout_extraction": False}),
             file_naming_template="{source_id}_cutout.fits",
             create_subdirs=False,
             overwrite=True,
@@ -222,7 +225,11 @@ class TestCutoutWriterFitsFunctions:
         ]
 
         written_files = write_fits_batch(
-            batch_data, str(temp_output_dir), create_subdirs=True, overwrite=True
+            batch_data,
+            str(temp_output_dir),
+            config=DotMap({"do_only_cutout_extraction": False}),
+            create_subdirs=True,
+            overwrite=True,
         )
 
         assert len(written_files) == 1
@@ -250,34 +257,6 @@ class TestCutoutWriterFitsFunctions:
         success = write_single_fits_cutout(mock_cutout_data, invalid_path, overwrite=True)
 
         assert success is False
-
-    def test_validate_fits_file(self, mock_cutout_data, temp_output_dir):
-        """Test FITS file validation."""
-        output_path = temp_output_dir / "validate_test.fits"
-
-        # Write a valid FITS file
-        write_single_fits_cutout(mock_cutout_data, str(output_path), overwrite=True)
-
-        # Validate it
-        validation_result = validate_fits_file(str(output_path))
-
-        assert validation_result["valid"] is True
-        assert validation_result["num_extensions"] >= 4
-        assert "extensions" in validation_result
-        assert validation_result["file_size"] > 0
-
-    def test_validate_invalid_fits_file(self, temp_output_dir):
-        """Test validation of invalid FITS file."""
-        invalid_path = temp_output_dir / "invalid.fits"
-
-        # Create invalid file
-        with open(invalid_path, "w") as f:
-            f.write("This is not a FITS file")
-
-        validation_result = validate_fits_file(str(invalid_path))
-
-        assert validation_result["valid"] is False
-        assert "error" in validation_result
 
     def test_preserve_wcs_information(self, mock_cutout_data, temp_output_dir):
         """Test that WCS information is properly preserved."""
@@ -385,8 +364,9 @@ class TestCutoutWriterFitsFunctions:
 
     def test_create_wcs_header_comprehensive(self):
         """Test comprehensive WCS header creation scenarios."""
-        from cutana.cutout_writer_fits import create_wcs_header
         from astropy.wcs import WCS
+
+        from cutana.cutout_writer_fits import create_wcs_header
 
         # Test with original WCS
         original_wcs = WCS(naxis=2)
@@ -399,8 +379,8 @@ class TestCutoutWriterFitsFunctions:
             (64, 64), original_wcs=original_wcs, ra_center=151.0, dec_center=3.0
         )
 
-        assert header["CRPIX1"] == 32.0  # 64/2
-        assert header["CRPIX2"] == 32.0  # 64/2
+        assert header["CRPIX1"] == 32.5  # 64/2 + 0.5 (FITS 1-based center)
+        assert header["CRPIX2"] == 32.5  # 64/2 + 0.5 (FITS 1-based center)
         assert header["CRVAL1"] == 151.0  # Updated center
         assert header["CRVAL2"] == 3.0  # Updated center
 
@@ -412,12 +392,17 @@ class TestCutoutWriterFitsFunctions:
         assert header["CTYPE2"] == "DEC--TAN"
         assert header["CRVAL1"] == 150.5
         assert header["CRVAL2"] == 2.5
-        assert header["CRPIX1"] == 64.0  # 128/2
-        assert header["CRPIX2"] == 64.0  # 128/2
+        assert header["CRPIX1"] == 64.5  # 128/2 + 0.5 (FITS 1-based center)
+        assert header["CRPIX2"] == 64.5  # 128/2 + 0.5 (FITS 1-based center)
 
-        # Test with error condition
+        # Test with error condition - use a new WCS object that hasn't been cached
+        from cutana import cutout_writer_fits
+
+        cutout_writer_fits._wcs_header_cache.clear()  # Clear cache so the mock will be invoked
+        new_wcs = WCS(naxis=2)
+        new_wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
         with patch("astropy.wcs.WCS.to_header", side_effect=Exception("WCS error")):
-            header = create_wcs_header((32, 32), original_wcs=original_wcs)
+            header = create_wcs_header((32, 32), original_wcs=new_wcs)
             # Should return empty header on error
             assert len(header) == 0
 
@@ -426,7 +411,9 @@ class TestCutoutWriterFitsFunctions:
         from cutana.cutout_writer_fits import write_fits_batch
 
         # Test empty batch
-        written_files = write_fits_batch([], str(temp_output_dir))
+        written_files = write_fits_batch(
+            [], str(temp_output_dir), config=DotMap({"do_only_cutout_extraction": False})
+        )
         assert written_files == []
 
         # Test batch with empty cutouts tensor
@@ -437,7 +424,11 @@ class TestCutoutWriterFitsFunctions:
             }
         ]
 
-        written_files = write_fits_batch(invalid_batch, str(temp_output_dir))
+        written_files = write_fits_batch(
+            invalid_batch,
+            str(temp_output_dir),
+            config=DotMap({"do_only_cutout_extraction": False}),
+        )
         assert len(written_files) == 0  # Should skip invalid data
 
         # Test valid batch
@@ -449,36 +440,14 @@ class TestCutoutWriterFitsFunctions:
             }
         ]
 
-        written_files = write_fits_batch(valid_batch, str(temp_output_dir), overwrite=True)
+        written_files = write_fits_batch(
+            valid_batch,
+            str(temp_output_dir),
+            config=DotMap({"do_only_cutout_extraction": False}),
+            overwrite=True,
+        )
         assert len(written_files) == 1
         assert Path(written_files[0]).exists()
-
-    def test_validate_fits_file_comprehensive(self, temp_output_dir):
-        """Test comprehensive FITS file validation."""
-        from cutana.cutout_writer_fits import validate_fits_file
-
-        # Test with non-existent file
-        validation_result = validate_fits_file(str(temp_output_dir / "nonexistent.fits"))
-        assert validation_result["valid"] is False
-        assert "error" in validation_result
-
-        # Create a valid FITS file for testing
-        hdu = fits.PrimaryHDU(data=np.random.random((32, 32)))
-        hdu.header["TEST"] = "value"
-        hdul = fits.HDUList([hdu])
-
-        test_file = temp_output_dir / "test_validate.fits"
-        hdul.writeto(test_file)
-
-        validation_result = validate_fits_file(str(test_file))
-        assert validation_result["valid"] is True
-        assert validation_result["num_extensions"] == 1
-        assert len(validation_result["extensions"]) == 1
-
-        ext_info = validation_result["extensions"][0]
-        assert ext_info["index"] == 0
-        assert ext_info["type"] == "PrimaryHDU"
-        assert ext_info["shape"] == (32, 32)
 
     def test_error_handling_comprehensive(self, temp_output_dir):
         """Test comprehensive error handling scenarios."""

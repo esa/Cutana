@@ -15,8 +15,10 @@ Tests cover:
 - Resource limit calculations
 """
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
+
 from cutana.system_monitor import SystemMonitor
 
 

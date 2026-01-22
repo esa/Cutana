@@ -28,23 +28,26 @@ Validation:
   theoretical calculations with appropriate tolerances
 """
 
-import pytest
-import numpy as np
-import tempfile
 import json
 import shutil
-import zarr
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
+
+import astropy.units as u
+import numpy as np
+import pandas as pd
+import pytest
+import zarr
+from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.wcs import WCS
-import pandas as pd
 from loguru import logger
 
-from cutana.orchestrator import Orchestrator
-from cutana.get_default_config import get_default_config
-from cutana_ui.widgets.configuration_widget import SharedConfigurationWidget
 from cutana.catalogue_preprocessor import analyse_source_catalogue
+from cutana.get_default_config import get_default_config
+from cutana.orchestrator import Orchestrator
+from cutana_ui.widgets.configuration_widget import SharedConfigurationWidget
 
 
 def get_channel_matrix_config(n_input: int, n_output: int) -> dict:
@@ -296,7 +299,11 @@ class TestEndToEndChannelCombinations:
         return fits_files
 
     def _create_mock_fits_data(self, selected_fits):
-        """Create mock FITS data for patching."""
+        """Create mock FITS data for patching.
+
+        Note: The returned HDUList objects should be closed after use to avoid
+        file handle leaks on Windows. Use close_mock_fits_data() for cleanup.
+        """
         fits_data = {}
 
         for ext_name, fits_info in selected_fits.items():
@@ -326,6 +333,16 @@ class TestEndToEndChannelCombinations:
             fits_data[fits_info["path"]] = (hdul, wcs_dict)
 
         return fits_data
+
+    def _close_mock_fits_data(self, fits_data):
+        """Close all HDUList objects in mock fits data to prevent file handle leaks."""
+        if fits_data is None:
+            return
+        for path, (hdul, wcs_dict) in fits_data.items():
+            try:
+                hdul.close()
+            except Exception:
+                pass
 
     def _create_gradient_image(self, ext_name, base_value, shape):
         """Create gradient image with distinct pattern for each extension to validate channel mixing."""
@@ -412,7 +429,7 @@ class TestEndToEndChannelCombinations:
         mock_config.normalisation.percentile = 99.0  # Not used for linear but required
         mock_config.max_workers = 1  # Single worker for predictable results
         mock_config.N_batch_cutout_process = 10  # Process all sources in one batch
-
+        mock_config.flux_conserved_resizing = False
         # Initialize the configuration widget with the actual UI logic
         extensions = result_cat_analysis.get("extensions", [])
         num_sources = result_cat_analysis.get("num_sources", 0)
@@ -627,8 +644,10 @@ class TestEndToEndChannelCombinations:
         orchestrator = Orchestrator(config)
 
         # Mock FITS file loading to use our test files
+        mock_fits_data = None
         with patch("cutana.fits_dataset.load_fits_sets") as mock_load_fits:
-            mock_load_fits.return_value = self._create_mock_fits_data(selected_fits)
+            mock_fits_data = self._create_mock_fits_data(selected_fits)
+            mock_load_fits.return_value = mock_fits_data
 
             # Create test catalogue data for processing with proper format
             import json
@@ -645,10 +664,14 @@ class TestEndToEndChannelCombinations:
                 for i in range(5)
             ]
             catalogue_df = pd.DataFrame(test_data)
+            # Save catalogue to file for streaming processing
+            catalogue_path = Path(config.output_dir) / "test_catalogue.parquet"
+            catalogue_df.to_parquet(catalogue_path, index=False)
+            config.source_catalogue = str(catalogue_path)
 
             # Run processing
             try:
-                result = orchestrator.start_processing(catalogue_df)
+                result = orchestrator.start_processing(str(catalogue_path))
                 # Verify successful completion
                 assert result["status"] == "completed"
             finally:
@@ -657,6 +680,8 @@ class TestEndToEndChannelCombinations:
                     orchestrator.stop_processing()
                 except Exception:
                     pass
+                # Clean up mock FITS data to prevent file handle leaks
+                self._close_mock_fits_data(mock_fits_data)
             assert result["total_sources"] > 0
 
         # Calculate expected values for validation using the new matrix configuration
@@ -741,8 +766,10 @@ class TestEndToEndChannelCombinations:
         # Run orchestrator
         orchestrator = Orchestrator(config)
 
+        mock_fits_data = None
         with patch("cutana.fits_dataset.load_fits_sets") as mock_load_fits:
-            mock_load_fits.return_value = self._create_mock_fits_data(selected_fits)
+            mock_fits_data = self._create_mock_fits_data(selected_fits)
+            mock_load_fits.return_value = mock_fits_data
 
             # Create test catalogue data for processing with proper format
             import json
@@ -759,9 +786,13 @@ class TestEndToEndChannelCombinations:
                 for i in range(5)
             ]
             catalogue_df = pd.DataFrame(test_data)
+            # Save catalogue to file for streaming processing
+            catalogue_path = Path(config.output_dir) / "test_catalogue.parquet"
+            catalogue_df.to_parquet(catalogue_path, index=False)
+            config.source_catalogue = str(catalogue_path)
 
             try:
-                result = orchestrator.start_processing(catalogue_df)
+                result = orchestrator.start_processing(str(catalogue_path))
                 assert result["status"] == "completed"
             finally:
                 # Ensure all processes are terminated
@@ -769,6 +800,8 @@ class TestEndToEndChannelCombinations:
                     orchestrator.stop_processing()
                 except Exception:
                     pass
+                # Clean up mock FITS data to prevent file handle leaks
+                self._close_mock_fits_data(mock_fits_data)
 
         # Also validate that output values reflect the amplified mixing with the specialized method
         self._validate_amplified_channel_mixing(config.output_dir, config.data_type)
@@ -1384,9 +1417,11 @@ class TestEndToEndChannelCombinations:
             orchestrator = Orchestrator(config)
 
             # Mock FITS file loading to use our test files
+            mock_fits_data = None
             with patch("cutana.fits_dataset.load_fits_sets") as mock_load_fits:
                 # Setup mocks to ensure proper operation
-                mock_load_fits.return_value = self._create_mock_fits_data(selected_fits)
+                mock_fits_data = self._create_mock_fits_data(selected_fits)
+                mock_load_fits.return_value = mock_fits_data
 
                 # Create test catalogue data for processing
                 fits_file_paths = [fits_info["path"] for fits_info in selected_fits.values()]
@@ -1401,10 +1436,14 @@ class TestEndToEndChannelCombinations:
                     for i in range(5)
                 ]
                 catalogue_df = pd.DataFrame(test_data)
+                # Save catalogue to file for streaming processing
+                catalogue_path = Path(config.output_dir) / "test_catalogue.parquet"
+                catalogue_df.to_parquet(catalogue_path, index=False)
+                config.source_catalogue = str(catalogue_path)
 
                 # Run processing
                 try:
-                    result = orchestrator.start_processing(catalogue_df)
+                    result = orchestrator.start_processing(str(catalogue_path))
                     # Verify successful completion
                     assert result["status"] == "completed"
                 finally:
@@ -1413,6 +1452,8 @@ class TestEndToEndChannelCombinations:
                         orchestrator.stop_processing()
                     except Exception:
                         pass
+                    # Clean up mock FITS data to prevent file handle leaks
+                    self._close_mock_fits_data(mock_fits_data)
 
             # Validate that each output channel has the correct gradient direction
             # For 1-to-1 mapping, channel 0 should have the gradient of first input file, etc.
@@ -1510,6 +1551,517 @@ class TestEndToEndChannelCombinations:
                     )
 
             logger.info(f"✓ {order_name} order test passed!")
+
+    @pytest.mark.parametrize(
+        "mode,flux_conserved",
+        [
+            ("standard", False),  # Standard resize mode
+            ("standard", True),  # Flux-conserved (drizzle) resize mode
+            ("cutout_only", False),  # Cutout-only mode (no resize)
+        ],
+    )
+    def test_fits_output_wcs_preservation(self, temp_dir, mock_fits_files, mode, flux_conserved):
+        """Test that WCS information is correctly preserved and transformed in FITS output.
+
+        This test validates that:
+        1. Output FITS files have valid WCS headers
+        2. The WCS reference coordinates (CRVAL) match the source RA/Dec
+        3. The pixel scale is correctly adjusted for resizing (original -> target resolution)
+        4. The WCS can correctly convert pixel coordinates to sky coordinates
+
+        Test modes:
+        - standard: Normal processing with resize (default behavior)
+        - standard + flux_conserved: Flux-conserving drizzle resize
+        - cutout_only: No resize, no channel mixing, original pixel scale preserved
+        """
+        # Select VIS and NIR-H for simplicity (2 input channels -> 1 output)
+        selected_fits = {"VIS": mock_fits_files["VIS"], "NIRH": mock_fits_files["NIRH"]}
+        n_input = 2
+        n_output = 1
+
+        with fits.open(selected_fits["VIS"]["path"]) as hdul:
+            mock_wcs_data = WCS(hdul[0].header)
+
+        # Create test catalogue with known RA/Dec positions
+        test_ra = 52.0
+        test_dec = -29.75
+        test_sources = [
+            {
+                "SourceID": "wcs_test_source_0",
+                "RA": test_ra,
+                "Dec": test_dec,
+                "diameter_pixel": 10,
+            },
+        ]
+
+        # Create catalogue CSV
+        catalogue_data = []
+        fits_paths = [fits_info["path"] for fits_info in selected_fits.values()]
+        for source in test_sources:
+            catalogue_data.append(
+                {
+                    "SourceID": source["SourceID"],
+                    "RA": source["RA"],
+                    "Dec": source["Dec"],
+                    "diameter_pixel": source["diameter_pixel"],
+                    "fits_file_paths": json.dumps(fits_paths),
+                }
+            )
+
+        df = pd.DataFrame(catalogue_data)
+        catalogue_path = Path(temp_dir) / "wcs_test_catalogue.csv"
+        df.to_csv(catalogue_path, index=False)
+
+        # Analyze catalogue
+        result_cat_analysis = analyse_source_catalogue(str(catalogue_path))
+
+        # Create configuration
+        config = get_default_config()
+        config.source_catalogue = str(catalogue_path)
+        config.output_dir = str(Path(temp_dir) / f"wcs_output_{mode}_flux{flux_conserved}")
+        config.data_type = "float32"
+        config.normalisation_method = "linear"
+        config.normalisation.a = 1.0
+        config.max_workers = 1
+        config.output_format = "fits"  # FITS output to test WCS
+        config.N_batch_cutout_process = 10
+
+        # Configure based on mode
+        if mode == "cutout_only":
+            # Cutout-only mode: no resizing, no channel mixing
+            config.do_only_cutout_extraction = True
+            # target_resolution must still be valid for config validation (min 16)
+            # but it's not used in cutout_only mode
+            config.target_resolution = 16
+            config.flux_conserved_resizing = False  # Not applicable
+        else:
+            # Standard mode with optional flux-conserved resizing
+            config.do_only_cutout_extraction = False
+            # Use large target resolution to get finer output pixels (~0.1 arcsec/pixel)
+            # This reduces the impact of pixel discretization on coordinate accuracy
+            config.target_resolution = 100  # Upscale from 10 to 100 pixels
+            config.flux_conserved_resizing = flux_conserved
+            if flux_conserved:
+                # Flux-conserved resizing requires normalisation_method = "none"
+                config.normalisation_method = "none"
+
+        # Set up extensions and channel weights
+        config.fits_extensions = ["PRIMARY"]
+        config.channel_weights, config.selected_extensions, config.available_extensions = (
+            self.create_ui_shared_config_like_config(
+                selected_fits,
+                n_output,
+                result_cat_analysis,
+                n_input,
+                n_output,
+            )
+        )
+        config.output_format = "fits"
+
+        # Create output directory
+        Path(config.output_dir).mkdir(parents=True, exist_ok=True)
+
+        # Run orchestrator
+        orchestrator = Orchestrator(config)
+
+        # Mock FITS file loading
+        mock_fits_data = None
+        with patch("cutana.fits_dataset.load_fits_sets") as mock_load_fits:
+            mock_fits_data = self._create_mock_fits_data(selected_fits)
+            mock_load_fits.return_value = mock_fits_data
+
+            # Create test catalogue DataFrame and save to file for processing
+            catalogue_df = pd.DataFrame(catalogue_data)
+            catalogue_path = Path(config.output_dir) / "test_catalogue.parquet"
+            catalogue_df.to_parquet(catalogue_path, index=False)
+            config.source_catalogue = str(catalogue_path)
+
+            try:
+                result = orchestrator.start_processing(str(catalogue_path))
+                assert result["status"] == "completed", f"Processing failed: {result}"
+            finally:
+                try:
+                    orchestrator.stop_processing()
+                except Exception:
+                    pass
+                # Clean up mock FITS data to prevent file handle leaks
+                self._close_mock_fits_data(mock_fits_data)
+
+        # Validate output FITS files have correct WCS
+        output_files = list(Path(config.output_dir).glob("*.fits"))
+        assert len(output_files) > 0, "No FITS output files found"
+
+        # Original pixel scale from mock FITS (in degrees/pixel)
+        original_pixel_scale = 0.00027  # ~0.97 arcsec/pixel (from mock_fits_files fixture)
+        original_cutout_size = 10  # diameter_pixel from test sources
+
+        # Calculate expected pixel scale based on mode
+        if mode == "cutout_only":
+            # No resizing - pixel scale should be preserved exactly
+            expected_resize_factor = 1.0
+            expected_pixel_scale = original_pixel_scale
+        else:
+            # Standard or flux-conserved resizing
+            target_resolution = config.target_resolution
+            expected_resize_factor = target_resolution / original_cutout_size
+            expected_pixel_scale = original_pixel_scale / expected_resize_factor
+
+        for fits_file in output_files:
+            logger.info(
+                f"Validating WCS in: {fits_file} (mode={mode}, flux_conserved={flux_conserved})"
+            )
+            with fits.open(fits_file) as hdul:
+                # Check primary header for source metadata
+                primary_header = hdul[0].header
+                assert "SOURCE" in primary_header, "Primary header missing SOURCE keyword"
+                assert "RA" in primary_header, "Primary header missing RA keyword"
+                assert "DEC" in primary_header, "Primary header missing DEC keyword"
+
+                # Find data extensions with WCS
+                data_extensions = [
+                    hdu for hdu in hdul if hasattr(hdu, "data") and hdu.data is not None
+                ]
+                assert len(data_extensions) > 0, "No data extensions found in FITS file"
+
+                for hdu in data_extensions:
+                    header = hdu.header
+                    cutout_shape = hdu.data.shape
+
+                    if mode == "cutout_only":
+                        assert cutout_shape[0] == original_cutout_size, (
+                            f"Cutout-only mode should preserve original size, "
+                            f"expected {original_cutout_size}, got {cutout_shape[0]}"
+                        )
+                    else:
+                        assert cutout_shape[0] == config.target_resolution, (
+                            f"Standard mode should resize to target, "
+                            f"expected {config.target_resolution}, got {cutout_shape[0]}"
+                        )
+
+                    try:
+                        wcs = WCS(header)
+                    except Exception as e:
+                        pytest.fail(f"Failed to create WCS from header: {e}")
+
+                    assert (
+                        wcs.wcs.ctype[0] == "RA---TAN"
+                    ), f"Expected RA---TAN, got {wcs.wcs.ctype[0]}"
+                    assert (
+                        wcs.wcs.ctype[1] == "DEC--TAN"
+                    ), f"Expected DEC--TAN, got {wcs.wcs.ctype[1]}"
+
+                    crval_ra = wcs.wcs.crval[0]
+                    crval_dec = wcs.wcs.crval[1]
+
+                    logger.info(f"  WCS CRVAL: RA={crval_ra}, Dec={crval_dec}")
+                    logger.info(f"  Expected: RA={test_ra}, Dec={test_dec}")
+
+                    # Tolerance for coordinate matching
+                    original_pixel_scale_arcsec = original_pixel_scale * 3600
+                    coord_tolerance_arcsec = 0.05 * original_pixel_scale_arcsec
+                    ra_tolerance = coord_tolerance_arcsec / 3600
+                    dec_tolerance = coord_tolerance_arcsec / 3600
+
+                    assert (
+                        abs(crval_ra - test_ra) < ra_tolerance
+                    ), f"CRVAL1 (RA) mismatch: expected {test_ra}, got {crval_ra}"
+                    assert (
+                        abs(crval_dec - test_dec) < dec_tolerance
+                    ), f"CRVAL2 (Dec) mismatch: expected {test_dec}, got {crval_dec}"
+
+                    # --- Independently calculate the expected pixel offset ---
+
+                    orig_wcs = mock_wcs_data
+                    skycoord = SkyCoord(ra=test_ra * u.deg, dec=test_dec * u.deg, frame="icrs")
+                    pixel_x, pixel_y = orig_wcs.world_to_pixel(skycoord)
+
+                    extraction_size = 10
+                    half_left = extraction_size // 2
+                    # Use np.floor to match .astype(int) behavior in main code
+                    x_min = (np.asarray(pixel_x - half_left)).astype(int)
+                    y_min = (np.asarray(pixel_y - half_left)).astype(int)
+                    cutout_center_x = x_min + extraction_size / 2.0
+                    cutout_center_y = y_min + extraction_size / 2.0
+                    pixel_offset_x = pixel_x - cutout_center_x
+                    pixel_offset_y = pixel_y - cutout_center_y
+
+                    resize_factor = expected_resize_factor
+                    if resize_factor != 1.0:
+                        pixel_offset_x *= resize_factor
+                        pixel_offset_y *= resize_factor
+
+                    # Calculate expected CRPIX using FITS 1-based indexing
+                    # For an N-pixel image, center is at (N/2 + 0.5) in FITS 1-based coordinates
+                    fits_center_x = cutout_shape[1] / 2.0 + 0.5
+                    fits_center_y = cutout_shape[0] / 2.0 + 0.5
+                    expected_crpix1 = fits_center_x + pixel_offset_x
+                    expected_crpix2 = fits_center_y + pixel_offset_y
+
+                    crpix1 = wcs.wcs.crpix[0]
+                    crpix2 = wcs.wcs.crpix[1]
+
+                    logger.info(f"  WCS CRPIX (FITS 1-based): ({crpix1}, {crpix2})")
+                    logger.info(
+                        f"  Expected CRPIX (FITS 1-based): ({expected_crpix1}, {expected_crpix2})"
+                    )
+
+                    # Get the pixel position for the original RA/Dec using the output WCS
+                    # world_to_pixel returns 0-based pixel coordinates
+                    pixel_from_wcs_0based = wcs.world_to_pixel(skycoord)
+                    # Convert to FITS 1-based for comparison
+                    pixel_from_wcs_1based_x = pixel_from_wcs_0based[0] + 1
+                    pixel_from_wcs_1based_y = pixel_from_wcs_0based[1] + 1
+                    logger.info(f"  Output WCS pixel for RA/Dec (0-based): {pixel_from_wcs_0based}")
+                    logger.info(
+                        f"  Output WCS pixel for RA/Dec (FITS 1-based): ({pixel_from_wcs_1based_x}, {pixel_from_wcs_1based_y})"
+                    )
+
+                    # All comparisons use FITS 1-based indexing
+                    # Tolerance: 0.05 * original pixel size (in pixels, not degrees)
+                    pixel_tolerance = 0.05 * original_cutout_size
+
+                    # Compare CRPIX to expected (both FITS 1-based)
+                    assert (
+                        abs(crpix1 - expected_crpix1) < pixel_tolerance
+                    ), f"CRPIX1 mismatch: expected {expected_crpix1}, got {crpix1}, tol={pixel_tolerance}"
+                    assert (
+                        abs(crpix2 - expected_crpix2) < pixel_tolerance
+                    ), f"CRPIX2 mismatch: expected {expected_crpix2}, got {crpix2}, tol={pixel_tolerance}"
+
+                    # Compare output WCS pixel (converted to FITS 1-based) to expected CRPIX (FITS 1-based)
+                    assert (
+                        abs(pixel_from_wcs_1based_x - expected_crpix1) < pixel_tolerance
+                    ), f"Output WCS pixel X for RA/Dec mismatch: expected {expected_crpix1}, got {pixel_from_wcs_1based_x}, tol={pixel_tolerance}"
+                    assert (
+                        abs(pixel_from_wcs_1based_y - expected_crpix2) < pixel_tolerance
+                    ), f"Output WCS pixel Y for RA/Dec mismatch: expected {expected_crpix2}, got {pixel_from_wcs_1based_y}, tol={pixel_tolerance}"
+
+                    # Compare output WCS pixel to CRPIX (both FITS 1-based)
+                    assert (
+                        abs(pixel_from_wcs_1based_x - crpix1) < pixel_tolerance
+                    ), f"Output WCS pixel X for RA/Dec mismatch with CRPIX1: {pixel_from_wcs_1based_x} vs {crpix1}, tol={pixel_tolerance}"
+                    assert (
+                        abs(pixel_from_wcs_1based_y - crpix2) < pixel_tolerance
+                    ), f"Output WCS pixel Y for RA/Dec mismatch with CRPIX2: {pixel_from_wcs_1based_y} vs {crpix2}, tol={pixel_tolerance}"
+
+                    # Pixel scale check (unchanged)
+                    if wcs.wcs.has_cd():
+                        # CD matrix format
+                        actual_scale_x = abs(header.get("CD1_1", 0))
+                        actual_scale_y = abs(header.get("CD2_2", 0))
+                    else:
+                        # CDELT format
+                        actual_scale_x = abs(header.get("CDELT1", 0))
+                        actual_scale_y = abs(header.get("CDELT2", 0))
+
+                    logger.info(f"  Mode: {mode}, Flux-conserved: {flux_conserved}")
+                    logger.info(f"  Original pixel scale: {original_pixel_scale} deg/pixel")
+                    logger.info(f"  Resize factor: {expected_resize_factor}")
+                    logger.info(f"  Expected pixel scale: {expected_pixel_scale} deg/pixel")
+                    logger.info(f"  Actual pixel scale X: {actual_scale_x} deg/pixel")
+                    logger.info(f"  Actual pixel scale Y: {actual_scale_y} deg/pixel")
+
+                    # Allow 1% tolerance for pixel scale matching
+                    scale_tolerance = expected_pixel_scale * 0.01
+                    assert (
+                        abs(actual_scale_x - expected_pixel_scale) < scale_tolerance
+                    ), f"Pixel scale X mismatch: expected {expected_pixel_scale}, got {actual_scale_x}"
+                    assert (
+                        abs(actual_scale_y - expected_pixel_scale) < scale_tolerance
+                    ), f"Pixel scale Y mismatch: expected {expected_pixel_scale}, got {actual_scale_y}"
+
+        logger.info(
+            f"WCS preservation test passed for mode={mode}, flux_conserved={flux_conserved}!"
+        )
+
+    def test_fits_output_wcs_combined_channels(self, temp_dir, mock_fits_files):
+        """Test that WCS is correctly preserved when combining VIS and NIR-H into one output channel.
+
+        This validates that channel mixing (2 inputs -> 1 output) preserves WCS correctly.
+        """
+        # Select VIS and NIR-H to combine into 1 output channel
+        selected_fits = {"VIS": mock_fits_files["VIS"], "NIRH": mock_fits_files["NIRH"]}
+        n_input = 2
+        n_output = 1  # Combine both into single output
+
+        # Create test catalogue with known RA/Dec position
+        test_ra = 52.0
+        test_dec = -29.75
+        test_sources = [
+            {
+                "SourceID": "combined_wcs_test",
+                "RA": test_ra,
+                "Dec": test_dec,
+                "diameter_pixel": 10.0,
+            },
+        ]
+
+        # Create catalogue CSV
+        catalogue_data = []
+        fits_paths = [fits_info["path"] for fits_info in selected_fits.values()]
+        for source in test_sources:
+            catalogue_data.append(
+                {
+                    "SourceID": source["SourceID"],
+                    "RA": source["RA"],
+                    "Dec": source["Dec"],
+                    "diameter_pixel": source["diameter_pixel"],
+                    "fits_file_paths": json.dumps(fits_paths),
+                }
+            )
+
+        df = pd.DataFrame(catalogue_data)
+        catalogue_path = Path(temp_dir) / "combined_wcs_catalogue.csv"
+        df.to_csv(catalogue_path, index=False)
+
+        # Analyze catalogue
+        result_cat_analysis = analyse_source_catalogue(str(catalogue_path))
+
+        # Create configuration for standard mode with channel mixing
+        config = get_default_config()
+        config.source_catalogue = str(catalogue_path)
+        config.output_dir = str(Path(temp_dir) / "combined_wcs_output")
+        config.data_type = "float32"
+        config.normalisation_method = "linear"
+        config.normalisation.a = 1.0
+        config.max_workers = 1
+        config.output_format = "fits"
+        config.N_batch_cutout_process = 10
+        config.do_only_cutout_extraction = False
+        config.target_resolution = 100  # Upscale from 10 to 100 pixels
+        config.flux_conserved_resizing = False
+
+        # Set up channel weights for combining 2 inputs -> 1 output
+        config.fits_extensions = ["PRIMARY"]
+        config.channel_weights, config.selected_extensions, config.available_extensions = (
+            self.create_ui_shared_config_like_config(
+                selected_fits,
+                n_output,
+                result_cat_analysis,
+                n_input,
+                n_output,
+            )
+        )
+
+        # Verify channel weights are set for mixing (2 inputs -> 1 output)
+        logger.info(f"Channel weights for combined test: {config.channel_weights}")
+
+        # Create output directory
+        Path(config.output_dir).mkdir(parents=True, exist_ok=True)
+
+        # Run orchestrator
+        orchestrator = Orchestrator(config)
+
+        mock_fits_data = None
+        with patch("cutana.fits_dataset.load_fits_sets") as mock_load_fits:
+            mock_fits_data = self._create_mock_fits_data(selected_fits)
+            mock_load_fits.return_value = mock_fits_data
+
+            # Create test catalogue DataFrame and save to file for processing
+            catalogue_df = pd.DataFrame(catalogue_data)
+            catalogue_path = Path(config.output_dir) / "test_catalogue.parquet"
+            catalogue_df.to_parquet(catalogue_path, index=False)
+            config.source_catalogue = str(catalogue_path)
+
+            try:
+                result = orchestrator.start_processing(str(catalogue_path))
+                assert result["status"] == "completed", f"Processing failed: {result}"
+            finally:
+                try:
+                    orchestrator.stop_processing()
+                except Exception:
+                    pass
+                self._close_mock_fits_data(mock_fits_data)
+
+        # Validate output FITS files have correct WCS
+        output_files = list(Path(config.output_dir).glob("*.fits"))
+        assert len(output_files) > 0, "No FITS output files found"
+
+        # Original pixel scale from mock FITS (in degrees/pixel)
+        original_pixel_scale = 0.00027  # ~0.97 arcsec/pixel
+        original_cutout_size = 10
+        expected_resize_factor = config.target_resolution / original_cutout_size
+        expected_pixel_scale = original_pixel_scale / expected_resize_factor
+
+        for fits_file in output_files:
+            logger.info(f"Validating combined channel WCS in: {fits_file}")
+
+            with fits.open(fits_file) as hdul:
+                # Find data extensions
+                data_extensions = [
+                    hdu for hdu in hdul if hasattr(hdu, "data") and hdu.data is not None
+                ]
+                assert len(data_extensions) > 0, "No data extensions found"
+
+                for hdu in data_extensions:
+                    header = hdu.header
+                    cutout_shape = hdu.data.shape
+
+                    # Verify combined output has expected shape
+                    assert (
+                        cutout_shape[0] == config.target_resolution
+                    ), f"Expected target resolution {config.target_resolution}, got {cutout_shape[0]}"
+
+                    # Create WCS from header
+                    wcs = WCS(header)
+
+                    # Validate WCS type
+                    assert (
+                        wcs.wcs.ctype[0] == "RA---TAN"
+                    ), f"Expected RA---TAN, got {wcs.wcs.ctype[0]}"
+                    assert (
+                        wcs.wcs.ctype[1] == "DEC--TAN"
+                    ), f"Expected DEC--TAN, got {wcs.wcs.ctype[1]}"
+
+                    # Validate pixel scale is correctly adjusted
+                    if wcs.wcs.has_cd():
+                        actual_scale_x = abs(header.get("CD1_1", 0))
+                        actual_scale_y = abs(header.get("CD2_2", 0))
+                    else:
+                        actual_scale_x = abs(header.get("CDELT1", 0))
+                        actual_scale_y = abs(header.get("CDELT2", 0))
+
+                    scale_tolerance = expected_pixel_scale * 0.01
+                    assert (
+                        abs(actual_scale_x - expected_pixel_scale) < scale_tolerance
+                    ), f"Pixel scale X mismatch: expected {expected_pixel_scale}, got {actual_scale_x}"
+                    assert (
+                        abs(actual_scale_y - expected_pixel_scale) < scale_tolerance
+                    ), f"Pixel scale Y mismatch: expected {expected_pixel_scale}, got {actual_scale_y}"
+
+                    # Validate WCS transformation: CRPIX pixel -> source RA/Dec
+                    # CRPIX is in FITS 1-based coordinates and points to where CRVAL is located
+                    # Convert FITS 1-based CRPIX to 0-based pixel coordinates for pixel_to_world
+                    crpix1 = wcs.wcs.crpix[0]
+                    crpix2 = wcs.wcs.crpix[1]
+                    pixel_0based_x = crpix1 - 1
+                    pixel_0based_y = crpix2 - 1
+
+                    logger.info(f"  CRPIX (FITS 1-based): ({crpix1}, {crpix2})")
+                    logger.info(f"  Testing pixel (0-based): ({pixel_0based_x}, {pixel_0based_y})")
+                    # pixel to world uses 0 based indexing, assuming 0, 1,2 etc is at the center of the pixel
+                    sky_coords = wcs.pixel_to_world(pixel_0based_x, pixel_0based_y)
+
+                    # Tolerance for coordinate matching (0.1 original pixels)
+                    # This is a strict tolerance to ensure WCS precision
+                    original_pixel_scale_arcsec = original_pixel_scale * 3600
+                    coord_tolerance_arcsec = 0.1 * original_pixel_scale_arcsec
+                    ra_tolerance = coord_tolerance_arcsec / 3600
+                    dec_tolerance = coord_tolerance_arcsec / 3600
+
+                    logger.info(
+                        f"  Combined channel WCS center: RA={sky_coords.ra.deg}, Dec={sky_coords.dec.deg}"
+                    )
+                    logger.info(f"  Expected: RA={test_ra}, Dec={test_dec}")
+
+                    assert (
+                        abs(sky_coords.ra.deg - test_ra) < ra_tolerance
+                    ), f"WCS RA mismatch: expected {test_ra}, got {sky_coords.ra.deg}"
+                    assert (
+                        abs(sky_coords.dec.deg - test_dec) < dec_tolerance
+                    ), f"WCS Dec mismatch: expected {test_dec}, got {sky_coords.dec.deg}"
+
+        logger.info("✓ Combined channel (VIS + NIR-H -> 1 output) WCS test passed!")
 
 
 if __name__ == "__main__":

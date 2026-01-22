@@ -12,14 +12,16 @@ including comprehensive data validation, FITS file checking, and metadata extrac
 """
 
 import ast
-import re
+import os
 import random
+import re
 from pathlib import Path
-from typing import Dict, List, Any, Tuple
-import pandas as pd
-from loguru import logger
-from astropy.io import fits
+from typing import Any, Dict, Iterator, List, Optional, Tuple
+
 import numpy as np
+import pandas as pd
+from astropy.io import fits
+from loguru import logger
 
 
 class CatalogueValidationError(Exception):
@@ -44,6 +46,7 @@ def extract_fits_sets(
         - resolution_ratios: Dict mapping filter names to pixel scale ratios
     """
     import os
+
     from astropy.io import fits
     from astropy.wcs import WCS
 
@@ -191,39 +194,49 @@ def analyze_fits_file(fits_path: str) -> Dict[str, Any]:
         }
 
 
-def parse_fits_file_paths(fits_paths_str: str) -> List[str]:
+def parse_fits_file_paths(fits_paths_str: str, normalize: bool = True) -> List[str]:
     """
     Parse the fits_file_paths column which may be in string representation of list.
 
     Args:
         fits_paths_str: String representation of FITS file paths
+        normalize: Whether to normalize paths using os.path.normpath (default: True)
 
     Returns:
-        List of FITS file paths
+        List of FITS file paths (normalized if normalize=True)
+
+    Raises:
+        ValueError: If the input is malformed (e.g., unbalanced brackets or invalid syntax)
     """
-    try:
-        # Handle different formats
-        if isinstance(fits_paths_str, str):
-            # Remove any extra whitespace
-            fits_paths_str = fits_paths_str.strip()
+    fits_paths = []
 
-            # Try to evaluate as Python literal (list)
-            if fits_paths_str.startswith("[") and fits_paths_str.endswith("]"):
-                return ast.literal_eval(fits_paths_str)
+    # Handle different formats
+    if isinstance(fits_paths_str, str):
+        # Remove any extra whitespace
+        fits_paths_str = fits_paths_str.strip()
 
-            # If it's a single path without brackets
-            if fits_paths_str and not fits_paths_str.startswith("["):
-                return [fits_paths_str]
+        # Check for malformed list syntax (unbalanced brackets)
+        starts_with_bracket = fits_paths_str.startswith("[")
+        ends_with_bracket = fits_paths_str.endswith("]")
+        if starts_with_bracket != ends_with_bracket:
+            raise ValueError(f"Malformed FITS paths string (unbalanced brackets): {fits_paths_str}")
 
-        # If it's already a list
-        elif isinstance(fits_paths_str, list):
-            return fits_paths_str
+        # Try to evaluate as Python literal (list)
+        if starts_with_bracket and ends_with_bracket:
+            fits_paths = ast.literal_eval(fits_paths_str)
+        # If it's a single path without brackets
+        elif fits_paths_str:
+            fits_paths = [fits_paths_str]
 
-        return []
+    # If it's already a list
+    elif isinstance(fits_paths_str, list):
+        fits_paths = fits_paths_str
 
-    except Exception as e:
-        logger.warning(f"Could not parse FITS file paths: {fits_paths_str}, error: {e}")
-        return []
+    # Normalize paths if requested
+    if normalize and fits_paths:
+        fits_paths = [os.path.normpath(path) for path in fits_paths]
+
+    return fits_paths
 
 
 def validate_catalogue_columns(catalogue_df: pd.DataFrame) -> List[str]:
@@ -536,12 +549,17 @@ def load_catalogue(catalogue_path: str) -> pd.DataFrame:
     Load catalogue from file without validation.
 
     Args:
-        catalogue_path: Path to catalogue file (CSV or FITS)
+        catalogue_path: Path to catalogue file (CSV, FITS, or parquet)
 
     Returns:
         DataFrame
+
+    Raises:
+        ValueError: If file format is unsupported
+        NotImplementedError: If file format is not yet implemented (parquet)
     """
     catalogue_file = Path(catalogue_path)
+
     if catalogue_file.suffix.lower() == ".csv":
         catalogue_df = pd.read_csv(catalogue_file)
     elif catalogue_file.suffix.lower() in [".fits", ".fit"]:
@@ -549,12 +567,136 @@ def load_catalogue(catalogue_path: str) -> pd.DataFrame:
 
         table = Table.read(catalogue_file)
         catalogue_df = table.to_pandas()
+    elif catalogue_file.suffix.lower() == ".parquet":
+        catalogue_df = pd.read_parquet(catalogue_file)
     else:
         raise ValueError(f"Unsupported catalogue format: {catalogue_file.suffix}")
+
     logger.info(
         f"Loaded catalogue with {len(catalogue_df)} sources and columns: {list(catalogue_df.columns)}"
     )
     return catalogue_df
+
+
+def stream_catalogue_chunks(
+    path: str,
+    batch_size: int = 100000,
+    columns: Optional[List[str]] = None,
+) -> Iterator[pd.DataFrame]:
+    """
+    Stream catalogue in chunks for memory-efficient processing.
+
+    Works with both CSV and Parquet formats. For parquet, uses pyarrow's
+    iter_batches for true streaming. For CSV, uses pandas chunksize.
+
+    Args:
+        path: Path to catalogue file (CSV or Parquet)
+        batch_size: Number of rows per chunk
+        columns: Optional list of columns to load (None = all columns)
+
+    Yields:
+        DataFrame chunks with '_row_idx' column added for tracking
+
+    Raises:
+        ValueError: If file format is unsupported
+    """
+    import pyarrow.parquet as pq
+
+    path_obj = Path(path)
+    suffix = path_obj.suffix.lower()
+    row_offset = 0
+
+    if suffix == ".parquet":
+        parquet_file = pq.ParquetFile(path)
+        for batch in parquet_file.iter_batches(batch_size=batch_size, columns=columns):
+            df = batch.to_pandas()
+            df["_row_idx"] = range(row_offset, row_offset + len(df))
+            row_offset += len(df)
+            yield df
+
+    elif suffix == ".csv":
+        read_kwargs = {"chunksize": batch_size}
+        if columns:
+            read_kwargs["usecols"] = columns
+
+        for chunk in pd.read_csv(path, **read_kwargs):
+            chunk["_row_idx"] = range(row_offset, row_offset + len(chunk))
+            row_offset += len(chunk)
+            yield chunk
+
+    else:
+        raise ValueError(f"Unsupported catalogue format for streaming: {suffix}")
+
+
+def validate_catalogue_sample(
+    path: str,
+    sample_size: int = 10000,
+    skip_fits_check: bool = False,
+) -> List[str]:
+    """
+    Validate a sample from the catalogue without loading it fully.
+
+    Streams through the catalogue and validates column types, coordinate ranges,
+    and optionally FITS file existence on a sample.
+
+    Args:
+        path: Path to catalogue file
+        sample_size: Number of rows to sample for validation
+        skip_fits_check: Skip FITS file existence checking
+
+    Returns:
+        List of validation errors (empty if valid)
+    """
+    errors = []
+
+    # Load first chunk to validate columns
+    first_chunk = None
+    for chunk in stream_catalogue_chunks(path, batch_size=min(sample_size, 10000)):
+        first_chunk = chunk
+        break
+
+    if first_chunk is None or first_chunk.empty:
+        return ["Could not read catalogue or catalogue is empty"]
+
+    # Validate columns
+    column_errors = validate_catalogue_columns(first_chunk)
+    if column_errors:
+        return column_errors
+
+    # Sample rows for coordinate validation
+    # Collect sample across multiple chunks if needed
+    sample_rows = []
+    target_sample = sample_size
+
+    for chunk in stream_catalogue_chunks(path, batch_size=100000):
+        # Random sample from this chunk
+        chunk_sample_size = min(len(chunk), target_sample - len(sample_rows))
+        if chunk_sample_size > 0:
+            if len(chunk) <= chunk_sample_size:
+                sample_rows.append(chunk)
+            else:
+                sample_rows.append(chunk.sample(n=chunk_sample_size, random_state=42))
+
+        if len(sample_rows) > 0 and sum(len(df) for df in sample_rows) >= target_sample:
+            break
+
+    if sample_rows:
+        sample_df = pd.concat(sample_rows, ignore_index=True)
+
+        # Validate coordinate ranges on sample
+        range_errors = validate_coordinate_ranges(sample_df)
+        errors.extend(range_errors)
+
+        # Validate resolution ratios on sample
+        resolution_errors = validate_resolution_ratios(sample_df)
+        errors.extend(resolution_errors)
+
+        # Check FITS files exist on sample
+        if not skip_fits_check:
+            fits_errors, _ = check_fits_files_exist(sample_df)
+            errors.extend(fits_errors)
+
+    return errors
 
 
 def load_and_validate_catalogue(catalogue_path: str, skip_fits_check: bool = False) -> pd.DataFrame:

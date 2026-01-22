@@ -16,18 +16,18 @@ Tests cover:
 - Cache invalidation and cleanup
 """
 
-from unittest.mock import patch, MagicMock
-import pytest
+from unittest.mock import MagicMock, patch
+
 import numpy as np
 import pandas as pd
+import pytest
 from dotmap import DotMap
 
 from cutana.preview_generator import (
     PreviewCache,
-    load_sources_for_previews,
-    generate_previews,
     clear_preview_cache,
-    get_cache_status,
+    generate_previews,
+    load_sources_for_previews,
 )
 
 
@@ -42,28 +42,6 @@ class TestPreviewCache:
         assert PreviewCache.fits_sets_cache is None
         assert PreviewCache.fits_data_cache is None
         assert PreviewCache.config_cache is None
-
-    def test_cache_status_empty(self):
-        """Test cache status when empty."""
-        clear_preview_cache()
-
-        status = get_cache_status()
-        assert status["cached"] is False
-
-    def test_cache_status_populated(self):
-        """Test cache status when populated."""
-        # Simulate populated cache
-        PreviewCache.config_cache = {
-            "num_cached_sources": 100,
-            "num_cached_fits": 5,
-            "cache_timestamp": 1234567890.0,
-        }
-
-        status = get_cache_status()
-        assert status["cached"] is True
-        assert status["num_sources"] == 100
-        assert status["num_fits"] == 5
-        assert status["cache_timestamp"] == 1234567890.0
 
     def test_clear_cache(self):
         """Test cache clearing functionality."""
@@ -403,11 +381,8 @@ class TestLoadSourcesForPreviews:
             assert PreviewCache.fits_data_cache is not None
             assert PreviewCache.config_cache is not None
 
-            # Verify cache status
-            status = get_cache_status()
-            assert status["cached"] is True
-            assert status["num_sources"] >= 0  # May be 0 due to filtering
-            assert status["num_fits"] >= 0  # May be 0 due to filtering
+            # Verify cache is populated by checking config_cache
+            assert PreviewCache.config_cache is not None
 
 
 class TestGeneratePreviews:
@@ -815,14 +790,12 @@ class TestIntegration:
             preview_result = await generate_previews(num_samples=5, size=256, config=config)
             assert len(preview_result) == 5
 
-            # Step 3: Verify cache status
-            status = get_cache_status()
-            assert status["cached"] is True
+            # Step 3: Verify cache is populated
+            assert PreviewCache.config_cache is not None
 
             # Step 4: Clear cache
             clear_preview_cache()
-            status = get_cache_status()
-            assert status["cached"] is False
+            assert PreviewCache.config_cache is None
 
     @pytest.mark.asyncio
     async def test_performance_with_large_catalogue(self, tmp_path):

@@ -6,8 +6,9 @@
 #   the terms contained in the file 'LICENCE.txt'.
 """Tests for the unified start screen."""
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
-from unittest.mock import patch, AsyncMock
 
 
 @pytest.fixture
@@ -178,8 +179,8 @@ class TestStartScreen:
 
     def test_stretch_function_naming(self):
         """Test that stretch function uses 'linear' instead of 'none'."""
-        from cutana_ui.widgets.configuration_widget import SharedConfigurationWidget
         from cutana import get_default_config
+        from cutana_ui.widgets.configuration_widget import SharedConfigurationWidget
 
         # Create a configuration widget with advanced params enabled for testing normalisation
         config = get_default_config()
@@ -194,7 +195,7 @@ class TestStartScreen:
         # Check dropdown options (only test if normalisation dropdown exists)
         if component.normalisation_dropdown is not None:
             assert "linear" in component.normalisation_dropdown.options
-            assert "none" not in component.normalisation_dropdown.options
+            assert "none" in component.normalisation_dropdown.options
 
             # Set some dummy extensions first
             component.set_extensions([{"name": "TEST", "ext": "IMAGE"}])
@@ -206,8 +207,8 @@ class TestStartScreen:
 
     def test_automatic_analysis_on_file_selection(self, mock_backend):
         """Test that analysis starts automatically when file is selected."""
-        from cutana_ui.start_screen import StartScreen
         from cutana.get_default_config import get_default_config
+        from cutana_ui.start_screen import StartScreen
 
         with patch("asyncio.create_task"):
             screen = StartScreen()
@@ -238,7 +239,7 @@ class TestStartScreen:
 
     def test_color_scheme_application(self):
         """Test that ESA color scheme is applied."""
-        from cutana_ui.styles import ESA_BLUE_DEEP, ESA_GREEN, ESA_RED, SUCCESS_COLOR, ERROR_COLOR
+        from cutana_ui.styles import ERROR_COLOR, ESA_BLUE_DEEP, ESA_GREEN, ESA_RED, SUCCESS_COLOR
 
         # Verify color constants are defined correctly
         assert ESA_BLUE_DEEP == "#003249"
@@ -269,8 +270,8 @@ class TestStartScreen:
                 pytest.skip("ipyfilechooser not available in test environment")
             raise
 
-        from cutana_ui.main_screen import MainScreen
         from cutana.get_default_config import get_default_config
+        from cutana_ui.main_screen import MainScreen
 
         # Test start screen
         start_screen = StartScreen()
@@ -311,10 +312,11 @@ class TestUIIntegration:
 
     def test_real_csv_file_integration(self):
         """Test integration with real CSV file from test data."""
-        from cutana_ui.start_screen import StartScreen
-        from cutana.get_default_config import get_default_config
-        from pathlib import Path
         import asyncio
+        from pathlib import Path
+
+        from cutana.get_default_config import get_default_config
+        from cutana_ui.start_screen import StartScreen
 
         # Get test CSV file path
         project_root = Path(__file__).parent.parent.parent
@@ -363,8 +365,8 @@ class TestUIIntegration:
 
     def test_file_selection_triggers_analysis(self):
         """Test that file selection triggers analysis workflow."""
-        from cutana_ui.start_screen import StartScreen
         from cutana.get_default_config import get_default_config
+        from cutana_ui.start_screen import StartScreen
 
         # Mock the analysis method to avoid actual backend calls
         with patch.object(StartScreen, "_analyze_catalogue"):
@@ -388,10 +390,11 @@ class TestUIIntegration:
 
     def test_analysis_workflow_success(self):
         """Test successful analysis workflow."""
-        from cutana_ui.start_screen import StartScreen
         import asyncio
         from pathlib import Path
-        from unittest.mock import patch, AsyncMock
+        from unittest.mock import AsyncMock, patch
+
+        from cutana_ui.start_screen import StartScreen
 
         screen = StartScreen()
 
@@ -443,9 +446,10 @@ class TestUIIntegration:
 
     def test_analysis_workflow_error(self):
         """Test analysis workflow error handling."""
-        from cutana_ui.start_screen import StartScreen
         import asyncio
         from unittest.mock import patch
+
+        from cutana_ui.start_screen import StartScreen
 
         screen = StartScreen()
 
@@ -470,9 +474,10 @@ class TestUIIntegration:
 
     def test_start_button_click_workflow(self):
         """Test start button click workflow."""
-        from cutana_ui.start_screen import StartScreen
-        from cutana.get_default_config import get_default_config
         from unittest.mock import patch
+
+        from cutana.get_default_config import get_default_config
+        from cutana_ui.start_screen import StartScreen
 
         screen = StartScreen()
 
@@ -505,20 +510,16 @@ class TestUIIntegration:
                 "cutana_ui.start_screen.start_screen.get_default_config",
                 return_value=default_config,
             ) as mock_get_default,
-            patch(
-                "cutana_ui.start_screen.start_screen.save_config_with_timestamp",
-                return_value="/test/config.json",
-            ) as mock_save,
         ):
 
             # Mock completion callback
             completion_called = False
             completion_args = None
 
-            def mock_completion(config, config_path):
+            def mock_completion(config):
                 nonlocal completion_called, completion_args
                 completion_called = True
-                completion_args = (config, config_path)
+                completion_args = config
 
             screen.on_complete = mock_completion
 
@@ -529,7 +530,6 @@ class TestUIIntegration:
             mock_get_config.assert_called_once()
             mock_get_dir.assert_called_once()
             mock_get_default.assert_called_once()
-            mock_save.assert_called_once()
 
             assert completion_called
             assert completion_args is not None

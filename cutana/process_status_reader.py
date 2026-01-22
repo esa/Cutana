@@ -16,11 +16,12 @@ This module is responsible for:
 
 import json
 import sys
-import time
 import tempfile
-import portalocker
+import time
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Any, Dict, List, Optional
+
+import portalocker
 from loguru import logger
 
 

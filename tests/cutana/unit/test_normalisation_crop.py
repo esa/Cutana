@@ -13,10 +13,11 @@ then testing that the crop parameter correctly limits the maximum value
 computation to the center region.
 """
 
+from unittest.mock import patch
+
 import numpy as np
 import pytest
 from dotmap import DotMap
-from unittest.mock import patch
 
 from cutana.image_processor import apply_normalisation
 from cutana.normalisation_parameters import convert_cfg_to_fitsbolt_cfg
@@ -141,7 +142,7 @@ class TestNormalisationCrop:
 
     def test_crop_parameter_validation_ranges(self):
         """Test that crop parameter ranges are correctly defined."""
-        from cutana.normalisation_parameters import NormalisationRanges, NormalisationDefaults
+        from cutana.normalisation_parameters import NormalisationDefaults, NormalisationRanges
 
         # Test that defaults are within ranges
         assert (

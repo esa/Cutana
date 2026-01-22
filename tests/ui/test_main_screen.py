@@ -12,14 +12,14 @@ class TestMainScreen:
 
     def test_main_screen_initialization(self):
         """Test that main screen initializes with all components."""
-        from cutana_ui.main_screen.main_screen import MainScreen
-
         from cutana.get_default_config import get_default_config
+        from cutana_ui.main_screen.main_screen import MainScreen
 
         config = get_default_config()
         config.num_sources = 25
         config.available_extensions = [{"name": "VIS", "ext": "IMAGE"}]
         config.normalisation_method = "linear"  # This should be handled by the fix
+        config.flux_conserved_resizing = False
 
         screen = MainScreen(config=config)
 
@@ -31,9 +31,8 @@ class TestMainScreen:
 
     def test_configuration_panel_initialization(self):
         """Test configuration panel with stretch dropdown fix."""
-        from cutana_ui.main_screen.configuration_panel import ConfigurationPanel
-
         from cutana.get_default_config import get_default_config
+        from cutana_ui.main_screen.configuration_panel import ConfigurationPanel
 
         config = get_default_config()
         config.normalisation_method = "linear"  # This should be converted to "linear"
@@ -53,9 +52,8 @@ class TestMainScreen:
 
     def test_configuration_panel_stretch_fix(self):
         """Test that 'none' stretch value is properly converted to 'linear'."""
-        from cutana_ui.main_screen.configuration_panel import ConfigurationPanel
-
         from cutana.get_default_config import get_default_config
+        from cutana_ui.main_screen.configuration_panel import ConfigurationPanel
 
         config = get_default_config()
         config.normalisation_method = "linear"
@@ -70,9 +68,8 @@ class TestMainScreen:
 
     def test_configuration_panel_channel_matrix(self):
         """Test channel matrix functionality."""
-        from cutana_ui.main_screen.configuration_panel import ConfigurationPanel
-
         from cutana.get_default_config import get_default_config
+        from cutana_ui.main_screen.configuration_panel import ConfigurationPanel
 
         config = get_default_config()
         extensions = [{"name": "VIS", "ext": "IMAGE"}, {"name": "NIR", "ext": "IMAGE"}]
@@ -97,9 +94,8 @@ class TestMainScreen:
 
     def test_configuration_panel_filesize_prediction(self):
         """Test filesize prediction updates."""
-        from cutana_ui.main_screen.configuration_panel import ConfigurationPanel
-
         from cutana.get_default_config import get_default_config
+        from cutana_ui.main_screen.configuration_panel import ConfigurationPanel
 
         config = get_default_config()
         config.num_sources = 100
@@ -121,9 +117,8 @@ class TestMainScreen:
 
     def test_main_screen_start_button(self):
         """Test that main screen has start button (moved from configuration panel)."""
-        from cutana_ui.main_screen.main_screen import MainScreen
-
         from cutana.get_default_config import get_default_config
+        from cutana_ui.main_screen.main_screen import MainScreen
 
         config = get_default_config()
         config.num_sources = 25
@@ -147,9 +142,8 @@ class TestMainScreen:
 
     def test_preview_panel_initialization(self):
         """Test preview panel initialization."""
-        from cutana_ui.main_screen.preview_panel import PreviewPanel
-
         from cutana.get_default_config import get_default_config
+        from cutana_ui.main_screen.preview_panel import PreviewPanel
 
         config = get_default_config()
         config.source_catalogue = "test.csv"
@@ -170,9 +164,8 @@ class TestMainScreen:
 
     def test_preview_panel_load_sources_method(self):
         """Test preview panel load_preview_sources method."""
-        from cutana_ui.main_screen.preview_panel import PreviewPanel
-
         from cutana.get_default_config import get_default_config
+        from cutana_ui.main_screen.preview_panel import PreviewPanel
 
         config = get_default_config()
         config.source_catalogue = "tests/test_data/euclid_cutana_catalogue_small.csv"
@@ -187,9 +180,8 @@ class TestMainScreen:
 
     def test_preview_panel_reload_sources_method(self):
         """Test preview panel reload_preview_sources method."""
-        from cutana_ui.main_screen.preview_panel import PreviewPanel
-
         from cutana.get_default_config import get_default_config
+        from cutana_ui.main_screen.preview_panel import PreviewPanel
 
         config = get_default_config()
         config.source_catalogue = "tests/test_data/euclid_cutana_catalogue_small.csv"
@@ -204,9 +196,8 @@ class TestMainScreen:
 
     def test_preview_panel_refresh_functionality(self):
         """Test preview panel refresh button functionality."""
-        from cutana_ui.main_screen.preview_panel import PreviewPanel
-
         from cutana.get_default_config import get_default_config
+        from cutana_ui.main_screen.preview_panel import PreviewPanel
 
         config = get_default_config()
         config.source_catalogue = "test.csv"
@@ -223,9 +214,10 @@ class TestMainScreen:
 
     def test_preview_panel_color_display_logic(self):
         """Test that preview panel handles different image formats correctly."""
-        from cutana_ui.main_screen.preview_panel import PreviewPanel
-        from cutana.get_default_config import get_default_config
         import numpy as np
+
+        from cutana.get_default_config import get_default_config
+        from cutana_ui.main_screen.preview_panel import PreviewPanel
 
         config = get_default_config()
         config.num_sources = 25
@@ -248,9 +240,8 @@ class TestMainScreen:
 
     def test_status_panel_initialization(self):
         """Test status panel initialization."""
-        from cutana_ui.main_screen.status_panel import StatusPanel
-
         from cutana.get_default_config import get_default_config
+        from cutana_ui.main_screen.status_panel import StatusPanel
 
         config = get_default_config()
         config.num_sources = 25
@@ -269,9 +260,8 @@ class TestMainScreen:
 
     def test_main_screen_config_change_callbacks(self):
         """Test configuration change callbacks between components."""
-        from cutana_ui.main_screen.main_screen import MainScreen
-
         from cutana.get_default_config import get_default_config
+        from cutana_ui.main_screen.main_screen import MainScreen
 
         config = get_default_config()
         config.num_sources = 25
@@ -284,9 +274,8 @@ class TestMainScreen:
 
     def test_configuration_panel_config_update(self):
         """Test updating configuration from external source."""
-        from cutana_ui.main_screen.configuration_panel import ConfigurationPanel
-
         from cutana.get_default_config import get_default_config
+        from cutana_ui.main_screen.configuration_panel import ConfigurationPanel
 
         initial_config = get_default_config()
         initial_config.num_sources = 25
@@ -309,9 +298,8 @@ class TestMainScreen:
 
     def test_preview_panel_config_change_triggers_reload(self):
         """Test that changing catalogue or extensions triggers source reload."""
-        from cutana_ui.main_screen.preview_panel import PreviewPanel
-
         from cutana.get_default_config import get_default_config
+        from cutana_ui.main_screen.preview_panel import PreviewPanel
 
         initial_config = get_default_config()
         initial_config.source_catalogue = "catalogue1.csv"

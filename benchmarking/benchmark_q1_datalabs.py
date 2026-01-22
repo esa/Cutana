@@ -16,18 +16,19 @@ Usage:
         --output-dir /path/to/output
 """
 
-import sys
-import pandas as pd
 import argparse
+import socket
+import sys
+from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, List
+
+import pandas as pd
 from astropy.io import fits
 from loguru import logger
-from typing import Dict, Any, List
-import socket
-from datetime import datetime
 
-from cutana.logging_config import setup_logging
 from cutana.get_default_config import get_default_config
+from cutana.logging_config import setup_logging
 
 try:
     # Try relative import first (when used as module)

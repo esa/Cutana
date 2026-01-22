@@ -6,14 +6,15 @@
 #   the terms contained in the file 'LICENCE.txt'.
 """Synchronous tests for backend interface functionality."""
 
-import pytest
 import asyncio
-from pathlib import Path
 import csv
 import tempfile
+from pathlib import Path
 
+import pytest
+
+from cutana.preview_generator import clear_preview_cache
 from cutana_ui.utils.backend_interface import BackendInterface
-from cutana.preview_generator import clear_preview_cache, get_cache_status
 
 
 class TestBackendInterfaceMockData:
@@ -558,11 +559,11 @@ class TestBackendInterfaceReal:
                 )
             )
 
-            # Verify cache is available
-            cache_status = get_cache_status()
-            assert cache_status["cached"] is True
-            assert cache_status["num_sources"] > 0
-            assert cache_status["num_fits"] > 0
+            # Verify cache is available by checking PreviewCache directly
+            from cutana.preview_generator import PreviewCache
+
+            assert PreviewCache.config_cache is not None
+            assert PreviewCache.sources_cache is not None
 
             # Generate previews using cache (first call)
             cutouts1 = loop.run_until_complete(

@@ -7,6 +7,7 @@
 """Markdown loading and rendering utilities for Cutana UI."""
 
 import os
+
 from loguru import logger
 
 
@@ -75,6 +76,46 @@ def format_markdown_display(md_content):
     # Replace code blocks with placeholders
     content = code_block_pattern.sub(replace_code_blocks, md_content)
 
+    # Process images and badges before line-by-line processing
+    images_and_badges = []
+    image_placeholder_pattern = "IMAGEPLACEHOLDER{}IMAGE_"
+
+    # Process badges first (images wrapped in links)
+    badge_pattern = re.compile(r"\[!\[([^\]]*)\]\(([^)]+)\)\]\(([^)]+)\)")
+
+    def replace_badge(match):
+        alt_text = match.group(1) if match.group(1) else ""
+        img_src = match.group(2)
+        link_url = match.group(3)
+        idx = len(images_and_badges)
+        placeholder = image_placeholder_pattern.format(idx)
+        badge_html = f'<a href="{link_url}" style="display: inline-block; margin: 2px;"><img src="{img_src}" alt="{alt_text}" style="height: 20px; vertical-align: middle; margin: 0;"></a>'
+        images_and_badges.append(badge_html)
+        return placeholder
+
+    content = badge_pattern.sub(replace_badge, content)
+
+    # Process regular images (including GIFs)
+    image_pattern = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+
+    def replace_image(match):
+        alt_text = match.group(1) if match.group(1) else ""
+        img_src = match.group(2)
+        idx = len(images_and_badges)
+        placeholder = image_placeholder_pattern.format(idx)
+
+        # Check if it's a GIF for enhanced styling
+        if img_src.lower().endswith(".gif"):
+            image_html = f'<div style="text-align: center; margin: 20px 0;"><img src="{img_src}" alt="{alt_text}" style="max-width: 90%; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.3);"></div>'
+        else:
+            image_html = f'<img src="{img_src}" alt="{alt_text}" style="max-width: 100%; margin: 10px 0; border-radius: 5px;">'
+
+        images_and_badges.append(image_html)
+        logger.debug(f"Found image {idx}: {img_src} (is_gif: {img_src.lower().endswith('.gif')})")
+        return placeholder
+
+    content = image_pattern.sub(replace_image, content)
+
     # Define formatting patterns
     inline_code_pattern = re.compile(r"`([^`]+?)`")
     bold_pattern = re.compile(r"\*\*([^*]+?)\*\*")
@@ -84,71 +125,97 @@ def format_markdown_display(md_content):
     lines = content.split("\n")
     processed_lines = []
 
-    # Keep track of list context
-    in_ordered_list = False
-    in_unordered_list = False
-    list_indent_level = 0
-    current_list_number = 0
-
     for line in lines:
+        # Handle markdown comments (e.g., [//]: # (comment text))
+        comment_match = re.match(r"^\[//\]:\s*#\s*\((.*)\)$", line)
+        if comment_match:
+            comment_text = escape_html(comment_match.group(1))
+            processed_lines.append(
+                f'<div style="font-size: 9px; color: #666; line-height: 1.2;">{comment_text}</div>'
+            )
+            continue
         # Handle headers
         header_match = re.match(r"^(#{1,6})\s+(.+)$", line)
         if header_match:
             level = len(header_match.group(1))
             text = header_match.group(2)
-            # Process formatting in headers
-            text = bold_pattern.sub(r"<strong>\1</strong>", text)
+
+            # Process inline code first
             text = inline_code_pattern.sub(
                 r'<code style="background: #353b45; padding: 2px 5px; border-radius: 3px; font-family: monospace; color: #e5c07b;">\1</code>',
                 text,
             )
-            text = (
-                escape_html(text)
-                .replace("&lt;strong&gt;", "<strong>")
-                .replace("&lt;/strong&gt;", "</strong>")
-            )
-            text = text.replace("&lt;code ", "<code ").replace("&lt;/code&gt;", "</code>")
-            processed_lines.append(f"<h{level}>{text}</h{level}>")
-            # Reset list tracking
-            in_ordered_list = False
-            in_unordered_list = False
+
+            # Process bold formatting
+            text = bold_pattern.sub(r"<strong>\1</strong>", text)
+
+            # Only escape parts of the text that aren't already HTML tags
+            processed_text = ""
+            current_pos = 0
+
+            # Create a pattern to match all HTML tags we've inserted
+            tag_pattern = re.compile(r"<(code|strong)[^>]*>.*?</(code|strong)>", re.DOTALL)
+            for match in tag_pattern.finditer(text):
+                # Escape text before the tag
+                if current_pos < match.start():
+                    processed_text += escape_html(text[current_pos : match.start()])
+                # Add the tag unchanged
+                processed_text += text[match.start() : match.end()]
+                current_pos = match.end()
+
+            # Escape any remaining text after the last tag
+            if current_pos < len(text):
+                processed_text += escape_html(text[current_pos:])
+
+            # If no tags were found, escape the entire text
+            if processed_text == "":
+                processed_text = escape_html(text)
+
+            processed_lines.append(f"<h{level}>{processed_text}</h{level}>")
             continue
 
         # Handle horizontal rules
         if re.match(r"^(\*\*\*|\-\-\-|\_\_\_)$", line.strip()):
             processed_lines.append("<hr>")
-            # Reset list tracking
-            in_ordered_list = False
-            in_unordered_list = False
             continue
 
         # Handle blockquotes
         blockquote_match = re.match(r"^>\s+(.+)$", line)
         if blockquote_match:
             text = blockquote_match.group(1)
-            # Process formatting in blockquotes
-            text = bold_pattern.sub(r"<strong>\1</strong>", text)
+
+            # Process inline code first - important to handle this before escaping HTML
             text = inline_code_pattern.sub(
                 r'<code style="background: #353b45; padding: 2px 5px; border-radius: 3px; font-family: monospace; color: #e5c07b;">\1</code>',
                 text,
             )
-            text = (
-                escape_html(text)
-                .replace("&lt;strong&gt;", "<strong>")
-                .replace("&lt;/strong&gt;", "</strong>")
-            )
-            text = text.replace("&lt;code ", "<code ").replace("&lt;/code&gt;", "</code>")
-            processed_lines.append(f"<blockquote>{text}</blockquote>")
-            # Reset list tracking
-            in_ordered_list = False
-            in_unordered_list = False
-            continue
 
-        # Handle blockquotes
-        blockquote_match = re.match(r"^>\s+(.+)$", line)
-        if blockquote_match:
-            text = escape_html(blockquote_match.group(1))
-            processed_lines.append(f"<blockquote>{text}</blockquote>")
+            # Process bold formatting
+            text = bold_pattern.sub(r"<strong>\1</strong>", text)
+
+            # Only escape parts of the text that aren't already HTML tags
+            processed_text = ""
+            current_pos = 0
+
+            # Create a pattern to match all HTML tags we've inserted
+            tag_pattern = re.compile(r"<(code|strong)[^>]*>.*?</(code|strong)>", re.DOTALL)
+            for match in tag_pattern.finditer(text):
+                # Escape text before the tag
+                if current_pos < match.start():
+                    processed_text += escape_html(text[current_pos : match.start()])
+                # Add the tag unchanged
+                processed_text += text[match.start() : match.end()]
+                current_pos = match.end()
+
+            # Escape any remaining text after the last tag
+            if current_pos < len(text):
+                processed_text += escape_html(text[current_pos:])
+
+            # If no tags were found, escape the entire text
+            if processed_text == "":
+                processed_text = escape_html(text)
+
+            processed_lines.append(f"<blockquote>{processed_text}</blockquote>")
             continue
 
         # Handle unordered lists
@@ -245,16 +312,11 @@ def format_markdown_display(md_content):
             line,
         )
 
+        # Note: Images and badges are already replaced with placeholders earlier
+
         # Process links - improved regex to better handle the closing tag
         line = re.sub(
             r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2" style="color: #61afef;">\1</a>', line
-        )
-
-        # Process images
-        line = re.sub(
-            r"!\[([^\]]*)\]\(([^)]+)\)",
-            r'<img src="\2" alt="\1" style="max-width: 100%; margin: 10px 0;">',
-            line,
         )
 
         # Process strikethrough
@@ -262,13 +324,21 @@ def format_markdown_display(md_content):
 
         # If it's not a special line, just add it with formatting already processed
         if line.strip():
+            # Check if line is just a placeholder (image/code block)
+            if re.match(
+                r"^(IMAGEPLACEHOLDER\d+IMAGE_|CODEBLOCKPLACEHOLDER\d+CODEBLOCK_)$", line.strip()
+            ):
+                # Don't escape placeholders - they will be replaced later
+                processed_lines.append(line)
+                continue
+
             # Apply the same tag-preserving logic we used for lists
             processed_line = ""
             current_pos = 0
 
-            # Create a pattern to match all HTML tags we've inserted
+            # Create a pattern to match all HTML tags we've inserted AND placeholders
             tag_pattern = re.compile(
-                r"<(code|strong|em|a|img|del)[^>]*>.*?</(code|strong|em|a|del)>|<img[^>]*>",
+                r"<(code|strong|em|a|img|del)[^>]*>.*?</(code|strong|em|a|del)>|<img[^>]*>|(IMAGEPLACEHOLDER\d+IMAGE_)|(CODEBLOCKPLACEHOLDER\d+CODEBLOCK_)",
                 re.DOTALL,
             )
             for match in tag_pattern.finditer(line):
@@ -301,10 +371,52 @@ def format_markdown_display(md_content):
         else:
             logger.debug(f"Placeholder {i} not found in html_content!")
 
-    # Re-insert code blocks
+    # Re-insert code blocks with syntax highlighting
+    def apply_syntax_highlighting(code, lang):
+        """Apply basic syntax highlighting for Python code"""
+        if lang.lower() not in ["python", "py"]:
+            return escape_html(code)
+
+        # First escape ALL HTML
+        highlighted = escape_html(code)
+
+        # Now apply patterns to the escaped code
+        # Strings (match escaped quotes)
+        highlighted = re.sub(
+            r"(&quot;)((?:[^&]|&(?!quot;))*)(&quot;)",
+            r'<span style="color: #98c379;">\1\2\3</span>',
+            highlighted,
+        )
+        highlighted = re.sub(
+            r"(&#x27;)((?:[^&]|&(?!#x27;))*)((&#x27;))",
+            r'<span style="color: #98c379;">\1\2\3</span>',
+            highlighted,
+        )
+
+        # Comments (match # followed by content until newline)
+        highlighted = re.sub(r"(#[^\n]*)", r'<span style="color: #5c6370;">\1</span>', highlighted)
+
+        # Python keywords
+        keywords = r"\b(def|class|import|from|return|if|elif|else|for|while|try|except|finally|with|as|pass|break|continue|yield|lambda|raise|assert|del|global|nonlocal|and|or|not|in|is|None|True|False)\b"
+        highlighted = re.sub(keywords, r'<span style="color: #c678dd;">\1</span>', highlighted)
+
+        # Numbers
+        highlighted = re.sub(
+            r"\b(\d+\.?\d*)\b", r'<span style="color: #d19a66;">\1</span>', highlighted
+        )
+
+        # Function calls
+        highlighted = re.sub(
+            r"\b([a-zA-Z_][a-zA-Z0-9_]*)(?=\()",
+            r'<span style="color: #61afef;">\1</span>',
+            highlighted,
+        )
+
+        return highlighted
+
     for i, (lang, code) in enumerate(code_blocks):
         placeholder = placeholder_pattern.format(i)
-        escaped_code = escape_html(code)
+        highlighted_code = apply_syntax_highlighting(code, lang)
 
         # Create a better styled code block
         html_code_block = """
@@ -313,11 +425,30 @@ def format_markdown_display(md_content):
             <pre><code class="language-{}">{}</code></pre>
         </div>
         """.format(
-            lang, lang, escaped_code
+            lang, lang, highlighted_code
         )
 
         # Make sure all instances of the placeholder are replaced
         html_content = html_content.replace(placeholder, html_code_block)
+
+    # Re-insert images and badges
+    for i, image_html in enumerate(images_and_badges):
+        placeholder = image_placeholder_pattern.format(i)
+        if placeholder in html_content:
+            logger.debug(f"Replacing image placeholder {i} with HTML length {len(image_html)}")
+            html_content = html_content.replace(placeholder, image_html)
+        else:
+            logger.warning(
+                f"Image placeholder {i} not found in html_content! Looking for: {placeholder}"
+            )
+            # Try to find what happened to it
+            if f"&lt;{placeholder}&gt;" in html_content:
+                logger.warning(f"Placeholder was HTML-escaped! Fixing...")
+                html_content = html_content.replace(f"&lt;{placeholder}&gt;", image_html)
+            elif escape_html(placeholder) in html_content:
+                logger.warning(f"Placeholder was escaped! Fixing...")
+                html_content = html_content.replace(escape_html(placeholder), image_html)
+
     # do a final search for bad strongs which are #&lt;/strong&gt and replace them
     html_content = re.sub(r"&lt;/strong&gt;", "</strong>", html_content)
     # Style the HTML with CSS

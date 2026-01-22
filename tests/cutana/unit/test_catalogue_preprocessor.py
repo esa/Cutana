@@ -12,30 +12,30 @@ FITS file inspection, data validation, coordinate checking, and comprehensive
 catalogue metadata extraction.
 """
 
-import pytest
-import tempfile
 import os
-import pandas as pd
-from pathlib import Path
-from unittest.mock import patch, MagicMock
-
 import sys
+import tempfile
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pandas as pd
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cutana.catalogue_preprocessor import (  # noqa: E402
-    extract_filter_name,
-    analyze_fits_file,
-    parse_fits_file_paths,
+    CatalogueValidationError,
     analyse_source_catalogue,
+    analyze_fits_file,
+    check_fits_files_exist,
+    extract_filter_name,
+    extract_fits_sets,
+    load_and_validate_catalogue,
+    parse_fits_file_paths,
+    preprocess_catalogue,
     validate_catalogue_columns,
     validate_coordinate_ranges,
-    check_fits_files_exist,
-    preprocess_catalogue,
-    load_and_validate_catalogue,
     validate_resolution_ratios,
-    extract_fits_sets,
-    CatalogueValidationError,
 )
 
 
@@ -130,28 +130,46 @@ class TestFITSAnalysis:
 
 
 class TestFITSPathParsing:
-    """Test FITS file path parsing from CSV strings."""
+    """Test FITS file path parsing from CSV strings.
+
+    Note: parse_fits_file_paths now normalizes paths by default using os.path.normpath.
+    Tests must account for platform-specific path separators.
+    """
 
     def test_parse_fits_list_string(self):
         """Test parsing string representation of list."""
         paths_str = "['/path/to/file1.fits', '/path/to/file2.fits']"
         result = parse_fits_file_paths(paths_str)
 
-        assert result == ["/path/to/file1.fits", "/path/to/file2.fits"]
+        # Paths are normalized, so use os.path.normpath for expected values
+        expected = [
+            os.path.normpath("/path/to/file1.fits"),
+            os.path.normpath("/path/to/file2.fits"),
+        ]
+        assert result == expected
 
     def test_parse_fits_single_string(self):
         """Test parsing single file path."""
         paths_str = "/path/to/single_file.fits"
         result = parse_fits_file_paths(paths_str)
 
-        assert result == ["/path/to/single_file.fits"]
+        expected = [os.path.normpath("/path/to/single_file.fits")]
+        assert result == expected
 
     def test_parse_fits_actual_list(self):
         """Test parsing actual Python list."""
         paths_list = ["/path/to/file1.fits", "/path/to/file2.fits"]
         result = parse_fits_file_paths(paths_list)
 
-        assert result == paths_list
+        # Paths are normalized
+        expected = [os.path.normpath(p) for p in paths_list]
+        assert result == expected
+
+    def test_parse_fits_without_normalization(self):
+        """Test parsing without path normalization preserves original format."""
+        paths_str = "/path/to/file.fits"
+        result = parse_fits_file_paths(paths_str, normalize=False)
+        assert result == ["/path/to/file.fits"]
 
     def test_parse_fits_empty_string(self):
         """Test parsing empty string."""
@@ -159,16 +177,17 @@ class TestFITSPathParsing:
         assert result == []
 
     def test_parse_fits_malformed_string(self):
-        """Test parsing malformed string."""
-        result = parse_fits_file_paths("[malformed string")
-        assert result == []
+        """Test parsing malformed string raises ValueError."""
+        with pytest.raises(ValueError, match="unbalanced brackets"):
+            parse_fits_file_paths("[malformed string")
 
     def test_parse_fits_whitespace(self):
         """Test parsing string with whitespace."""
         paths_str = "  ['/path/to/file.fits']  "
         result = parse_fits_file_paths(paths_str)
 
-        assert result == ["/path/to/file.fits"]
+        expected = [os.path.normpath("/path/to/file.fits")]
+        assert result == expected
 
 
 class TestCatalogueAnalysis:
@@ -732,6 +751,22 @@ class TestLoadAndValidate:
         temp_file.close()
         return temp_file.name
 
+    def create_valid_parquet(self):
+        """Create a valid test Parquet file."""
+        temp_file = tempfile.NamedTemporaryFile(suffix=".parquet", delete=False)
+        df = pd.DataFrame(
+            {
+                "SourceID": ["S001", "S002"],
+                "RA": [150.0, 150.1],
+                "Dec": [2.0, 2.1],
+                "diameter_pixel": [128, 256],
+                "fits_file_paths": ["['/mock/file1.fits']", "['/mock/file2.fits']"],
+            }
+        )
+        df.to_parquet(temp_file.name)
+        temp_file.close()
+        return temp_file.name
+
     def create_invalid_csv(self, error_type="missing_columns"):
         """Create an invalid test CSV file."""
         temp_file = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False)
@@ -754,17 +789,23 @@ class TestLoadAndValidate:
     def test_load_and_validate_valid_catalogue(self):
         """Test loading and validating a valid catalogue."""
         csv_path = self.create_valid_csv()
-
+        parquet_path = self.create_valid_parquet()
         try:
             # Skip FITS file checking for this test
-            df = load_and_validate_catalogue(csv_path, skip_fits_check=True)
+            df_csv = load_and_validate_catalogue(csv_path, skip_fits_check=True)
+            df_parquet = load_and_validate_catalogue(parquet_path, skip_fits_check=True)
 
-            assert len(df) == 2
-            assert "SourceID" in df.columns
-            assert df.index.equals(pd.RangeIndex(len(df)))  # Index should be reset
+            assert len(df_csv) == 2
+            assert "SourceID" in df_csv.columns
+            assert df_csv.index.equals(pd.RangeIndex(len(df_csv)))  # Index should be reset
+
+            assert len(df_parquet) == 2
+            assert "SourceID" in df_parquet.columns
+            assert df_parquet.index.equals(pd.RangeIndex(len(df_parquet)))  # Index should be reset
 
         finally:
             os.unlink(csv_path)
+            os.unlink(parquet_path)
 
     def test_load_and_validate_missing_columns(self):
         """Test loading catalogue with missing columns."""
@@ -808,6 +849,70 @@ class TestLoadAndValidate:
 
         finally:
             os.unlink(csv_path)
+
+    def test_load_and_validate_ill_formatted_parquet(self):
+        """Test loading ill-formatted parquet file shows meaningful error."""
+        # Create a file with .parquet extension but invalid content (plain text)
+        temp_file = tempfile.NamedTemporaryFile(mode="w", suffix=".parquet", delete=False)
+        temp_file.write("This is not a valid parquet file\n")
+        temp_file.write("Just plain text content\n")
+        temp_file.close()
+        fake_parquet_path = temp_file.name
+
+        try:
+            with pytest.raises(Exception) as exc_info:
+                load_and_validate_catalogue(fake_parquet_path, skip_fits_check=True)
+
+            # Verify the error message is meaningful (not a generic error)
+            error_message = str(exc_info.value).lower()
+            # Should indicate parquet-related error (pyarrow/fastparquet will fail with specific errors)
+            assert any(
+                keyword in error_message
+                for keyword in ["parquet", "arrow", "magic", "corrupt", "invalid", "file"]
+            ), f"Expected meaningful parquet error, got: {exc_info.value}"
+
+        finally:
+            os.unlink(fake_parquet_path)
+
+    def test_load_and_validate_truncated_parquet(self):
+        """Test loading truncated/corrupted parquet file shows meaningful error."""
+        # First create a valid parquet file
+        valid_temp = tempfile.NamedTemporaryFile(suffix=".parquet", delete=False)
+        df = pd.DataFrame(
+            {
+                "SourceID": ["S001", "S002"],
+                "RA": [150.0, 150.1],
+                "Dec": [2.0, 2.1],
+                "diameter_pixel": [128, 256],
+                "fits_file_paths": ["['/mock/file1.fits']", "['/mock/file2.fits']"],
+            }
+        )
+        df.to_parquet(valid_temp.name)
+        valid_temp.close()
+
+        # Read and truncate the file to create a corrupted parquet
+        with open(valid_temp.name, "rb") as f:
+            valid_content = f.read()
+
+        truncated_temp = tempfile.NamedTemporaryFile(mode="wb", suffix=".parquet", delete=False)
+        # Write only first 100 bytes (truncated)
+        truncated_temp.write(valid_content[:100])
+        truncated_temp.close()
+
+        try:
+            with pytest.raises(Exception) as exc_info:
+                load_and_validate_catalogue(truncated_temp.name, skip_fits_check=True)
+
+            # Verify the error message is meaningful
+            error_message = str(exc_info.value).lower()
+            assert any(
+                keyword in error_message
+                for keyword in ["parquet", "arrow", "corrupt", "truncat", "eof", "file", "invalid"]
+            ), f"Expected meaningful parquet error, got: {exc_info.value}"
+
+        finally:
+            os.unlink(valid_temp.name)
+            os.unlink(truncated_temp.name)
 
 
 class TestExtractFitsSets:

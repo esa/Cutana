@@ -6,9 +6,10 @@
 #   the terms contained in the file 'LICENCE.txt'.
 """End-to-end test for padding_factor edge cases and boundary conditions."""
 
-import pytest
-import numpy as np
 from unittest.mock import MagicMock
+
+import numpy as np
+import pytest
 from astropy.wcs import WCS
 
 from cutana.cutout_extraction import extract_cutouts_vectorized_from_extension
@@ -51,7 +52,7 @@ class TestPaddingEdgeCases:
         padding_factor = 1.0
         expected_size = int(target_size * padding_factor)  # Should be 128
 
-        cutouts, success_mask = extract_cutouts_vectorized_from_extension(
+        cutouts, success_mask, _, _ = extract_cutouts_vectorized_from_extension(
             hdu=hdu,
             wcs_obj=wcs_obj,
             ra_array=np.array([180.0]),
@@ -88,7 +89,7 @@ class TestPaddingEdgeCases:
         padding_factor = 1.0
         expected_size = int(target_size * padding_factor)  # Should be 127
 
-        cutouts, success_mask = extract_cutouts_vectorized_from_extension(
+        cutouts, success_mask, _, _ = extract_cutouts_vectorized_from_extension(
             hdu=hdu,
             wcs_obj=wcs_obj,
             ra_array=np.array([180.0]),
@@ -124,7 +125,7 @@ class TestPaddingEdgeCases:
         padding_factor = 1.0
         expected_size = int(target_size * padding_factor)
 
-        cutouts, success_mask = extract_cutouts_vectorized_from_extension(
+        cutouts, success_mask, _, _ = extract_cutouts_vectorized_from_extension(
             hdu=hdu,
             wcs_obj=wcs_obj,
             ra_array=np.array([180.0]),
@@ -162,7 +163,7 @@ class TestPaddingEdgeCases:
         padding_factor = 1.0
         expected_size = int(target_size * padding_factor)
 
-        cutouts, success_mask = extract_cutouts_vectorized_from_extension(
+        cutouts, success_mask, _, _ = extract_cutouts_vectorized_from_extension(
             hdu=hdu,
             wcs_obj=wcs_obj,
             ra_array=np.array([180.0]),
@@ -203,7 +204,7 @@ class TestPaddingEdgeCases:
         padding_factor = 0.25  # Maximum zoom-in
         expected_size = int(target_size * padding_factor)  # Should be 32
 
-        cutouts, success_mask = extract_cutouts_vectorized_from_extension(
+        cutouts, success_mask, _, _ = extract_cutouts_vectorized_from_extension(
             hdu=hdu,
             wcs_obj=wcs_obj,
             ra_array=np.array([180.0]),
@@ -243,7 +244,7 @@ class TestPaddingEdgeCases:
         padding_factor = 10.0  # Maximum zoom-out
         expected_size = int(target_size * padding_factor)  # Should be 640
 
-        cutouts, success_mask = extract_cutouts_vectorized_from_extension(
+        cutouts, success_mask, _, _ = extract_cutouts_vectorized_from_extension(
             hdu=hdu,
             wcs_obj=wcs_obj,
             ra_array=np.array([180.0]),
@@ -285,7 +286,7 @@ class TestPaddingEdgeCases:
         padding_factor = 1.0
         expected_size = int(target_size * padding_factor)
 
-        cutouts, success_mask = extract_cutouts_vectorized_from_extension(
+        cutouts, success_mask, _, _ = extract_cutouts_vectorized_from_extension(
             hdu=hdu,
             wcs_obj=wcs_obj,
             ra_array=np.array([180.0]),
@@ -327,7 +328,7 @@ class TestPaddingEdgeCases:
         padding_factor = 1.0
         expected_sizes = (target_sizes * padding_factor).astype(int)
 
-        cutouts, success_mask = extract_cutouts_vectorized_from_extension(
+        cutouts, success_mask, _, _ = extract_cutouts_vectorized_from_extension(
             hdu=hdu,
             wcs_obj=wcs_obj,
             ra_array=np.array([180.0, 180.1]),
@@ -365,7 +366,7 @@ class TestPaddingEdgeCases:
         )
 
         target_size = 128
-        cutouts, success_mask = extract_cutouts_vectorized_from_extension(
+        cutouts, success_mask, _, _ = extract_cutouts_vectorized_from_extension(
             hdu=hdu,
             wcs_obj=wcs_obj,
             ra_array=np.array([180.0]),
@@ -402,7 +403,7 @@ class TestPaddingEdgeCases:
         expected_size_zoom_in = int(target_size * padding_factor_zoom_in)  # 32
 
         # Zoom-in on corner (should capture more detail of corner feature)
-        cutouts_zoom_in, success_mask_zoom_in = extract_cutouts_vectorized_from_extension(
+        cutouts_zoom_in, success_mask_zoom_in, _, _ = extract_cutouts_vectorized_from_extension(
             hdu=hdu,
             wcs_obj=wcs_obj,
             ra_array=np.array([180.0]),
@@ -421,7 +422,7 @@ class TestPaddingEdgeCases:
         expected_size_zoom_out = int(target_size * padding_factor_zoom_out)  # 128
 
         # Zoom-out on corner (should need padding)
-        cutouts_zoom_out, success_mask_zoom_out = extract_cutouts_vectorized_from_extension(
+        cutouts_zoom_out, success_mask_zoom_out, _, _ = extract_cutouts_vectorized_from_extension(
             hdu=hdu,
             wcs_obj=wcs_obj,
             ra_array=np.array([180.0]),
@@ -469,7 +470,7 @@ class TestPaddingEdgeCases:
 
         # Test very small sizes, skip 1 as it's an edge case that may not be supported
         for target_size in [2, 4, 8, 16]:
-            cutouts, success_mask = extract_cutouts_vectorized_from_extension(
+            cutouts, success_mask, _, _ = extract_cutouts_vectorized_from_extension(
                 hdu=hdu,
                 wcs_obj=wcs_obj,
                 ra_array=np.array([180.0]),

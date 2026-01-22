@@ -10,10 +10,12 @@ This module provides comprehensive validation for Cutana configuration parameter
 ensuring all required parameters are present and have valid values.
 """
 
+import inspect
+import os
+
 from dotmap import DotMap
 from loguru import logger
-import os
-import inspect
+
 from .normalisation_parameters import NormalisationRanges
 
 
@@ -51,11 +53,21 @@ def _return_required_and_optional_keys():
         "output_dir": ["directory_or_create", None, None, False, None],  # Can be created
         "output_format": [str, None, None, False, ["zarr", "fits"]],
         "data_type": [str, None, None, False, ["float32", "uint8"]],
+        "write_to_disk": [
+            bool,
+            None,
+            None,
+            False,
+            None,
+        ],  # Write outputs to disk vs in-memory streaming
         # === Processing Configuration ===
         "max_workers": [int, 1, 1024, False, None],  # 1-1024 workers
         "N_batch_cutout_process": [int, 10, 10000, False, None],  # 10-10k batch size
         "max_workflow_time_seconds": [int, 600, 5e6, False, None],  # 10min - 60 days
+        "process_threads": [int, 1, 128, True, None],  # Optional: 1-128 threads per process
         # === Cutout Processing Parameters ===
+        # Only extract cutouts without further processing
+        "do_only_cutout_extraction": [bool, None, None, False, None],
         "target_resolution": [int, 16, 2048, False, None],  # 16-2048 pixels
         "padding_factor": [float, 0.25, 10.0, False, None],  # 0.25-10.0 padding factor (mandatory)
         "normalisation_method": [
@@ -72,6 +84,7 @@ def _return_required_and_optional_keys():
             False,
             ["bilinear", "nearest", "bicubic", "biquadratic"],
         ],
+        "flux_conserved_resizing": [bool, None, None, False, None],
         # === FITS File Handling ===
         "fits_extensions": ["special_fits_extensions", None, None, False, None],
         "selected_extensions": [
@@ -145,6 +158,9 @@ def _return_required_and_optional_keys():
             None,
         ],
         "normalisation.crop_enable": [bool, None, None, True, None],
+        # === External Fitsbolt Configuration ===
+        # Optional external fitsbolt config from AnomalyMatch or other ML pipelines
+        "external_fitsbolt_cfg": ["special_external_fitsbolt_cfg", None, None, True, None],
         # === Advanced Processing Settings ===
         "channel_weights": ["special_channel_weights_dict", None, None, True, None],
         # === File Management ===
@@ -227,6 +243,13 @@ def _return_required_and_optional_keys():
             True,
             None,
         ],
+        "loadbalancer.skip_memory_calibration_wait": [
+            bool,
+            None,
+            None,
+            True,
+            None,
+        ],  # Optional, skip memory calibration wait
         # === UI Configuration ===
         "ui": [DotMap, None, None, True, None],  # Nested config
         "ui.preview_samples": [int, 1, 50, False, None],  # 1-50 preview samples
@@ -438,11 +461,54 @@ def validate_config(cfg: DotMap, check_paths: bool = True) -> None:
                     if not all(isinstance(w, (int, float)) for w in weights):
                         raise ValueError(f"{param_name} weights must contain only numbers")
 
+        elif dtype == "special_external_fitsbolt_cfg":
+            # External fitsbolt config can be None or a valid fitsbolt config DotMap
+            # Skip validation for None
+            if value is None:
+                continue
+            if not isinstance(value, DotMap):
+                raise ValueError(
+                    f"{param_name} must be a DotMap or None, got {type(value).__name__}"
+                )
+            # Check if it's an auto-created DotMap (lacks required fitsbolt keys)
+            # A valid fitsbolt config must have 'normalisation_method' key
+            if "normalisation_method" not in value:
+                # This is likely an auto-created DotMap from accessing missing keys
+                # Treat it as if external_fitsbolt_cfg was not set
+                logger.warning(
+                    f"{param_name} appears to be an auto-created DotMap "
+                    "(missing 'normalisation_method'), treating as None"
+                )
+                continue
+            # Validate only the fields we actually use for normalization
+            # We don't use fitsbolt.validate_config() because the external config
+            # may have None for optional fields (e.g. channel_combination) that
+            # fitsbolt's full validation would reject
+            from fitsbolt import NormalisationMethod
+
+            norm_method = value.normalisation_method
+            if not isinstance(norm_method, NormalisationMethod):
+                raise ValueError(
+                    f"{param_name}.normalisation_method must be a NormalisationMethod enum, "
+                    f"got {type(norm_method).__name__}"
+                )
+            # Validate method-specific parameters exist
+            if norm_method == NormalisationMethod.ASINH:
+                if "normalisation" not in value or value.normalisation is None:
+                    raise ValueError(
+                        f"{param_name} with ASINH method requires 'normalisation' settings"
+                    )
+            logger.debug(f"{param_name} validated successfully")
+
         else:
             raise ValueError(f"Unknown data type for {param_name}: {dtype}")
 
     # Custom cross-parameter validation
     _validate_flux_conversion_config(cfg)
+
+    # special correlation checks
+    if cfg.do_only_cutout_extraction and cfg.output_format not in ["fits"]:
+        raise ValueError("When do_only_cutout_extraction is True, output_format must be 'fits'")
 
     # Check for unexpected keys (warn only)
     actual_keys = _get_all_keys(cfg)

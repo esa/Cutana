@@ -9,16 +9,16 @@
 import ipywidgets as widgets
 from loguru import logger
 
-from ..widgets.progress_bar import CutanaProgressBar
 from ..styles import (
-    ESA_BLUE_ACCENT,
-    ESA_BLUE_GREY,
-    TEXT_COLOR_LIGHT,
     BACKGROUND_DARK,
     BORDER_COLOR,
+    ESA_BLUE_ACCENT,
+    ESA_BLUE_GREY,
     SUCCESS_COLOR,
+    TEXT_COLOR_LIGHT,
     scale_px,
 )
+from ..widgets.progress_bar import CutanaProgressBar
 
 
 class StatusPanel(widgets.VBox):
@@ -276,29 +276,6 @@ class StatusPanel(widgets.VBox):
         # Clear processing indicator
         self.processing_indicator.value = ""
 
-    def _handle_status_message(self, message: str, style: str):
-        """Handle status message."""
-        logger.debug(f"StatusPanel: Status message ({style}): {message}")
-
-        # Style mapping
-        style_colors = {
-            "processing": TEXT_COLOR_LIGHT,
-            "waiting": TEXT_COLOR_LIGHT,
-            "warning": "orange",
-            "error": "red",
-            "info": "gray",
-        }
-
-        color = style_colors.get(style, TEXT_COLOR_LIGHT)
-
-        if style == "processing" or style == "waiting":
-            self.processing_indicator.value = self._create_spinner_html(message, color)
-        else:
-            # Static message for warnings/errors/info
-            icon_map = {"warning": "🛑", "error": "⚠", "info": "ℹ"}
-            icon = icon_map.get(style, "")
-            self.processing_indicator.value = f'<div style="color: {color}; margin: 3px 0; font-size: 11px; font-weight: 600;">{icon} {message}</div>'
-
     def _format_eta_hhmmss(self, eta_seconds):
         """Format ETA in HH:MM:SS format."""
         if eta_seconds is None or eta_seconds <= 0:
@@ -348,11 +325,15 @@ class StatusPanel(widgets.VBox):
             if memory_total_gb > 0
             else "-- RAM"
         )
-        workers_text = (
-            f"{active_processes}/{max_workers} workers"
-            if max_workers > 0
-            else f"{active_processes} workers" if active_processes > 0 else "-- workers"
-        )
+        # Show "X/Y workers" only when workers are active, otherwise just "Y workers"
+        if active_processes > 0 and max_workers > 0:
+            workers_text = f"{active_processes}/{max_workers} workers"
+        elif max_workers > 0:
+            workers_text = f"{max_workers} workers"
+        elif active_processes > 0:
+            workers_text = f"{active_processes} workers"
+        else:
+            workers_text = "-- workers"
 
         # Worker memory allocation info (show allocation, usage, and remaining)
         worker_memory_text = ""
