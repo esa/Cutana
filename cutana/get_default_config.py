@@ -81,7 +81,7 @@ def get_default_config():
     cfg.target_resolution = 256  # Target cutout size in pixels (square cutouts)
     cfg.padding_factor = 1.0  # Padding factor for cutout extraction (0.5-10.0, 1.0 = no padding)
     cfg.normalisation_method = (
-        "linear"  # Normalisation method: "linear", "log", "asinh", "zscale", "none"
+        "linear"  # Normalisation method: "linear", "log", "asinh", "zscale", "midtones", "none"
     )
     cfg.interpolation = "bilinear"  # Interpolation method: "bilinear", "nearest", "cubic"
     cfg.flux_conserved_resizing = (

@@ -173,7 +173,7 @@ Cutana supports multiple stretch algorithms with unified parameter configuration
 config = get_default_config()
 
 # Set normalisation method
-config.normalisation_method = "asinh"  # "linear", "log", "asinh", "zscale"
+config.normalisation_method = "asinh"  # "linear", "log", "asinh", "zscale", "midtones"
 
 # Configure normalisation parameters (method-specific defaults applied automatically)
 config.normalisation.percentile = 99.8  # Data clipping percentile
@@ -267,6 +267,7 @@ All normalisation parameters are now stored in the `config.normalisation` DotMap
 - **`config.normalisation.a`**: Unified transition parameter with method-specific defaults:
   - ASINH: 0.7 (controls linear-to-logarithmic transition, range: 0.001-3.0)
   - Log: 1000.0 (scale factor for transition point, range: 0.01-10000.0)
+  - Midtones: 0.2 (desired mean brightness after normalisation, range: 0.01-0.99)
 - **`config.normalisation.n_samples`**: Number of samples for ZScale algorithm (default: 1000, range: 100-10000)
 - **`config.normalisation.contrast`**: Contrast adjustment for ZScale (default: 0.25, range: 0.01-1.0)
 
@@ -310,6 +311,18 @@ config.normalisation_method = 'zscale'
 config.normalisation.percentile = 99.8             # Percentile clipping (default)
 config.normalisation.n_samples = 1000              # Number of samples (default)
 config.normalisation.contrast = 0.25               # Contrast parameter (default)
+```
+
+### Midtones Stretch
+The Midtones Transfer Function (MTF) adjusts image brightness by mapping the mean pixel value to a target "desired mean". This is similar to the "curves" tool in image editing software and results in quite uniform outputs.
+
+```python
+from cutana import get_default_config
+
+config = get_default_config()
+config.normalisation_method = 'midtones'
+config.normalisation.percentile = 99.8             # Percentile clipping (default)
+config.normalisation.a = 0.2                       # Desired mean brightness (default for midtones)
 ```
 
 ## Performance Considerations
