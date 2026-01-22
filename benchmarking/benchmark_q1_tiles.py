@@ -22,33 +22,34 @@ The script will automatically discover:
 - FITS files: EUC_MER_BGSUB-MOSAIC-{extension}_TILE{tile_id}-*.fits
 """
 
-import sys
 import argparse
-import pandas as pd
-from pathlib import Path
-from loguru import logger
-from typing import Dict, Any
+import sys
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict
 
-from cutana.logging_config import setup_logging
+import pandas as pd
+from loguru import logger
+
 from cutana.get_default_config import get_default_config
+from cutana.logging_config import setup_logging
 
 try:
     # Try relative import first (when used as module)
     from .benchmark_utils import (
+        create_fits_path_cache,
+        read_optimized_catalog,
         run_benchmark_with_monitoring,
         save_benchmark_results,
-        read_optimized_catalog,
-        create_fits_path_cache,
     )
 except ImportError:
     # Fall back to absolute import (when run directly)
     sys.path.append(str(Path(__file__).parent))
     from benchmark_utils import (
+        create_fits_path_cache,
+        read_optimized_catalog,
         run_benchmark_with_monitoring,
         save_benchmark_results,
-        read_optimized_catalog,
-        create_fits_path_cache,
     )
 
 # CONFIGURATION PARAMETERS

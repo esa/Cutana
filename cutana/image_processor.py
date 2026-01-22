@@ -15,72 +15,70 @@ This module provides static functions for:
 """
 
 from typing import Dict, List, Tuple
-import numpy as np
-from skimage import transform, util
-from loguru import logger
+
+import drizzle
 import fitsbolt
+import numpy as np
+from astropy.wcs import WCS
 from dotmap import DotMap
-from .normalisation_parameters import convert_cfg_to_fitsbolt_cfg
+from loguru import logger
+from skimage import transform, util
+
+from .normalisation_parameters import (
+    build_fitsbolt_params_from_external_cfg,
+    convert_cfg_to_fitsbolt_cfg,
+)
 
 
-def resize_images(
-    images, target_size: Tuple[int, int], interpolation: str = "bilinear"
-) -> np.ndarray:
+class PixmapCache:
+    """Context-local cache for drizzle pixmap computation.
+
+    Avoids recomputing pixmaps when WCS parameters are identical across
+    consecutive resize operations, which is common in batch processing.
     """
-    Resize images to target size using skimage transform.
-    Handles both single images and batches of images.
 
-    Args:
-        images: Input image array (H, W) or list of images or batch (N, H, W)
-        target_size: Tuple of (height, width) for target size
-        interpolation: Interpolation method (nearest, bilinear, bicubic)
+    def __init__(self):
+        self.last_source_shape = None
+        self.last_source_pxscale = None
+        self.last_target_resolution = None
+        self.last_target_pxscale = None
+        self.cached_pixmap = None
 
-    Returns:
-        Batch array of shape (N, H, W) with resized images
-    """
-    # Convert to list if single image or batch
-    if isinstance(images, np.ndarray):
-        if len(images.shape) == 2:  # Single image (H, W)
-            images = [images]
-        elif len(images.shape) == 3:  # Batch (N, H, W)
-            images = [images[i] for i in range(images.shape[0])]
+    def get(self, source_shape, source_pxscale, target_resolution, target_pxscale):
+        """Get cached pixmap if parameters match, otherwise return None."""
+        if (
+            self.last_source_shape == source_shape
+            and self.last_source_pxscale == source_pxscale
+            and self.last_target_resolution == target_resolution
+            and self.last_target_pxscale == target_pxscale
+            and self.cached_pixmap is not None
+        ):
+            return self.cached_pixmap
+        return None
 
-    # Map interpolation methods
-    if interpolation == "nearest":
-        order = 0
-    elif interpolation == "bilinear":
-        order = 1
-    elif interpolation == "biquadratic":
-        order = 2
-    elif interpolation == "bicubic":
-        order = 3
-    else:
-        order = 1  # default to bilinear
+    def set(self, source_shape, source_pxscale, target_resolution, target_pxscale, pixmap):
+        """Store pixmap and its associated parameters in cache."""
+        self.last_source_shape = source_shape
+        self.last_source_pxscale = source_pxscale
+        self.last_target_resolution = target_resolution
+        self.last_target_pxscale = target_pxscale
+        self.cached_pixmap = pixmap
 
-    resized_batch = []
-    for image in images:
-        if image.shape[:2] == target_size:
-            resized_batch.append(image.copy())
-            continue
-
-        try:
-            # Resize using skimage
-            resized = transform.resize(
-                image, target_size, order=order, preserve_range=True, anti_aliasing=True
-            ).astype(image.dtype)
-            resized_batch.append(resized)
-        except Exception as e:
-            logger.error(f"Image resizing failed: {e}")
-            # Fallback: return zeros of target size
-            resized_batch.append(np.zeros(target_size, dtype=image.dtype))
-
-    return np.stack(resized_batch, axis=0)
+    def clear(self):
+        """Clear all cached data."""
+        self.last_source_shape = None
+        self.last_source_pxscale = None
+        self.last_target_resolution = None
+        self.last_target_pxscale = None
+        self.cached_pixmap = None
 
 
 def resize_batch_tensor(
     source_cutouts: Dict[str, Dict[str, np.ndarray]],
     target_resolution: Tuple[int, int],
-    interpolation: str = "bilinear",
+    interpolation: str,
+    flux_conserved_resizing: bool,
+    pixel_scales_dict: Dict[str, float],
 ) -> np.ndarray:
     """
     Resize all source cutouts and return as (N_sources, H, W, N_extensions) tensor.
@@ -89,6 +87,8 @@ def resize_batch_tensor(
         source_cutouts: Dict mapping source_id -> {channel_key: cutout}
         target_resolution: Target (height, width)
         interpolation: Interpolation method
+        flux_conserved_resizing: Whether to use flux-conserved resizing (activates drizzle)
+        pixel_scales_dict: Dict mapping channel_key to pixel scale in arcsec/pixel
 
     Returns:
         Tensor of shape (N_sources, H, W, N_extensions)
@@ -109,6 +109,21 @@ def resize_batch_tensor(
     # Pre-allocate tensor
     batch_tensor = np.zeros((N_sources, H, W, N_extensions), dtype=np.float32)
 
+    # Map interpolation methods
+    if interpolation == "nearest":
+        order = 0
+    elif interpolation == "bilinear":
+        order = 1
+    elif interpolation == "biquadratic":
+        order = 2
+    elif interpolation == "bicubic":
+        order = 3
+    else:
+        order = 1  # default to bilinear
+
+    # Create pixmap cache for this batch if using flux-conserved resizing
+    pixmap_cache = PixmapCache() if flux_conserved_resizing else None
+
     # Fill tensor
     for i, source_id in enumerate(source_ids):
         source_cutouts_dict = source_cutouts[source_id]
@@ -118,12 +133,100 @@ def resize_batch_tensor(
                 if cutout is not None and cutout.size > 0:
                     # Resize if needed
                     if cutout.shape != target_resolution:
-                        resized = resize_images(cutout, target_resolution, interpolation)[0]
+                        try:
+                            if flux_conserved_resizing:
+                                resized = resize_flux_conserved(
+                                    cutout,
+                                    target_resolution,
+                                    pixel_scales_dict[ext_name],
+                                    pixmap_cache,
+                                )
+                            else:
+                                resized = transform.resize(
+                                    cutout,
+                                    target_resolution,
+                                    order=order,
+                                    mode="symmetric",
+                                    preserve_range=True,
+                                    anti_aliasing=True,
+                                ).astype(cutout.dtype)
+
+                        except Exception as e:
+                            logger.error(f"Image resizing failed: {e}")
+                            # Fallback: return zeros of target size
+                            resized = np.zeros(target_resolution, dtype=cutout.dtype)
                     else:
                         resized = cutout.copy()
                     batch_tensor[i, :, :, j] = resized
 
+    # Cleanup: clear cache after batch processing is complete
+    if pixmap_cache is not None:
+        pixmap_cache.clear()
+    del pixmap_cache
     return batch_tensor
+
+
+def resize_flux_conserved(
+    cutout, target_resolution, pixel_scale_arcsecppix, pixmap_cache: PixmapCache = None
+) -> np.ndarray:
+    """Resize image cutout to target resolution using flux-conserved drizzle algorithm.
+
+    Uses optional caching to avoid recomputing pixmap when WCS parameters are identical
+    to the previous call, which is common in batch processing.
+
+    Args:
+        cutout (np.ndarray): Input image cutout
+        target_resolution (Tuple[int, int]): Target (height, width) resolution
+        pixel_scale_arcsecppix (float): Pixel scale in arcseconds per pixel
+        pixmap_cache (PixmapCache, optional): Cache instance for pixmap reuse
+
+    Returns:
+        np.ndarray: Resized image cutout
+    """
+    source_wcs_shape = cutout.shape
+    source_wcs_pxscale = pixel_scale_arcsecppix / 3600  # convert to degrees/pixel
+
+    # Calculate target pixel scale
+    target_pxscale = source_wcs_pxscale * (source_wcs_shape[0] / target_resolution[0])
+
+    # Try to get cached pixmap if cache is provided
+    pixmap = None
+    if pixmap_cache is not None:
+        pixmap = pixmap_cache.get(
+            source_wcs_shape, source_wcs_pxscale, target_resolution, target_pxscale
+        )
+
+    if pixmap is None:
+        # Compute new pixmap
+        source_wcs = WCS(naxis=2)
+        source_wcs.array_shape = source_wcs_shape
+        source_wcs.wcs.crpix = [source_wcs_shape[1] / 2, source_wcs_shape[0] / 2]
+        source_wcs.wcs.cdelt = [source_wcs_pxscale, source_wcs_pxscale]
+        source_wcs.wcs.crval = [0, 0]
+
+        target_output_wcs = WCS(naxis=2)
+        target_output_wcs.wcs.crpix = [target_resolution[1] / 2, target_resolution[0] / 2]
+        target_output_wcs.wcs.cdelt = [target_pxscale, target_pxscale]
+
+        pixmap = drizzle.utils.calc_pixmap(source_wcs, target_output_wcs)
+
+        # Store in cache if provided
+        if pixmap_cache is not None:
+            pixmap_cache.set(
+                source_wcs_shape, source_wcs_pxscale, target_resolution, target_pxscale, pixmap
+            )
+
+    # Apply drizzle with pixmap
+    driz = drizzle.resample.Drizzle(
+        out_shape=(
+            target_resolution[0],
+            target_resolution[1],
+        )
+    )
+    driz.add_image(cutout, exptime=1, pixmap=pixmap, pixfrac=1.0, weight_map=None)
+    resized_image = driz.out_img * driz.out_wht
+    del driz
+    return resized_image
 
 
 def convert_data_type(images: np.ndarray, target_dtype: str) -> np.ndarray:
@@ -169,7 +272,9 @@ def apply_normalisation(images: np.ndarray, config: DotMap) -> np.ndarray:
 
     Args:
         images: Batch of images in format (N, H, W) or (N, H, W, C)
-        config: Configuration DotMap containing all normalization parameters
+        config: Configuration DotMap containing all normalization parameters.
+                If config.external_fitsbolt_cfg is set, uses that directly for
+                normalization (for ML pipeline integration with AnomalyMatch).
 
     Returns:
         Batch of normalized/stretched image arrays
@@ -182,9 +287,27 @@ def apply_normalisation(images: np.ndarray, config: DotMap) -> np.ndarray:
         # Already in N,H,W,C format
         images_array = images
 
-    # Get fitsbolt parameters from config (with debugging logs included)
     num_channels = images_array.shape[-1]
-    fitsbolt_params = convert_cfg_to_fitsbolt_cfg(config, num_channels)
+
+    # Check for external fitsbolt config (from AnomalyMatch or other ML pipelines)
+    # A valid external config must have 'normalisation_method' key
+    external_cfg = config.external_fitsbolt_cfg
+    if external_cfg is not None and "normalisation_method" in external_cfg:
+        # Sync cutana config's crop settings from external fitsbolt config
+        crop_value = getattr(external_cfg.normalisation, "crop_for_maximum_value", None)
+        if crop_value is not None:
+            config.normalisation.crop_enable = True
+            config.normalisation.crop_height = crop_value[0]
+            config.normalisation.crop_width = crop_value[1]
+            logger.debug(f"Synced crop settings from external config: {crop_value}")
+        else:
+            config.normalisation.crop_enable = False
+
+        fitsbolt_params = build_fitsbolt_params_from_external_cfg(external_cfg, num_channels)
+        logger.debug("Using external fitsbolt config for normalization")
+    else:
+        # Use cutana's own config converted to fitsbolt parameters
+        fitsbolt_params = convert_cfg_to_fitsbolt_cfg(config, num_channels)
 
     # Add images array to parameters (done here to avoid unnecessary copying)
     fitsbolt_params["images"] = images_array

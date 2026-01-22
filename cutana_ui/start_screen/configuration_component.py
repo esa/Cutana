@@ -7,16 +7,17 @@
 """Configuration component with extension matrix and processing parameters."""
 
 import ipywidgets as widgets
-from ..widgets.configuration_widget import SharedConfigurationWidget
+
+from cutana.get_default_config import get_default_config
+
 from ..styles import (
-    ESA_BLUE_ACCENT,
     BACKGROUND_DARK,
     BORDER_COLOR,
+    ESA_BLUE_ACCENT,
     TEXT_COLOR_MUTED,
     scale_px,
 )
-
-from cutana.get_default_config import get_default_config
+from ..widgets.configuration_widget import SharedConfigurationWidget
 
 
 class ConfigurationComponent(widgets.VBox):

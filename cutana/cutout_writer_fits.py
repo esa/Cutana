@@ -17,10 +17,28 @@ This module provides static functions for:
 
 import time
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
 from astropy.io import fits
 from astropy.wcs import WCS
+from dotmap import DotMap
 from loguru import logger
+
+# Cache for WCS header conversions - key is id(wcs_object)
+_wcs_header_cache: Dict[int, Tuple[fits.Header, Any]] = {}
+
+
+def _get_cached_wcs_info(wcs: WCS) -> Tuple[fits.Header, Any]:
+    """Get cached WCS header and pixel scale matrix, computing if not cached."""
+    wcs_id = id(wcs)
+    if wcs_id not in _wcs_header_cache:
+        header = wcs.to_header()
+        try:
+            pixel_scale_matrix = wcs.pixel_scale_matrix
+        except Exception:
+            pixel_scale_matrix = None
+        _wcs_header_cache[wcs_id] = (header, pixel_scale_matrix)
+    return _wcs_header_cache[wcs_id]
 
 
 def ensure_output_directory(path: Path) -> None:
@@ -92,6 +110,9 @@ def create_wcs_header(
     ra_center: Optional[float] = None,
     dec_center: Optional[float] = None,
     pixel_scale: Optional[float] = None,
+    resize_factor: Optional[float] = None,
+    rescaled_offset_x: Optional[float] = None,
+    rescaled_offset_y: Optional[float] = None,
 ) -> fits.Header:
     """
     Create WCS header for cutout.
@@ -102,22 +123,42 @@ def create_wcs_header(
         ra_center: RA of cutout center in degrees
         dec_center: Dec of cutout center in degrees
         pixel_scale: Pixel scale in arcsec/pixel
+        resize_factor: Factor by which the cutout was resized (new_size/original_size)
+            Used ONLY for adjusting pixel scale in WCS, NOT for offset scaling.
+        rescaled_offset_x: Sub-pixel X offset in FINAL image coordinates (positive = target toward right).
+            This offset is ALREADY scaled by resize_factor and should be used as-is.
+        rescaled_offset_y: Sub-pixel Y offset in FINAL image coordinates (positive = target toward top).
+            This offset is ALREADY scaled by resize_factor and should be used as-is.
 
     Returns:
         FITS header with WCS information
     """
+    # Default offsets to 0 if not provided
+    if rescaled_offset_x is None:
+        rescaled_offset_x = 0.0
+    if rescaled_offset_y is None:
+        rescaled_offset_y = 0.0
+
     try:
-        header = fits.Header()
-
         if original_wcs is not None:
-            # Use original WCS as base and update for cutout
-            wcs_header = original_wcs.to_header()
-            header.update(wcs_header)
+            # Use cached WCS header conversion (expensive operation)
+            cached_header, cached_pixel_scale_matrix = _get_cached_wcs_info(original_wcs)
+            header = cached_header.copy()
 
-            # Update reference pixel to center of cutout
+            # Update reference pixel to center of cutout, adjusted by rescaled offset
+            # CRPIX follows FITS convention: 1-based indexing where pixel (1,1) is bottom-left
+            # For an N-pixel image, the geometric center is at (N/2 + 0.5) in FITS 1-based coords
+            # The rescaled_offset is in 0-based pixel coordinates, so we add it after converting center to 1-based
             height, width = cutout_shape
-            header["CRPIX1"] = width / 2.0
-            header["CRPIX2"] = height / 2.0
+            fits_center_x = width / 2.0 + 0.5  # Convert 0-based center to FITS 1-based
+            fits_center_y = height / 2.0 + 0.5
+            header["CRPIX1"] = fits_center_x + rescaled_offset_x
+            header["CRPIX2"] = fits_center_y + rescaled_offset_y
+            logger.debug(
+                f"WCS CRPIX: FITS_center=({fits_center_x:.2f}, {fits_center_y:.2f}) + "
+                f"offset=({rescaled_offset_x:.4f}, {rescaled_offset_y:.4f}) = "
+                f"({header['CRPIX1']:.4f}, {header['CRPIX2']:.4f})"
+            )
 
             # Update reference coordinates if provided
             if ra_center is not None and dec_center is not None:
@@ -126,22 +167,93 @@ def create_wcs_header(
 
         elif ra_center is not None and dec_center is not None:
             # Create minimal WCS header
+            header = fits.Header()
             height, width = cutout_shape
 
             header["WCSAXES"] = 2
             header["CTYPE1"] = "RA---TAN"
             header["CTYPE2"] = "DEC--TAN"
-            header["CRPIX1"] = width / 2.0
-            header["CRPIX2"] = height / 2.0
+            # FITS uses 1-based indexing: center of N-pixel image is at (N/2 + 0.5)
+            fits_center_x = width / 2.0 + 0.5
+            fits_center_y = height / 2.0 + 0.5
+            header["CRPIX1"] = fits_center_x + rescaled_offset_x
+            header["CRPIX2"] = fits_center_y + rescaled_offset_y
             header["CRVAL1"] = ra_center
             header["CRVAL2"] = dec_center
+            logger.debug(
+                f"Minimal WCS CRPIX: FITS_center=({fits_center_x:.2f}, {fits_center_y:.2f}) + "
+                f"offset=({rescaled_offset_x:.4f}, {rescaled_offset_y:.4f}) = "
+                f"({header['CRPIX1']:.4f}, {header['CRPIX2']:.4f})"
+            )
 
-            # Use provided pixel scale or default
-            scale = pixel_scale / 3600.0 if pixel_scale else -0.000167  # Default ~0.6 arcsec/pixel
+            # Use provided pixel scale or a clearly invalid placeholder
+            if pixel_scale is not None:
+                scale = pixel_scale / 3600.0  # Convert arcsec to degrees
+            else:
+                # Use NaN to clearly indicate missing/invalid pixel scale in output headers
+                scale = float("nan")
+                logger.warning("No pixel scale provided for minimal WCS, using NaN as placeholder")
+
+            # Apply resize factor to pixel scale if provided
+            if resize_factor is not None and resize_factor != 1.0:
+                scale = scale / resize_factor
+                logger.debug(f"Applied resize factor {resize_factor} to fallback WCS pixel scale")
+
             header["CDELT1"] = -scale  # RA decreases with increasing X
             header["CDELT2"] = scale  # Dec increases with increasing Y
             header["CUNIT1"] = "deg"
             header["CUNIT2"] = "deg"
+
+            # Return early since we've already handled the resize factor for minimal WCS
+            return header
+
+        else:
+            # No WCS info available
+            return fits.Header()
+
+        # Apply resize factor to pixel scale when we have original_wcs
+        if original_wcs is not None and resize_factor is not None and resize_factor != 1.0:
+            # Scale pixel scale by the resize factor
+            # If image was made smaller (resize_factor < 1), pixels represent larger sky area
+            # If image was made larger (resize_factor > 1), pixels represent smaller sky area
+
+            # Use cached pixel scale matrix (computed once per WCS)
+            if cached_pixel_scale_matrix is not None:
+                original_pixel_scale_x = cached_pixel_scale_matrix[0, 0]
+                original_pixel_scale_y = cached_pixel_scale_matrix[1, 1]
+
+                # Apply resize factor to get new pixel scale
+                new_pixel_scale_x = original_pixel_scale_x / resize_factor
+                new_pixel_scale_y = original_pixel_scale_y / resize_factor
+
+                # Handle CD matrix (preferred modern format)
+                if "CD1_1" in header and "CD2_2" in header:
+                    header["CD1_1"] = header["CD1_1"] / resize_factor
+                    header["CD2_2"] = header["CD2_2"] / resize_factor
+                    if "CD1_2" in header:
+                        header["CD1_2"] = header["CD1_2"] / resize_factor
+                    if "CD2_1" in header:
+                        header["CD2_1"] = header["CD2_1"] / resize_factor
+
+                # Handle CDELT format or PC+CDELT format
+                elif "CDELT1" in header and "CDELT2" in header:
+                    # For PC+CDELT format, set CDELT to achieve desired pixel scale
+                    if "PC1_1" in header and "PC2_2" in header:
+                        pc1_1 = header.get("PC1_1", 1.0)
+                        pc2_2 = header.get("PC2_2", 1.0)
+                        header["CDELT1"] = new_pixel_scale_x / pc1_1
+                        header["CDELT2"] = new_pixel_scale_y / pc2_2
+                    else:
+                        header["CDELT1"] = new_pixel_scale_x
+                        header["CDELT2"] = new_pixel_scale_y
+            else:
+                # Fallback: simple scaling of existing header values
+                if "CD1_1" in header and "CD2_2" in header:
+                    header["CD1_1"] = header["CD1_1"] / resize_factor
+                    header["CD2_2"] = header["CD2_2"] / resize_factor
+                elif "CDELT1" in header and "CDELT2" in header:
+                    header["CDELT1"] = header["CDELT1"] / resize_factor
+                    header["CDELT2"] = header["CDELT2"] / resize_factor
 
         return header
 
@@ -190,15 +302,19 @@ def write_single_fits_cutout(
         # Create primary HDU
         primary_hdu = fits.PrimaryHDU()
 
-        # Add metadata to primary header
-        primary_hdu.header["SOURCE"] = source_id
-        primary_hdu.header["RA"] = metadata.get("ra", 0.0)
-        primary_hdu.header["DEC"] = metadata.get("dec", 0.0)
-        primary_hdu.header["SIZEARC"] = metadata.get("diameter_arcsec", 0.0)
-        primary_hdu.header["SIZEPIX"] = metadata.get("diameter_pixel", 0)
-        primary_hdu.header["PROCTIME"] = metadata.get("processing_timestamp", time.time())
-        primary_hdu.header["STRETCH"] = metadata.get("stretch", "linear")
-        primary_hdu.header["DTYPE"] = metadata.get("data_type", "float32")
+        # Add metadata to primary header using batch update (more efficient)
+        primary_hdu.header.update(
+            {
+                "SOURCE": source_id,
+                "RA": metadata.get("ra", 0.0),
+                "DEC": metadata.get("dec", 0.0),
+                "SIZEARC": metadata.get("diameter_arcsec", 0.0),
+                "SIZEPIX": metadata.get("diameter_pixel", 0),
+                "PROCTIME": metadata.get("processing_timestamp", time.time()),
+                "STRETCH": metadata.get("stretch", "linear"),
+                "DTYPE": metadata.get("data_type", "float32"),
+            }
+        )
 
         # Create HDU list
         hdu_list = [primary_hdu]
@@ -216,27 +332,74 @@ def write_single_fits_cutout(
                 image_hdu = fits.ImageHDU(data=cutout, name=channel)
 
             # Add WCS information if available and requested
-            if preserve_wcs and channel in wcs_info:
+            if preserve_wcs:
                 try:
-                    wcs_header = create_wcs_header(
-                        cutout.shape,
-                        original_wcs=wcs_info[channel],
-                        ra_center=metadata.get("ra"),
-                        dec_center=metadata.get("dec"),
+                    # Calculate resize factor from metadata
+                    resize_factor = None
+                    original_size = metadata.get("original_cutout_size")  # Original extraction size
+                    final_size = cutout.shape[0]  # Assuming square cutouts, use height
+
+                    if original_size is not None and original_size != final_size:
+                        resize_factor = final_size / original_size
+                        logger.debug(
+                            f"Calculated resize factor: {resize_factor} (from {original_size} to {final_size})"
+                        )
+
+                    # Get rescaled offsets from metadata (already scaled by resize factor in cutout_process_utils)
+                    rescaled_offset_x = metadata.get("rescaled_offset_x", 0.0)
+                    rescaled_offset_y = metadata.get("rescaled_offset_y", 0.0)
+                    logger.debug(
+                        f"Retrieved rescaled offsets from metadata: ({rescaled_offset_x:.4f}, {rescaled_offset_y:.4f})"
                     )
-                    image_hdu.header.update(wcs_header)
+
+                    if channel in wcs_info:
+                        logger.debug(
+                            f"Creating WCS header for channel {channel} using original WCS"
+                        )
+                        wcs_header = create_wcs_header(
+                            cutout.shape,
+                            original_wcs=wcs_info[channel],
+                            ra_center=metadata.get("ra"),
+                            dec_center=metadata.get("dec"),
+                            resize_factor=resize_factor,
+                            rescaled_offset_x=rescaled_offset_x,
+                            rescaled_offset_y=rescaled_offset_y,
+                        )
+                    else:
+                        # Fallback: create minimal WCS using source coordinates
+                        logger.debug(
+                            f"Creating minimal WCS header for channel {channel} using RA/Dec"
+                        )
+                        wcs_header = create_wcs_header(
+                            cutout.shape,
+                            original_wcs=None,
+                            ra_center=metadata.get("ra"),
+                            dec_center=metadata.get("dec"),
+                            resize_factor=resize_factor,
+                            rescaled_offset_x=rescaled_offset_x,
+                            rescaled_offset_y=rescaled_offset_y,
+                        )
+
+                    if wcs_header:
+                        image_hdu.header.update(wcs_header)
+                        logger.debug(
+                            f"Added WCS header with {len(wcs_header)} keywords for channel {channel}"
+                        )
+                    else:
+                        logger.warning(
+                            f"WCS header creation returned empty header for channel {channel}"
+                        )
                 except Exception as e:
                     logger.warning(f"Failed to add WCS for channel {channel}: {e}")
 
-            # Add channel-specific metadata
-            image_hdu.header["CHANNEL"] = channel
-            image_hdu.header["FILTER"] = channel  # Alias for compatibility
+            # Add channel-specific metadata (batch update)
+            image_hdu.header.update({"CHANNEL": channel, "FILTER": channel})
 
             hdu_list.append(image_hdu)
 
-        # Write FITS file
+        # Write FITS file (skip verification for performance)
         fits_hdu_list = fits.HDUList(hdu_list)
-        fits_hdu_list.writeto(output_path, overwrite=overwrite)
+        fits_hdu_list.writeto(output_path, overwrite=overwrite, output_verify="ignore")
 
         logger.debug(f"Wrote FITS cutout: {output_path}")
         return True
@@ -249,6 +412,7 @@ def write_single_fits_cutout(
 def write_fits_batch(
     batch_data: List[Dict[str, Any]],
     output_directory: str,
+    config: DotMap,
     file_naming_template: str = None,
     preserve_wcs: bool = True,
     compression: Optional[str] = None,
@@ -262,6 +426,7 @@ def write_fits_batch(
     Args:
         batch_data: List of cutout data dictionaries
         output_directory: Base output directory
+        config: Configuration DotMap
         file_naming_template: Template for filename generation
         preserve_wcs: Whether to preserve WCS information
         compression: Optional compression method
@@ -284,39 +449,65 @@ def write_fits_batch(
         written_files = []
 
         # Handle the correct data structure: batch_data is a list of batch results
-        # Each batch result contains "cutouts" tensor and "metadata" list
+        # Each batch result contains "cutouts" tensor, "metadata" list, "wcs_info" list, and "channel_names"
         for batch_result in batch_data:
             cutouts_tensor = batch_result.get("cutouts")  # Shape: (N, H, W, C)
             metadata_list = batch_result.get("metadata")  # list of metadata dicts
+            # list of WCS dicts for each source
+            wcs_list = batch_result.get("wcs", batch_result.get("wcs_info", []))
+            # ordered channel names matching tensor
+            channel_names = batch_result.get("channel_names", [])
+            # len(array) returns the size of the first dimension
+            N_image = len(cutouts_tensor) if cutouts_tensor is not None else 0
 
             if cutouts_tensor is None or len(metadata_list) == 0:
                 logger.warning("No cutout data or metadata in batch result")
                 continue
 
+            # Pre-compute channel weight keys to avoid repeated list() calls
+            channel_weight_keys = (
+                list(config.channel_weights.keys()) if config.do_only_cutout_extraction else None
+            )
+
             # Process each source in the batch
-            for i, metadata in enumerate(metadata_list):
+            for source_idx, metadata in enumerate(metadata_list):
                 source_id = metadata["source_id"]
 
                 # Extract cutout for this source from the tensor
-                if i >= cutouts_tensor.shape[0]:
+
+                if source_idx >= N_image:
                     logger.warning(
-                        f"Metadata index {i} exceeds cutout tensor size {cutouts_tensor.shape[0]}"
+                        f"Metadata index {source_idx} exceeds cutout tensor size {N_image}"
                     )
                     continue
-
-                source_cutout = cutouts_tensor[i, :, :, :]  # Shape: (H, W, C)
+                if config.do_only_cutout_extraction:
+                    source_cutout = cutouts_tensor[source_idx]  # Shape: (H, W, C)
+                else:
+                    source_cutout = cutouts_tensor[source_idx, :, :, :]  # Shape: (H, W, C)
 
                 # Convert tensor to dict format expected by write_single_fits_cutout
                 processed_cutouts = {}
-                for i in range(source_cutout.shape[2]):
-                    channel_name = f"channel_{i+1}"  # Generic output channel names
-                    processed_cutouts[channel_name] = source_cutout[:, :, i]
+                source_wcs_info = {}
+                source_wcs_dict = wcs_list[source_idx] if source_idx < len(wcs_list) else {}
+                for ij in range(source_cutout.shape[2]):
+                    if channel_weight_keys:
+                        channel_name = channel_weight_keys[ij]
+                    else:
+                        channel_name = f"channel_{ij+1}"  # Generic output channel names
+                    processed_cutouts[channel_name] = source_cutout[:, :, ij]
 
+                    # Look up WCS using the original channel name from channel_names if available,
+                    # otherwise try the output channel_name directly
+                    wcs_lookup_key = channel_names[ij] if ij < len(channel_names) else channel_name
+                    if wcs_lookup_key in source_wcs_dict:
+                        source_wcs_info[channel_name] = source_wcs_dict[wcs_lookup_key]
+                    elif channel_name in source_wcs_dict:
+                        source_wcs_info[channel_name] = source_wcs_dict[channel_name]
                 cutout_data = {
                     "source_id": source_id,
                     "metadata": metadata,
                     "processed_cutouts": processed_cutouts,
-                    "wcs_info": {},  # WCS info not preserved in current tensor format
+                    "wcs_info": source_wcs_info,  # Use properly mapped WCS info
                 }
 
                 # Determine output directory for this source
@@ -352,44 +543,3 @@ def write_fits_batch(
     except Exception as e:
         logger.error(f"Failed to write FITS batch: {e}")
         return []
-
-
-def validate_fits_file(fits_path: str) -> Dict[str, Any]:
-    """
-    Validate a FITS file and return basic information.
-
-    Args:
-        fits_path: Path to FITS file
-
-    Returns:
-        Dictionary containing validation results and file info
-    """
-    try:
-        with fits.open(fits_path) as hdul:
-            info = {
-                "valid": True,
-                "num_extensions": len(hdul),
-                "extensions": [],
-                "file_size": Path(fits_path).stat().st_size,
-            }
-
-            # Collect extension information
-            for i, hdu in enumerate(hdul):
-                ext_info = {
-                    "index": i,
-                    "name": hdu.name,
-                    "type": type(hdu).__name__,
-                    "shape": getattr(hdu.data, "shape", None) if hdu.data is not None else None,
-                    "dtype": str(hdu.data.dtype) if hdu.data is not None else None,
-                }
-                info["extensions"].append(ext_info)
-
-            return info
-
-    except Exception as e:
-        logger.error(f"FITS validation failed for {fits_path}: {e}")
-        return {
-            "valid": False,
-            "error": str(e),
-            "file_size": Path(fits_path).stat().st_size if Path(fits_path).exists() else 0,
-        }

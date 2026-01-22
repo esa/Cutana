@@ -15,12 +15,13 @@ Tests the progress reporting mechanism to ensure:
 
 import tempfile
 from unittest.mock import Mock, patch
-import numpy as np
 
-from cutana.cutout_process import create_cutouts_batch, _report_stage
-from cutana.job_tracker import JobTracker
-from cutana.cutout_writer_zarr import prepare_cutouts_for_zarr
+import numpy as np
 from dotmap import DotMap
+
+from cutana.cutout_process import _report_stage, create_cutouts_batch
+from cutana.cutout_writer_zarr import prepare_cutouts_for_zarr
+from cutana.job_tracker import JobTracker
 
 
 class TestCutoutProcessProgress:
@@ -53,6 +54,7 @@ class TestCutoutProcessProgress:
         config.job_tracker_session_id = "test_session"
         config.output_format = "zarr"  # Use zarr format for incremental writing
         config.output_dir = "/tmp/test_cutouts"  # Required for zarr path generation
+        config.write_to_disk = True  # Write to disk for zarr incremental writing
 
         # Mock JobTracker
         mock_job_tracker = Mock(spec=JobTracker)

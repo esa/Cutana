@@ -11,17 +11,18 @@ Tests the new incremental writing capability where sub-batches are
 written and appended to zarr files to reduce memory footprint.
 """
 
-import pytest
-import numpy as np
 import tempfile
-import zarr
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict
+
+import numpy as np
+import pytest
+import zarr
 
 from cutana.cutout_writer_zarr import (
-    create_process_zarr_archive_initial,
     append_to_zarr_archive,
     calculate_optimal_chunk_shape,
+    create_process_zarr_archive_initial,
     prepare_cutouts_for_zarr,
 )
 from cutana.get_default_config import get_default_config

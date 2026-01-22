@@ -12,14 +12,15 @@ cutouts simultaneously from FITS files using batch processing of coordinates
 and bounds calculations.
 """
 
+import warnings
+from typing import Any, Dict, List, Optional, Tuple
+
 import numpy as np
-from astropy.io import fits
-from astropy.wcs import WCS
 from astropy import units as u
 from astropy.coordinates import SkyCoord
+from astropy.io import fits
+from astropy.wcs import WCS
 from loguru import logger
-from typing import List, Tuple, Dict, Any, Optional
-import warnings
 
 from .flux_conversion import apply_flux_conversion
 
@@ -75,116 +76,6 @@ def arcsec_to_pixels(diameter_arcsec: float, wcs_obj: WCS) -> int:
         return max(1, int(round(diameter_arcsec / 0.1)))
 
 
-def validate_size_parameters(source_data: Dict[str, Any]) -> None:
-    """
-    Validate that only one size parameter (diameter_arcsec or diameter_pixel) is provided.
-
-    Args:
-        source_data: Source data dictionary
-
-    Raises:
-        ValueError: If both or neither size parameters are provided
-    """
-    has_arcsec = (
-        "diameter_arcsec" in source_data
-        and source_data.get("diameter_arcsec") is not None
-        and source_data.get("diameter_arcsec") > 0
-    )
-    has_pixel = (
-        "diameter_pixel" in source_data
-        and source_data.get("diameter_pixel") is not None
-        and source_data.get("diameter_pixel") > 0
-    )
-
-    if has_arcsec and has_pixel:
-        raise ValueError(
-            f"Both diameter_arcsec ({source_data.get('diameter_arcsec')}) and"
-            f"diameter_pixel ({source_data.get('diameter_pixel')}) provided."
-            f"Only one size parameter is allowed."
-        )
-
-    if not has_arcsec and not has_pixel:
-        raise ValueError(
-            "Neither diameter_arcsec nor diameter_pixel provided. One size parameter is required."
-        )
-
-
-def radec_to_pixel(ra: float, dec: float, wcs_obj: WCS) -> Tuple[float, float]:
-    """
-    Convert RA/Dec coordinates to pixel coordinates.
-
-    Args:
-        ra: Right Ascension in degrees
-        dec: Declination in degrees
-        wcs_obj: WCS object for coordinate transformation
-
-    Returns:
-        Tuple of (pixel_x, pixel_y) coordinates
-    """
-    try:
-        # Create SkyCoord object
-        coord = SkyCoord(ra=ra * u.degree, dec=dec * u.degree, frame="icrs")
-
-        # Transform to pixel coordinates
-        pixel_x, pixel_y = wcs_obj.world_to_pixel(coord)
-
-        return float(pixel_x), float(pixel_y)
-
-    except Exception as e:
-        logger.error(f"Coordinate transformation failed for RA={ra}, Dec={dec}: {e}")
-        raise
-
-
-def extract_cutout_from_extension(
-    hdu: fits.ImageHDU,
-    wcs_obj: WCS,
-    ra: float,
-    dec: float,
-    size_pixels: int,
-    padding_factor: float = 1.0,
-    config=None,
-) -> Optional[np.ndarray]:
-    """
-    Extract cutout from a specific FITS extension using vectorized implementation.
-
-    This is a convenience wrapper for single-source extraction that uses the
-    vectorized implementation internally.
-
-    Args:
-        hdu: FITS ImageHDU object
-        wcs_obj: WCS object for this extension
-        ra: Source right ascension in degrees
-        dec: Source declination in degrees
-        size_pixels: Size of cutout in pixels
-        padding_factor: Factor to scale the extraction area (1.0 = no padding)
-        config: Configuration object with interpolation settings
-
-    Returns:
-        Cutout array or None if extraction failed
-    """
-    try:
-        # Use vectorized implementation for single source
-        cutouts, success_mask = extract_cutouts_vectorized_from_extension(
-            hdu,
-            wcs_obj,
-            np.array([ra]),
-            np.array([dec]),
-            np.array([size_pixels]),
-            source_ids=[f"single_source_ra_{ra}_dec_{dec}"],
-            padding_factor=padding_factor,
-            config=config,
-        )
-
-        if len(cutouts) > 0 and cutouts[0] is not None:
-            return cutouts[0]
-        else:
-            return None
-
-    except Exception as e:
-        logger.error(f"Cutout extraction failed: {e}")
-        return None
-
-
 def extract_cutouts_vectorized_from_extension(
     hdu: fits.ImageHDU,
     wcs_obj: WCS,
@@ -194,7 +85,7 @@ def extract_cutouts_vectorized_from_extension(
     source_ids: List[str] = None,
     padding_factor: float = 1.0,
     config=None,
-) -> Tuple[List[Optional[np.ndarray]], List[bool]]:
+) -> Tuple[List[Optional[np.ndarray]], np.ndarray, np.ndarray, np.ndarray]:
     """
     Extract multiple cutouts from a single FITS extension using vectorized operations.
 
@@ -215,9 +106,11 @@ def extract_cutouts_vectorized_from_extension(
         padding_factor: Factor to scale the extraction area (1.0 = no padding)
 
     Returns:
-        Tuple of (cutout_list, success_mask) where:
+        Tuple of (cutout_list, success_mask, pixel_offset_x, pixel_offset_y) where:
         - cutout_list: List of cutout arrays (or None for failures)
         - success_mask: Boolean array indicating successful extractions
+        - pixel_offset_x: Array of sub-pixel X offsets (positive = target toward right)
+        - pixel_offset_y: Array of sub-pixel Y offsets (positive = target toward top)
     """
     n_sources = len(ra_array)
     logger.debug(f"Starting vectorized cutout extraction for {n_sources} sources")
@@ -229,7 +122,12 @@ def extract_cutouts_vectorized_from_extension(
     image_data = hdu.data
     if image_data is None:
         logger.error("No image data in HDU")
-        return [None] * n_sources, np.zeros(n_sources, dtype=bool)
+        return (
+            [None] * n_sources,
+            np.zeros(n_sources, dtype=bool),
+            np.zeros(n_sources, dtype=np.float64),
+            np.zeros(n_sources, dtype=np.float64),
+        )
 
     img_height, img_width = image_data.shape
 
@@ -246,7 +144,12 @@ def extract_cutouts_vectorized_from_extension(
 
     except Exception as e:
         logger.error(f"Vectorized coordinate transformation failed: {e}")
-        return [None] * n_sources, np.zeros(n_sources, dtype=bool)
+        return (
+            [None] * n_sources,
+            np.zeros(n_sources, dtype=bool),
+            np.zeros(n_sources, dtype=np.float64),
+            np.zeros(n_sources, dtype=np.float64),
+        )
 
     # Step 3: Vectorized bound computation
     logger.debug("Step 3: Vectorized bound computation")
@@ -271,6 +174,16 @@ def extract_cutouts_vectorized_from_extension(
     x_maxs = (pixel_x_array + half_sizes_right).astype(int)
     y_mins = (pixel_y_array - half_sizes_left).astype(int)
     y_maxs = (pixel_y_array + half_sizes_right).astype(int)
+
+    # Compute pixel offsets: the sub-pixel difference between the target position
+    # and the center of the extracted cutout. Following FITS convention:
+    # - Positive offset means target is toward top-right (larger pixel indices)
+    # - Negative offset means target is toward bottom-left (smaller pixel indices)
+    # The cutout center in pixel coords is at (x_mins + extraction_sizes/2, y_mins + extraction_sizes/2)
+    cutout_center_x = x_mins + extraction_sizes / 2.0
+    cutout_center_y = y_mins + extraction_sizes / 2.0
+    pixel_offset_x = pixel_x_array - cutout_center_x
+    pixel_offset_y = pixel_y_array - cutout_center_y
 
     # Clip bounds to image dimensions (vectorized)
     x_mins_clipped = np.maximum(0, x_mins)
@@ -342,6 +255,14 @@ def extract_cutouts_vectorized_from_extension(
                         :raw_y_end, :raw_x_end
                     ]
 
+                    # Adjust pixel offsets to account for symmetric padding
+                    # The cutout center has shifted by the padding offset
+                    # So, the new center is shifted by (pad_x_start, pad_y_start)
+                    # We want the offset to be relative to the center of the padded extraction
+                    # So, subtract the padding offset from the original offset
+                    pixel_offset_x[i] -= pad_x_start
+                    pixel_offset_y[i] -= pad_y_start
+
                     raw_cutout = padded_extraction
 
                 # apply flux conversion here
@@ -371,7 +292,7 @@ def extract_cutouts_vectorized_from_extension(
     successful_count = np.sum(success_mask)
     logger.debug(f"Vectorized extraction completed: {successful_count}/{n_sources} successful")
 
-    return cutouts, success_mask
+    return cutouts, success_mask, pixel_offset_x, pixel_offset_y
 
 
 def extract_cutouts_batch_vectorized(
@@ -381,7 +302,13 @@ def extract_cutouts_batch_vectorized(
     fits_extensions: List[str] = None,
     padding_factor: float = 1.0,
     config=None,
-) -> Tuple[Dict[str, Dict[str, np.ndarray]], Dict[str, Dict[str, WCS]], List[str]]:
+) -> Tuple[
+    Dict[str, Dict[str, np.ndarray]],
+    Dict[str, Dict[str, WCS]],
+    List[str],
+    float,
+    Dict[str, Dict[str, float]],
+]:
     """
     Extract cutouts for a batch of sources using vectorized operations.
 
@@ -396,10 +323,12 @@ def extract_cutouts_batch_vectorized(
         padding_factor: Factor to scale the extraction area (1.0 = no padding)
 
     Returns:
-        Tuple of (combined_cutouts, combined_wcs, source_ids) where:
+        Tuple of (combined_cutouts, combined_wcs, source_ids, pixel_scale, combined_offsets) where:
         - combined_cutouts: Dict mapping source_id -> {ext_name: cutout_array}
         - combined_wcs: Dict mapping source_id -> {ext_name: wcs_object}
         - source_ids: List of source IDs that were processed
+        - pixel_scale: Pixel scale in arcseconds per pixel
+        - combined_offsets: Dict mapping source_id -> {"x": offset_x, "y": offset_y}
     """
     if fits_extensions is None:
         fits_extensions = ["PRIMARY"]
@@ -440,8 +369,10 @@ def extract_cutouts_batch_vectorized(
             size_pixels_array[i] = 128
 
     # Process each extension
+    pixel_scale = get_pixel_scale_arcsec_per_pixel(wcs_dict[fits_extensions[0]])
     combined_cutouts = {}
     combined_wcs = {}
+    combined_offsets = {}  # source_id -> {"x": offset_x, "y": offset_y}
 
     for ext_name in fits_extensions:
         if ext_name not in hdul or ext_name not in wcs_dict:
@@ -451,15 +382,17 @@ def extract_cutouts_batch_vectorized(
         logger.debug(f"Processing extension {ext_name} for {n_sources} sources")
 
         # Extract cutouts for all sources in this extension using vectorized method
-        cutout_list, success_mask = extract_cutouts_vectorized_from_extension(
-            hdul[ext_name],
-            wcs_dict[ext_name],
-            ra_array,
-            dec_array,
-            size_pixels_array,
-            source_ids,
-            padding_factor,
-            config,
+        cutout_list, success_mask, offset_x_array, offset_y_array = (
+            extract_cutouts_vectorized_from_extension(
+                hdul[ext_name],
+                wcs_dict[ext_name],
+                ra_array,
+                dec_array,
+                size_pixels_array,
+                source_ids,
+                padding_factor,
+                config,
+            )
         )
 
         # Organize results by source ID
@@ -468,6 +401,11 @@ def extract_cutouts_batch_vectorized(
                 if source_id not in combined_cutouts:
                     combined_cutouts[source_id] = {}
                     combined_wcs[source_id] = {}
+                    # Store pixel offsets (same for all extensions since coords are the same)
+                    combined_offsets[source_id] = {
+                        "x": float(offset_x_array[i]),
+                        "y": float(offset_y_array[i]),
+                    }
 
                 combined_cutouts[source_id][ext_name] = cutout
                 combined_wcs[source_id][ext_name] = wcs_dict[ext_name]
@@ -477,59 +415,4 @@ def extract_cutouts_batch_vectorized(
         f"Vectorized batch extraction completed: {successful_sources}/{n_sources} sources successful"
     )
 
-    return combined_cutouts, combined_wcs, source_ids
-
-
-def validate_vectorized_results(
-    cutouts_dict: Dict[str, Dict[str, np.ndarray]],
-    expected_sources: List[str],
-    expected_size: int = None,
-) -> Dict[str, Any]:
-    """
-    Validate results from vectorized cutout extraction.
-
-    Args:
-        cutouts_dict: Dictionary of extracted cutouts
-        expected_sources: List of expected source IDs
-        expected_size: Expected cutout size (optional)
-
-    Returns:
-        Dictionary with validation results
-    """
-    validation_results = {
-        "total_expected": len(expected_sources),
-        "total_extracted": len(cutouts_dict),
-        "missing_sources": [],
-        "size_mismatches": [],
-        "successful_sources": 0,
-        "total_cutouts": 0,
-    }
-
-    for source_id in expected_sources:
-        if source_id not in cutouts_dict:
-            validation_results["missing_sources"].append(source_id)
-        else:
-            validation_results["successful_sources"] += 1
-            source_cutouts = cutouts_dict[source_id]
-            validation_results["total_cutouts"] += len(source_cutouts)
-
-            # Check cutout sizes if expected size provided
-            if expected_size is not None:
-                for ext_name, cutout in source_cutouts.items():
-                    if cutout.shape != (expected_size, expected_size):
-                        validation_results["size_mismatches"].append(
-                            {
-                                "source_id": source_id,
-                                "extension": ext_name,
-                                "expected_shape": (expected_size, expected_size),
-                                "actual_shape": cutout.shape,
-                            }
-                        )
-
-    validation_results["success_rate"] = (
-        validation_results["successful_sources"] / validation_results["total_expected"]
-        if validation_results["total_expected"] > 0
-        else 0
-    )
-
-    return validation_results
+    return combined_cutouts, combined_wcs, source_ids, pixel_scale, combined_offsets

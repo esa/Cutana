@@ -9,13 +9,14 @@
 import tempfile
 import time
 from pathlib import Path
-import pandas as pd
-import numpy as np
-from astropy.io import fits
-import pytest
 
-from cutana.orchestrator import Orchestrator
+import numpy as np
+import pandas as pd
+import pytest
+from astropy.io import fits
+
 from cutana.get_default_config import get_default_config
+from cutana.orchestrator import Orchestrator
 
 
 class TestE2ELoadBalancerMemory:
@@ -110,9 +111,9 @@ class TestE2ELoadBalancerMemory:
         assert orchestrator.load_balancer.worker_memory_peak_mb is None
         assert orchestrator.load_balancer.processes_measured == 0
 
-        # Start processing
+        # Start processing using catalogue path (not DataFrame)
         try:
-            result = orchestrator.start_processing(catalogue)
+            result = orchestrator.start_processing(str(catalogue_path))
             # Check processing completed
             assert result["status"] == "completed"
         finally:
@@ -159,7 +160,7 @@ class TestE2ELoadBalancerMemory:
         spawn_log = []
         original_spawn = orchestrator._spawn_cutout_process
 
-        def logged_spawn(process_id, source_batch):
+        def logged_spawn(process_id, source_batch, write_to_disk):
             spawn_log.append(
                 {
                     "process_id": process_id,
@@ -167,13 +168,13 @@ class TestE2ELoadBalancerMemory:
                     "time": time.time(),
                 }
             )
-            return original_spawn(process_id, source_batch)
+            return original_spawn(process_id, source_batch, write_to_disk)
 
         orchestrator._spawn_cutout_process = logged_spawn
 
-        # Start processing
+        # Start processing using catalogue path (not DataFrame)
         try:
-            result = orchestrator.start_processing(catalogue)
+            result = orchestrator.start_processing(str(catalogue_path))
             assert result["status"] == "completed"
 
             # Check that initial spawn happened with no active processes
@@ -235,9 +236,9 @@ class TestE2ELoadBalancerMemory:
 
         orchestrator.load_balancer.can_spawn_new_process = logged_can_spawn
 
-        # Start processing
+        # Start processing using catalogue path (not DataFrame)
         try:
-            result = orchestrator.start_processing(catalogue)
+            result = orchestrator.start_processing(str(catalogue_path))
             assert result["status"] == "completed"
 
             # Check decisions were made and logged
@@ -252,59 +253,6 @@ class TestE2ELoadBalancerMemory:
         # First decision should allow initial worker
         assert decisions[0]["can_spawn"] is True
         assert "Initial worker" in decisions[0]["reason"]
-
-    def test_loadbalancer_memory_statistics_reset(self):
-        """Test that LoadBalancer statistics reset between jobs."""
-        # Create test data
-        fits_file = self._create_test_fits_file("test.fits", size=100)
-        catalogue = self._create_test_catalogue(30, [fits_file])
-
-        # Write catalogue to file and set in config
-        catalogue_path = self.temp_path / "test_catalogue.csv"
-        catalogue.to_csv(catalogue_path, index=False)
-        self.config.source_catalogue = str(catalogue_path)
-
-        # Create orchestrator
-        orchestrator = Orchestrator(self.config)
-        load_balancer = orchestrator.load_balancer
-
-        # First processing run
-        try:
-            result1 = orchestrator.start_processing(catalogue)
-            assert result1["status"] == "completed"
-        finally:
-            # Ensure all processes are terminated
-            try:
-                orchestrator.stop_processing()
-            except Exception:
-                pass
-
-        # Check statistics state (may be 0 in unit tests)
-        assert load_balancer.processes_measured >= 0
-        processes_measured_1 = load_balancer.processes_measured
-
-        # Reset statistics
-        load_balancer.reset_statistics()
-
-        # Check reset worked
-        assert load_balancer.processes_measured == 0
-        assert load_balancer.main_process_memory_mb is None
-        assert load_balancer.worker_memory_peak_mb is None
-        assert len(load_balancer.worker_memory_history) == 0
-
-        # Second processing run
-        try:
-            result2 = orchestrator.start_processing(catalogue)
-            assert result2["status"] == "completed"
-        finally:
-            # Ensure all processes are terminated
-            try:
-                orchestrator.stop_processing()
-            except Exception:
-                pass
-
-        # Check new statistics state (may be 0 in unit tests)
-        assert load_balancer.processes_measured >= 0
 
     @pytest.mark.slow
     def test_loadbalancer_memory_peak_window(self):
@@ -343,9 +291,9 @@ class TestE2ELoadBalancerMemory:
 
         load_balancer.update_memory_statistics = tracked_update
 
-        # Start processing
+        # Start processing using catalogue path (not DataFrame)
         try:
-            result = orchestrator.start_processing(catalogue)
+            result = orchestrator.start_processing(str(catalogue_path))
             assert result["status"] == "completed"
 
             # Check that memory was tracked (may be 0 in unit tests)

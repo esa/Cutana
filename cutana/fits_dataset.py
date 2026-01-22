@@ -12,15 +12,16 @@ at the process level to avoid reloading the same files across sub-batches.
 """
 
 import os
-from typing import Dict, List, Any, Optional, Tuple, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
+
 from astropy.io import fits
 from astropy.wcs import WCS
-from loguru import logger
 from dotmap import DotMap
+from loguru import logger
 
+from .catalogue_preprocessor import extract_fits_sets, parse_fits_file_paths
 from .fits_reader import load_fits_file
-from .performance_profiler import PerformanceProfiler, ContextProfiler
-from .catalogue_preprocessor import parse_fits_file_paths, extract_fits_sets
+from .performance_profiler import ContextProfiler, PerformanceProfiler
 
 
 def load_fits_sets(
@@ -200,18 +201,6 @@ class FITSDataset:
             self._free_fits_file(fits_path)
 
         self.fits_cache.clear()
-
-    def get_cache_stats(self) -> Dict[str, int]:
-        """
-        Get statistics about the current cache state.
-
-        Returns:
-            Dictionary with cache statistics
-        """
-        return {
-            "cached_files": len(self.fits_cache),
-            "total_fits_sets": len(self.fits_set_to_sources),
-        }
 
     def _get_fits_sets_for_sub_batch(self, sub_batch: List[Dict[str, Any]]) -> List[tuple]:
         """Get FITS sets needed for a specific sub-batch."""

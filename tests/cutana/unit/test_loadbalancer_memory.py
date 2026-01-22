@@ -7,8 +7,9 @@
 """Tests for improved LoadBalancer memory monitoring functionality."""
 
 import time
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import MagicMock, patch
 
 from cutana.loadbalancer import LoadBalancer
 
@@ -161,19 +162,6 @@ class TestLoadBalancerMemoryMonitoring:
         assert can_spawn is True
         assert "Initial worker spawn" in reason
 
-    def test_fits_set_size_update(self):
-        """Test FITS set size estimation update."""
-        with patch("os.path.exists", return_value=True):
-            with patch(
-                "os.path.getsize",
-                side_effect=[100 * 1024 * 1024, 150 * 1024 * 1024, 200 * 1024 * 1024],
-            ):
-                fits_paths = ["/path/to/file1.fits", "/path/to/file2.fits", "/path/to/file3.fits"]
-                self.load_balancer.update_fits_set_size(fits_paths)
-
-                # Total: 450MB
-                assert self.load_balancer.avg_fits_set_size_mb == pytest.approx(450.0, 0.1)
-
     def test_get_memory_stats(self):
         """Test retrieving current memory statistics."""
         self.load_balancer.main_process_memory_mb = 500.0
@@ -241,24 +229,3 @@ class TestLoadBalancerMemoryMonitoring:
         can_spawn, reason = self.load_balancer.can_spawn_new_process(1)
         assert can_spawn is False
         assert "CPU usage too high" in reason
-
-    def test_reset_statistics(self):
-        """Test resetting all statistics."""
-        # Set some values
-        self.load_balancer.main_process_memory_mb = 500.0
-        self.load_balancer.worker_memory_allocation_mb = 8000.0
-        self.load_balancer.worker_memory_peak_mb = 2000.0
-        self.load_balancer.processes_measured = 5
-        self.load_balancer.active_worker_count = 2
-
-        # Reset
-        self.load_balancer.reset_statistics()
-
-        # Check all cleared
-        assert self.load_balancer.main_process_memory_mb is None
-        assert self.load_balancer.worker_memory_allocation_mb is None
-        assert self.load_balancer.worker_memory_peak_mb is None
-        assert self.load_balancer.processes_measured == 0
-        assert self.load_balancer.active_worker_count == 0
-        assert len(self.load_balancer.main_memory_samples) == 0
-        assert len(self.load_balancer.worker_memory_history) == 0

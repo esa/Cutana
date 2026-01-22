@@ -10,8 +10,9 @@ Unit tests for output folder selection UI components.
 Tests focus on basic functionality and error handling to improve coverage.
 """
 
-import pytest
 from unittest.mock import Mock, patch
+
+import pytest
 
 
 class TestOutputFolderComponent:
@@ -64,8 +65,8 @@ class TestOutputFolderComponent:
 
     def test_create_folder_functionality(self):
         """Test folder creation logic."""
-        import tempfile
         import os
+        import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
             new_folder = os.path.join(tmpdir, "new_subfolder")
@@ -149,8 +150,8 @@ class TestOutputFolderComponent:
 
     def test_nested_folder_creation_logic(self):
         """Test nested folder creation logic."""
-        import tempfile
         import os
+        import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
             nested_path = os.path.join(tmpdir, "level1", "level2", "level3")

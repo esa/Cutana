@@ -12,6 +12,7 @@ catches channel order mismatches between data tensor and channel weights.
 """
 
 import pytest
+
 from cutana.validate_config import validate_channel_order_consistency
 
 

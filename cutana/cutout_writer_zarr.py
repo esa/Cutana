@@ -15,12 +15,13 @@ This module provides static functions for:
 - No temporary files - writes directly from memory to zarr
 """
 
-import numpy as np
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Tuple
-from loguru import logger
-from images_to_zarr import convert
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
 from dotmap import DotMap
+from images_to_zarr import convert
+from loguru import logger
 
 
 def generate_process_subfolder(process_id: str) -> str:

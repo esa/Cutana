@@ -11,20 +11,21 @@ This module contains common functionality used by both benchmark_q1_tiles.py
 and benchmark_q1_datalabs.py to reduce code duplication.
 """
 
-import time
 import json
 import socket
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-from pathlib import Path
-from typing import Dict, Any, List
-from memory_profiler import memory_usage
+import time
 from glob import glob
+from pathlib import Path
+from typing import Any, Dict, List
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from astropy.io import fits
 from loguru import logger
+from memory_profiler import memory_usage
 
 from cutana.orchestrator import Orchestrator
-from astropy.io import fits
 
 
 def monitor_memory_usage(func, *args, **kwargs):

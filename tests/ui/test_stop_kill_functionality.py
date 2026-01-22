@@ -16,12 +16,13 @@ This test module validates that:
 import asyncio
 import subprocess
 from unittest.mock import Mock
+
 import pytest
 
+from cutana import get_default_config
+from cutana.orchestrator import Orchestrator
 from cutana_ui.main_screen.status_panel import StatusPanel
 from cutana_ui.utils.backend_interface import BackendInterface
-from cutana.orchestrator import Orchestrator
-from cutana import get_default_config
 
 
 class TestStopKillFunctionality:

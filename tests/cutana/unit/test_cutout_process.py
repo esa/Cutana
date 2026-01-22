@@ -15,26 +15,25 @@ Tests cover:
 - Integration with image_processor
 """
 
-from unittest.mock import patch, MagicMock, Mock
-import pytest
+from unittest.mock import MagicMock, Mock, patch
+
 import numpy as np
+import pytest
 from astropy.io import fits
 from astropy.wcs import WCS
-from cutana.cutout_process import (
-    create_cutouts_batch,
-    create_cutouts,
-    _process_sources_batch_vectorized_with_fits_set,
-)
+
+from cutana.cutout_process import create_cutouts_batch
 from cutana.fits_reader import load_fits_file
-from cutana.cutout_extraction import (
-    radec_to_pixel,
-    extract_cutout_from_extension,
-)
 from cutana.job_tracker import JobTracker
 
 
 class TestCutoutProcessFunctions:
     """Test suite for cutout process functions."""
+
+    def teardown_method(self):
+        """Clean up after each test to prevent state leakage."""
+        # Pixmap cache is now managed locally within functions and auto-cleaned
+        pass
 
     @pytest.fixture
     def mock_job_tracker(self):
@@ -94,8 +93,9 @@ class TestCutoutProcessFunctions:
     @pytest.fixture
     def cutout_config(self):
         """Create cutout processing configuration."""
-        from cutana.get_default_config import get_default_config
         from dotmap import DotMap
+
+        from cutana.get_default_config import get_default_config
 
         config = get_default_config()
         config.target_resolution = 64
@@ -126,59 +126,6 @@ class TestCutoutProcessFunctions:
         # Check WCS objects are valid
         for ext_name, wcs_obj in wcs_dict.items():
             assert isinstance(wcs_obj, WCS)
-
-        hdul.close()
-
-    def test_coordinate_transformation(self, mock_fits_file):
-        """Test RA/Dec to pixel coordinate transformation."""
-        hdul, wcs_dict = load_fits_file(mock_fits_file, ["VIS"])
-
-        # Test coordinate at the reference position
-        ra, dec = 150.0, 2.0
-        wcs_obj = wcs_dict["VIS"]
-
-        pixel_x, pixel_y = radec_to_pixel(ra, dec, wcs_obj)
-
-        # Should be close to reference pixel (500, 500)
-        # Note: WCS uses 1-based indexing, so we expect ~499 for 0-based
-        assert abs(pixel_x - 499.0) < 1.0
-        assert abs(pixel_y - 499.0) < 1.0
-
-        hdul.close()
-
-    def test_extract_cutout_from_extension(self, mock_fits_file, mock_source_data):
-        """Test extracting cutout from a specific FITS extension."""
-        hdul, wcs_dict = load_fits_file(mock_fits_file, ["VIS"])
-
-        # Extract cutout from VIS extension
-        cutout = extract_cutout_from_extension(
-            hdul["VIS"],
-            wcs_dict["VIS"],
-            mock_source_data["RA"],
-            mock_source_data["Dec"],
-            mock_source_data["diameter_pixel"],
-        )
-
-        assert cutout is not None
-        assert isinstance(cutout, np.ndarray)
-        assert cutout.shape == (20, 20)  # diameter_pixel = 20
-
-        hdul.close()
-
-    def test_cutout_boundary_handling(self, mock_fits_file):
-        """Test cutout extraction near image boundaries."""
-        hdul, wcs_dict = load_fits_file(mock_fits_file, ["VIS"])
-
-        # Test cutout at edge of image
-        edge_ra, edge_dec = 149.86, 1.86  # Near edge based on WCS
-
-        cutout = extract_cutout_from_extension(
-            hdul["VIS"], wcs_dict["VIS"], edge_ra, edge_dec, 50  # Large cutout size
-        )
-
-        # Should handle boundary gracefully with padding
-        assert cutout is not None
-        assert cutout.shape == (50, 50)  # Should be padded to requested size
 
         hdul.close()
 
@@ -223,35 +170,6 @@ class TestCutoutProcessFunctions:
         assert isinstance(results, list)
         # May be empty or contain error results
 
-    def test_multiple_extensions_processing(self, mock_fits_file, cutout_config, mock_source_data):
-        """Test processing cutouts from multiple FITS extensions."""
-        source_data = mock_source_data.copy()
-        source_data["fits_file_paths"] = f"['{mock_fits_file}']"
-
-        fits_extensions = cutout_config["fits_extensions"]
-        hdul, wcs_dict = load_fits_file(mock_fits_file, fits_extensions)
-
-        cutouts = {}
-        for ext_name in fits_extensions:
-            if ext_name in wcs_dict:
-                cutout = extract_cutout_from_extension(
-                    hdul[ext_name],
-                    wcs_dict[ext_name],
-                    source_data["RA"],
-                    source_data["Dec"],
-                    source_data["diameter_pixel"],
-                )
-                if cutout is not None:
-                    cutouts[ext_name] = cutout
-
-        # Should have cutouts from all requested extensions
-        assert len(cutouts) >= 1  # At least one successful extraction
-        for ext_name, cutout in cutouts.items():
-            assert isinstance(cutout, np.ndarray)
-            assert cutout.shape == (source_data["diameter_pixel"], source_data["diameter_pixel"])
-
-        hdul.close()
-
     def test_create_cutouts_batch_function(self, mock_source_data, cutout_config, mock_job_tracker):
         """Test the create_cutouts_batch function with FITS set-based processing."""
         source_batch = [mock_source_data]
@@ -263,7 +181,7 @@ class TestCutoutProcessFunctions:
         with (
             patch("cutana.fits_dataset.load_fits_file") as mock_load_fits,
             patch(
-                "cutana.cutout_process._process_sources_batch_vectorized_with_fits_set"
+                "cutana.cutout_process_utils._process_sources_batch_vectorized_with_fits_set"
             ) as mock_process,
             patch("cutana.cutout_process.create_process_zarr_archive_initial") as mock_zarr_create,
             patch("cutana.cutout_process.append_to_zarr_archive") as mock_zarr_append,
@@ -300,35 +218,6 @@ class TestCutoutProcessFunctions:
             # Zarr writing should be called
             mock_zarr_create.assert_called()
 
-    def test_create_cutouts_legacy_function(
-        self, mock_source_data, cutout_config, mock_job_tracker
-    ):
-        """Test the create_cutouts legacy function."""
-        source_batch = [mock_source_data]
-
-        with patch("cutana.cutout_process.create_cutouts_batch") as mock_batch:
-            mock_batch.return_value = [
-                {
-                    "source_id": mock_source_data["SourceID"],
-                    "processed_cutouts": {"VIS": np.random.random((20, 20))},
-                }
-            ]
-
-            results = create_cutouts(source_batch, cutout_config)
-
-            assert len(results) == 1
-            assert results[0]["source_id"] == mock_source_data["SourceID"]
-            # Check that create_cutouts_batch was called with correct arguments
-            # (the third argument is the auto-created job_tracker)
-            assert mock_batch.call_count == 1
-            call_args = mock_batch.call_args[0]
-            assert call_args[0] == source_batch
-            assert call_args[1] == cutout_config
-            # Third argument should be a JobTracker instance
-            from cutana.job_tracker import JobTracker
-
-            assert isinstance(call_args[2], JobTracker)
-
     def test_batch_processing_multiple_sources(self, cutout_config, mock_job_tracker):
         """Test FITS set-based batch processing of multiple sources."""
         # Set output format to FITS to get actual processed data back
@@ -351,7 +240,7 @@ class TestCutoutProcessFunctions:
         with (
             patch("cutana.fits_dataset.load_fits_file") as mock_load_fits,
             patch(
-                "cutana.cutout_process._process_sources_batch_vectorized_with_fits_set"
+                "cutana.cutout_process_utils._process_sources_batch_vectorized_with_fits_set"
             ) as mock_process,
         ):
 
@@ -542,8 +431,8 @@ class TestCutoutProcessFunctions:
 
     def test_create_cutouts_main_error_handling(self, tmp_path):
         """Test main function error handling."""
-        import sys
         import json
+        import sys
         import tempfile
 
         # Test insufficient arguments
@@ -716,7 +605,7 @@ class TestCutoutProcessFunctions:
         # Mock the FITS set-based processing
         with (
             patch(
-                "cutana.cutout_process._process_sources_batch_vectorized_with_fits_set"
+                "cutana.cutout_process_utils._process_sources_batch_vectorized_with_fits_set"
             ) as mock_fits_set_processing,
             patch("cutana.fits_dataset.load_fits_file") as mock_load_fits,
         ):
@@ -782,7 +671,7 @@ class TestCutoutProcessFunctions:
 
         with (
             patch(
-                "cutana.cutout_process._process_sources_batch_vectorized_with_fits_set"
+                "cutana.cutout_process_utils._process_sources_batch_vectorized_with_fits_set"
             ) as mock_fits_set_processing,
             patch("cutana.fits_dataset.load_fits_file") as mock_load_fits,
         ):
@@ -875,7 +764,7 @@ class TestCutoutProcessFunctions:
 
         with (
             patch(
-                "cutana.cutout_process._process_sources_batch_vectorized_with_fits_set"
+                "cutana.cutout_process_utils._process_sources_batch_vectorized_with_fits_set"
             ) as mock_fits_set_processing,
             patch("cutana.fits_dataset.load_fits_file") as mock_load_fits,
         ):
@@ -922,7 +811,7 @@ class TestCutoutProcessFunctions:
         }
 
         with (
-            patch("cutana.cutout_process._process_sources_batch_vectorized_with_fits_set"),
+            patch("cutana.cutout_process_utils._process_sources_batch_vectorized_with_fits_set"),
             patch("cutana.fits_dataset.load_fits_file") as mock_load_fits,
         ):
             # Simulate FITS loading failure
@@ -973,7 +862,7 @@ class TestCutoutProcessFunctions:
 
         with (
             patch(
-                "cutana.cutout_process._process_sources_batch_vectorized_with_fits_set"
+                "cutana.cutout_process_utils._process_sources_batch_vectorized_with_fits_set"
             ) as mock_fits_set_processing,
             patch("cutana.fits_dataset.load_fits_file") as mock_load_fits,
         ):
@@ -1066,7 +955,7 @@ class TestCutoutProcessFunctions:
 
         with (
             patch(
-                "cutana.cutout_process._process_sources_batch_vectorized_with_fits_set"
+                "cutana.cutout_process_utils._process_sources_batch_vectorized_with_fits_set"
             ) as mock_fits_set_processing,
             patch("cutana.fits_dataset.load_fits_file") as mock_load_fits,
         ):
@@ -1130,127 +1019,65 @@ class TestCutoutProcessFunctions:
             assert "progress_test_001" in result_ids
             assert "progress_test_002" in result_ids
 
-    @patch("cutana.cutout_process.extract_cutouts_batch_vectorized")
-    def test_channel_combination_with_different_resolutions(
-        self, mock_extract_cutouts, cutout_config
-    ):
-        """Test that channel combination works correctly when channels have different resolutions."""
-        # Mock different-sized cutouts for different channels
-        small_cutout = np.random.random((64, 64)).astype(np.float32)
-        medium_cutout = np.random.random((128, 128)).astype(np.float32)
-        large_cutout = np.random.random((256, 256)).astype(np.float32)
+    def test_channel_combination_with_different_resolutions(self, cutout_config):
+        """Test that resize_batch_tensor and combine_channels handle different input resolutions."""
+        from cutana.image_processor import combine_channels, resize_batch_tensor
 
-        # Create mock source data with multiple channel configuration
-        sources_batch = [
-            {
-                "SourceID": "multi_res_test_001",
-                "RA": 150.0,
-                "Dec": 2.0,
-                "diameter_pixel": 32,
-                "fits_file_paths": "['/mock/vis.fits', '/mock/nir_h.fits', '/mock/nir_j.fits']",
-            }
-        ]
+        # Create mock cutouts with different resolutions per channel
+        source_id = "multi_res_test_001"
 
-        # Mock extracted cutouts with different resolutions
-        mock_combined_cutouts = {
-            "multi_res_test_001": {
-                "PRIMARY": small_cutout,  # Different size from other channels
+        # Simulate different sized cutouts from different channels
+        small_cutout = np.random.random((64, 64)).astype(np.float32) * 100
+        medium_cutout = np.random.random((128, 128)).astype(np.float32) * 100
+        large_cutout = np.random.random((256, 256)).astype(np.float32) * 100
+
+        # Create the all_source_cutouts dict that resize_batch_tensor expects
+        # This simulates what extract_cutouts_batch_vectorized returns
+        all_source_cutouts = {
+            source_id: {
+                "VIS": large_cutout,  # 256x256
+                "NIR-H": medium_cutout,  # 128x128
+                "NIR-Y": small_cutout,  # 64x64
             }
         }
 
-        mock_combined_wcs = {"multi_res_test_001": {"PRIMARY": MagicMock()}}  # Mock WCS object
+        # Target resolution for resizing
+        target_resolution = (64, 64)
+        interpolation = "bilinear"
+        flux_conserved_resizing = False
+        pixel_scales_dict = {"VIS": 0.1, "NIR-H": 0.3, "NIR-Y": 0.3}
 
-        # Mock the extract_cutouts_batch_vectorized to return different sized cutouts
-        def mock_extract_side_effect(
-            sources, hdul, wcs_dict, extensions, padding_factor=1.0, config=None
-        ):
-            # Simulate different FITS files returning different sized cutouts
-            fits_name = getattr(hdul, "_mock_name", "unknown")
-            if "vis" in fits_name:
-                return (
-                    {sources[0]["SourceID"]: {"PRIMARY": large_cutout}},
-                    mock_combined_wcs,
-                    [sources[0]["SourceID"]],
-                )
-            elif "nir_h" in fits_name:
-                return (
-                    {sources[0]["SourceID"]: {"PRIMARY": medium_cutout}},
-                    mock_combined_wcs,
-                    [sources[0]["SourceID"]],
-                )
-            elif "nir_j" in fits_name:
-                return (
-                    {sources[0]["SourceID"]: {"PRIMARY": small_cutout}},
-                    mock_combined_wcs,
-                    [sources[0]["SourceID"]],
-                )
-            else:
-                return mock_combined_cutouts, mock_combined_wcs, [sources[0]["SourceID"]]
-
-        mock_extract_cutouts.side_effect = mock_extract_side_effect
-
-        # Set up config for channel combination
-        from dotmap import DotMap
-
-        config = DotMap(cutout_config.copy())
-        config.channel_weights = {"vis": [0.5], "nir_h": [0.3], "nir_j": [0.2]}
-        config.target_resolution = (64, 64)  # Force resize to common resolution
-        config.normalisation_method = "linear"
-        config.data_type = "float32"
-
-        # Create mock loaded FITS data
-        mock_loaded_fits_data = {}
-        for fits_path in ["/mock/vis.fits", "/mock/nir_h.fits", "/mock/nir_j.fits"]:
-            mock_hdul = MagicMock()
-            mock_hdul._mock_name = fits_path  # Add mock name for identification
-            mock_hdul.close = MagicMock()
-            mock_wcs_dict = {"PRIMARY": MagicMock()}
-            mock_loaded_fits_data[fits_path] = (mock_hdul, mock_wcs_dict)
-
-        # Call the function directly
-        results = _process_sources_batch_vectorized_with_fits_set(
-            sources_batch,
-            mock_loaded_fits_data,
-            config,
-            profiler=None,
-            process_name=None,
-            job_tracker=None,
+        # Test that resize_batch_tensor handles different input sizes
+        batch_cutouts = resize_batch_tensor(
+            all_source_cutouts,
+            target_resolution,
+            interpolation,
+            flux_conserved_resizing,
+            pixel_scales_dict,
         )
 
-        # Verify results - new batch format
-        assert len(results) == 1
-        batch_result = results[0]
-        assert "cutouts" in batch_result
-        assert "metadata" in batch_result
-        assert len(batch_result["metadata"]) == 1
+        # Verify all channels are resized to target resolution
+        # batch_cutouts shape is (N_sources, H, W, N_channels)
+        assert batch_cutouts.shape[0] == 1  # 1 source
+        assert batch_cutouts.shape[1] == 64  # Height = target
+        assert batch_cutouts.shape[2] == 64  # Width = target
+        assert batch_cutouts.shape[3] == 3  # 3 channels (VIS, NIR-H, NIR-Y)
 
-        # Check metadata
-        result_metadata = batch_result["metadata"][0]
-        assert result_metadata["source_id"] == "multi_res_test_001"
+        # Verify all channels got resized from their original sizes:
+        # VIS: 256x256 -> 64x64
+        # NIR-H: 128x128 -> 64x64
+        # NIR-Y: 64x64 -> 64x64
+        # All should now be 64x64
 
-        # Check cutouts tensor shape
-        cutouts_tensor = batch_result["cutouts"]
-        assert cutouts_tensor.shape[0] == 1  # 1 source
+        # Test channel combination with different weights
+        channel_weights = {"VIS": [0.5], "NIR-H": [0.3], "NIR-Y": [0.2]}
+        combined = combine_channels(batch_cutouts, channel_weights)
 
-        # For legacy compatibility, create processed_cutouts structure from tensor
-        processed_cutouts = {}
-        if cutouts_tensor.shape[-1] == 1:
-            # Single channel - likely combined result
-            processed_cutouts["combined"] = cutouts_tensor[0, :, :, 0]
-        if "combined" in processed_cutouts:
-            # Channel combination was applied - should have single combined cutout
-            combined_cutout = processed_cutouts["combined"]
-            # With single-channel weights, should produce (64, 64, 1) then squeezed to (64, 64)
-            # Note: expected shape varies based on channel combination
-            # expected_shape = (64, 64, 1) if len(combined_cutout.shape) == 3 else (64, 64)
-            assert combined_cutout.shape in [
-                (64, 64),
-                (64, 64, 1),
-            ]  # Should be resized to target resolution
-        else:
-            # No channel combination - should have all individual channels resized
-            for channel_key, cutout in processed_cutouts.items():
-                assert cutout.shape == (64, 64)  # All should be resized to target resolution
+        # Combined output should be (N_sources, H, W, N_output_channels)
+        assert combined.shape[0] == 1  # 1 source
+        assert combined.shape[1] == 64  # Height
+        assert combined.shape[2] == 64  # Width
+        assert combined.shape[3] == 1  # 1 output channel (weighted sum)
 
-        # Verify extract was called for each FITS file
-        assert mock_extract_cutouts.call_count == 3  # Three FITS files
+        # Verify the combined result is not all zeros (contains actual data)
+        assert combined.max() > 0, "Combined cutout should contain actual data"

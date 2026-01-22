@@ -5,10 +5,16 @@
 #   this file, may be copied, modified, propagated, or distributed except according to
 #   the terms contained in the file 'LICENCE.txt'.
 """Tests for custom UI widgets."""
+from unittest.mock import MagicMock
 
+from cutana_ui.widgets.file_chooser import CutanaFileChooser
+from cutana_ui.widgets.header_version_help import (
+    DEFAULT_LOG_LEVEL,
+    LOG_LEVELS,
+    create_header_container,
+)
 from cutana_ui.widgets.loading_spinner import LoadingSpinner
 from cutana_ui.widgets.progress_bar import CutanaProgressBar
-from cutana_ui.widgets.file_chooser import CutanaFileChooser
 
 
 class TestLoadingSpinner:
@@ -102,3 +108,70 @@ class TestCutanaFileChooser:
         assert hasattr(style_html, "value")
         style_content = style_html.value
         assert "#0098DB" in style_content or "#003249" in style_content
+
+
+class TestHeaderLogLevelDropdown:
+    """Test the log level dropdown in header container."""
+
+    def test_header_returns_three_elements(self):
+        """Test that create_header_container returns header, help button, and log dropdown."""
+        header, help_button, log_dropdown = create_header_container(
+            version_text="v1.0.0",
+            container_width=1200,
+            help_button_callback=lambda x: None,
+        )
+
+        assert header is not None
+        assert help_button is not None
+        assert log_dropdown is not None
+
+    def test_log_dropdown_options(self):
+        """Test that log dropdown has correct options."""
+        _, _, log_dropdown = create_header_container(
+            version_text="v1.0.0",
+            container_width=1200,
+            help_button_callback=lambda x: None,
+        )
+
+        assert log_dropdown.options == tuple(LOG_LEVELS)
+        assert log_dropdown.value == DEFAULT_LOG_LEVEL
+
+    def test_log_dropdown_default_value(self):
+        """Test that log dropdown defaults to Warning."""
+        _, _, log_dropdown = create_header_container(
+            version_text="v1.0.0",
+            container_width=1200,
+            help_button_callback=lambda x: None,
+        )
+
+        assert log_dropdown.value == "Warning"
+
+    def test_log_dropdown_callback_invoked(self):
+        """Test that changing log level invokes callback with uppercase value."""
+        callback = MagicMock()
+
+        _, _, log_dropdown = create_header_container(
+            version_text="v1.0.0",
+            container_width=1200,
+            help_button_callback=lambda x: None,
+            log_level_callback=callback,
+        )
+
+        # Change the log level (capitalized in dropdown)
+        log_dropdown.value = "Debug"
+
+        # Callback should have been called with uppercase value for loguru
+        callback.assert_called_once_with("DEBUG")
+
+    def test_log_dropdown_no_callback_without_handler(self):
+        """Test that no error occurs when callback is None."""
+        _, _, log_dropdown = create_header_container(
+            version_text="v1.0.0",
+            container_width=1200,
+            help_button_callback=lambda x: None,
+            log_level_callback=None,
+        )
+
+        # Should not raise an error when changing value
+        log_dropdown.value = "Info"
+        assert log_dropdown.value == "Info"

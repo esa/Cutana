@@ -11,8 +11,9 @@ Tests the process-level FITS file caching functionality to ensure efficient
 loading and memory management across sub-batches.
 """
 
-import pytest
 from unittest.mock import Mock, patch
+
+import pytest
 from astropy.io import fits
 from astropy.wcs import WCS
 from dotmap import DotMap
@@ -242,21 +243,6 @@ class TestFITSDataset:
         # Should not raise any errors
         dataset.cleanup()
         assert len(dataset.fits_cache) == 0
-
-    def test_get_cache_stats(self, mock_config, sample_sources, mock_hdul_and_wcs):
-        """Test cache statistics reporting."""
-        dataset = FITSDataset(mock_config)
-        dataset.fits_set_to_sources = {
-            ("/path/to/file1.fits", "/path/to/file2.fits"): sample_sources[:2],
-            ("/path/to/file3.fits",): [sample_sources[2]],
-        }
-        dataset.fits_cache["/path/to/file1.fits"] = mock_hdul_and_wcs
-        dataset.fits_cache["/path/to/file2.fits"] = mock_hdul_and_wcs
-
-        stats = dataset.get_cache_stats()
-
-        assert stats["cached_files"] == 2
-        assert stats["total_fits_sets"] == 2
 
     @patch("cutana.fits_dataset.load_fits_file")
     def test_load_missing_fits_files_handles_errors(self, mock_load_fits, mock_config):

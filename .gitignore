@@ -232,4 +232,8 @@ job_tracking.json
 cutana_output/
 test_workflow_*
 examples/*.csv
+paper_scripts/results
+paper_scripts/figures
+paper_scripts/latex
+paper_scripts/catalogues
 demo

@@ -7,10 +7,10 @@
 """Shared configuration widget used by both start screen and main screen."""
 
 import ipywidgets as widgets
-from loguru import logger
 from dotmap import DotMap
+from loguru import logger
 
-from ..styles import TEXT_COLOR_LIGHT, ESA_BLUE_GREY, ESA_BLUE_ACCENT
+from ..styles import ESA_BLUE_ACCENT, ESA_BLUE_GREY, TEXT_COLOR_LIGHT
 from .normalisation_config_widget import NormalisationConfigWidget
 
 
@@ -150,6 +150,18 @@ class SharedConfigurationWidget(widgets.VBox):
         # Apply custom styling to the slider readout
         self.padding_slider.add_class("cutana-slider-compact")
 
+        # Raw cutout only checkbox - disables all processing when checked
+        self.do_only_cutout_label = widgets.HTML(
+            value=f'<div style="color: {TEXT_COLOR_LIGHT}; font-weight: 500; font-size: 11px; display: flex; align-items: center; height: 100%;">Raw cutout:</div>',
+            layout=widgets.Layout(height="28px", width="100%"),
+        )
+        self.do_only_cutout_checkbox = widgets.Checkbox(
+            value=getattr(self.config, "do_only_cutout_extraction", False),
+            layout=widgets.Layout(width="140px", height="28px"),
+            tooltip="Extract raw cutouts without processing. Forces FITS output, float32, disables resizing and normalisation.",
+        )
+        self.do_only_cutout_checkbox.add_class("config-grid-item")
+
         # Create the normalisation widget only if advanced params are shown
         if self.show_advanced_params:
             self.normalisation_widget = NormalisationConfigWidget(config, compact)
@@ -171,6 +183,8 @@ class SharedConfigurationWidget(widgets.VBox):
                 self.resolution_input,
                 self.padding_label,
                 self.padding_slider,
+                self.do_only_cutout_label,
+                self.do_only_cutout_checkbox,
             ],
             layout=widgets.Layout(
                 grid_template_columns=f"{label_width} {input_width}",  # Fixed widths for perfect alignment
@@ -276,10 +290,10 @@ class SharedConfigurationWidget(widgets.VBox):
     def _setup_events(self):
         """Set up event handlers."""
 
-        def add_channel_handler(b):
+        def add_channel_handler(_b):
             self._add_channel()
 
-        def remove_channel_handler(b):
+        def remove_channel_handler(_b):
             self._remove_channel()
 
         self.add_channel_btn.on_click(add_channel_handler)
@@ -305,6 +319,49 @@ class SharedConfigurationWidget(widgets.VBox):
 
         if self.compact and self.output_format_dropdown:
             self.output_format_dropdown.observe(on_config_change, names="value")
+
+        # Connect format dropdown to normalisation widget for flux_conserved override
+        if self.normalisation_widget:
+            self.normalisation_widget.set_format_dropdown_ref(self.format_dropdown)
+
+        # Set up do_only_cutout checkbox handler
+        def on_do_only_cutout_change(change):
+            logger.debug(f"Do only cutout changed: {change['old']} -> {change['new']}")
+            if change["new"]:
+                # Force FITS output format and disable dropdown
+                if self.output_format_dropdown:
+                    self.output_format_dropdown.value = "fits"
+                    self.output_format_dropdown.disabled = True
+                # Force float32 format and disable dropdown
+                self.format_dropdown.value = "float32"
+                self.format_dropdown.disabled = True
+                # Disable resolution input (greyed out)
+                self.resolution_input.disabled = True
+                # Hide normalisation widget
+                if self.normalisation_widget:
+                    self.normalisation_widget.layout.display = "none"
+            else:
+                # Re-enable output format dropdown
+                if self.output_format_dropdown:
+                    self.output_format_dropdown.disabled = False
+                # Re-enable format dropdown (unless flux_conserved is on in normalisation widget)
+                flux_conserved = False
+                if self.normalisation_widget:
+                    flux_conserved = self.normalisation_widget.flux_conserved_checkbox.value
+                self.format_dropdown.disabled = flux_conserved
+                # Re-enable resolution input
+                self.resolution_input.disabled = False
+                # Show normalisation widget
+                if self.normalisation_widget:
+                    self.normalisation_widget.layout.display = ""
+            if self._config_change_callback:
+                self._config_change_callback()
+
+        self.do_only_cutout_checkbox.observe(on_do_only_cutout_change, names="value")
+
+        # Apply initial state if do_only_cutout is already checked
+        if self.do_only_cutout_checkbox.value:
+            on_do_only_cutout_change({"old": False, "new": True})
 
     def set_extensions(self, extensions):
         """Set available extensions and create checkboxes."""
@@ -576,6 +633,9 @@ font-size: 8px; font-weight: bold; white-space: nowrap; overflow: hidden; text-o
             if self.compact:
                 self.output_format_dropdown.value = config.output_format
 
+            # Restore do_only_cutout checkbox
+            self.do_only_cutout_checkbox.value = getattr(config, "do_only_cutout_extraction", False)
+
         self._update_filesize_prediction()
 
     def set_num_sources(self, num_sources):
@@ -633,16 +693,50 @@ font-size: 8px; font-weight: bold; white-space: nowrap; overflow: hidden; text-o
         # Ensure copy is not dynamic to prevent auto-creation of nested DotMaps
         current_config = DotMap(self.config, _dynamic=False)
 
-        # Get normalisation configuration from the dedicated widget if advanced params shown
-        if self.show_advanced_params:
+        # Check for do_only_cutout_extraction mode first (takes precedence)
+        do_only_cutout = self.do_only_cutout_checkbox.value
+
+        if do_only_cutout:
+            # Raw cutout extraction mode - force FITS output, float32, none normalisation
+            current_config.do_only_cutout_extraction = True
+            current_config.output_format = "fits"
+            current_config.data_type = "float32"
+            current_config.normalisation_method = "none"
+            current_config.flux_conserved_resizing = False
+            # Set default normalisation params for config completeness
+            if self.show_advanced_params and self.normalisation_widget:
+                normalisation_config = self.normalisation_widget.get_normalisation_config()
+                current_config.normalisation = normalisation_config.normalisation
+                current_config.interpolation = normalisation_config.interpolation
+            current_config.target_resolution = self.resolution_input.value
+            current_config.padding_factor = self.padding_slider.value
+        elif self.show_advanced_params:
+            # Get normalisation configuration from the dedicated widget
             normalisation_config = self.normalisation_widget.get_normalisation_config()
-            # Override with current UI values (this preserves user changes)
-            current_config.data_type = self.format_dropdown.value
+            current_config.do_only_cutout_extraction = False
+
+            if normalisation_config.flux_conserved_resizing:
+                # Flux conserved workflow - force float32 and none normalisation
+                current_config.data_type = "float32"
+                current_config.normalisation_method = "none"
+                # Still need to set normalisation params and interpolation for preview workaround
+                current_config.normalisation = normalisation_config.normalisation
+                current_config.interpolation = normalisation_config.interpolation
+            else:
+                # Normal workflow
+                current_config.data_type = self.format_dropdown.value
+                current_config.normalisation_method = normalisation_config.normalisation_method
+                current_config.normalisation = normalisation_config.normalisation
+                current_config.interpolation = normalisation_config.interpolation
+            # get normalisation params
+            current_config.flux_conserved_resizing = normalisation_config.flux_conserved_resizing
             current_config.target_resolution = self.resolution_input.value
             current_config.padding_factor = self.padding_slider.value
         else:
             # Use default values when advanced params are hidden
+            current_config.do_only_cutout_extraction = False
             normalisation_config = {}
+
         current_config.selected_extensions = selected_extensions
         current_config.channel_weights = channel_weights
         # Set num_channels based on context

@@ -1,0 +1,52 @@
+# Benchmark Configuration for Paper Scripts
+# This file contains configuration parameters for Cutana paper benchmarks
+
+[astropy_baseline]
+# Configuration for Astropy baseline benchmarks
+target_resolution = 150              # Target resolution for resizing (pixels)
+apply_flux_conversion = true        # Enable flux conversion (AB magnitude)
+interpolation = "bilinear"           # Interpolation method: nearest, bilinear, bicubic, biquadratic
+zeropoint_keyword = "MAGZERO"      # FITS header keyword for AB zeropoint
+
+[cutana]
+# Configuration for Cutana benchmarks
+target_resolution = 150              # Target resolution for cutouts (pixels)
+N_batch_cutout_process = 2500       # Batch size for processing
+output_format = "zarr"               # Output format: zarr or fits
+data_type = "uint8"                  # Data type: uint8, uint16, int16, float32, float64
+normalisation_method = "none"        # Normalization method
+interpolation = "bilinear"           # Interpolation method
+apply_flux_conversion = true        # Enable flux conversion
+max_sources_per_process = 25000    # Maximum sources per job/process
+skip_memory_calibration_wait = true  # Skip waiting for first worker memory measurements (useful for benchmarking)
+process_threads = 1                  # Thread limit per process (use null for auto: available_cores // 4)
+
+[framework_comparison]
+# Framework comparison specific settings
+warmup_cache = true                  # Warm up FITS cache before benchmarks
+warmup_size = 1000                    # Number of sources for cache warmup
+
+[memory_profile]
+# Memory profiling specific settings
+sampling_interval = 0.5              # Memory sampling interval (seconds)
+include_children = true              # Include child processes in memory tracking
+
+[scaling_study]
+# Thread scaling study settings
+worker_counts = [1, 2, 4, 6]     # Number of workers to test
+
+[plots]
+# Plot configuration
+dpi = 300                            # Resolution for saved plots
+figure_width = 12                    # Figure width in inches
+figure_height = 6                    # Figure height in inches
+colors = [                           # Color palette for charts
+    "#ff9999",
+    "#66b3ff",
+    "#99ff99",
+    "#ffcc99",
+    "#ff99cc",
+    "#99ffff",
+    "#ffff99",
+    "#cc99ff"
+]

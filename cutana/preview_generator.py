@@ -10,24 +10,24 @@ This module provides efficient preview generation functionality with intelligent
 caching and memory management for handling large source catalogues.
 """
 
-import ast
 import asyncio
-import os
 import time
-from typing import Dict, List, Tuple, Optional
-from dotmap import DotMap
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
 import numpy as np
+from dotmap import DotMap
 from loguru import logger
 
 from .catalogue_preprocessor import (
-    load_catalogue,
     CatalogueValidationError,
+    load_catalogue,
+    parse_fits_file_paths,
 )
-from .cutout_process import (
+from .cutout_process_utils import (
     _process_sources_batch_vectorized_with_fits_set,
 )
-from .fits_dataset import prepare_fits_sets_and_sources, load_fits_sets
+from .fits_dataset import load_fits_sets, prepare_fits_sets_and_sources
 
 
 class PreviewCache:
@@ -38,20 +38,6 @@ class PreviewCache:
     fits_data_cache: Optional[Dict] = None
     config_cache: Optional[Dict] = None
     preview_seed: Optional[int] = None  # Seed for consistent preview sampling
-
-
-def _parse_fits_file_paths(fits_paths_str) -> List[str]:
-    """Parse FITS file paths from string format."""
-    if isinstance(fits_paths_str, str):
-        if fits_paths_str.startswith("[") and fits_paths_str.endswith("]"):
-            try:
-                return ast.literal_eval(fits_paths_str)
-            except (ValueError, SyntaxError):
-                return [path.strip().strip("'\"") for path in fits_paths_str.strip("[]").split(",")]
-        else:
-            return [fits_paths_str]
-    else:
-        return fits_paths_str
 
 
 def _get_selected_extensions(config: DotMap) -> List[str]:
@@ -191,9 +177,8 @@ async def load_sources_for_previews(
     parse_errors = 0
     for _, row in catalogue_df.iterrows():
         try:
-            fits_paths = _parse_fits_file_paths(row["fits_file_paths"])
-            fits_paths = [os.path.normpath(path) for path in fits_paths]
-            fits_set = tuple((fits_paths))
+            fits_paths = parse_fits_file_paths(row["fits_file_paths"])
+            fits_set = tuple(fits_paths)
             fits_set_counts[fits_set] = fits_set_counts.get(fits_set, 0) + 1
         except Exception:
             parse_errors += 1
@@ -215,8 +200,7 @@ async def load_sources_for_previews(
 
     for _, row in catalogue_df.iterrows():
         try:
-            fits_paths = _parse_fits_file_paths(row["fits_file_paths"])
-            fits_paths = [os.path.normpath(path) for path in fits_paths]
+            fits_paths = parse_fits_file_paths(row["fits_file_paths"])
             fits_set = tuple(fits_paths)
 
             if fits_set in selected_fits_sets:
@@ -371,9 +355,7 @@ async def generate_previews(
     ):
         logger.warning("No cached sources available, loading into cache first")
         clear_preview_cache()
-        cache_info = await load_sources_for_previews(
-            config.source_catalogue, config, progress_callback
-        )
+        await load_sources_for_previews(config.source_catalogue, config, progress_callback)
 
     cached_sources = PreviewCache.sources_cache
     cached_fits_data = PreviewCache.fits_data_cache
@@ -408,6 +390,31 @@ async def generate_previews(
     preview_config.fits_extensions = selected_extensions
     preview_config.log_level = "WARNING"  # Enable debug logging for preview
     preview_config.max_workers = 1  # Single worker for preview
+
+    # For Previews never use none normalisation, instead use linear
+    # even if flux_conserved_resizing is enabled (which forces normalisation='none')
+    # Previews are only for visualization
+    # Also disable do_only_cutout_extraction for previews (raw cutouts don't display well)
+    if preview_config.do_only_cutout_extraction:
+        logger.info("Preview: Disabling do_only_cutout_extraction for display purposes")
+        preview_config.do_only_cutout_extraction = False
+        preview_config.normalisation_method = "linear"
+        preview_config.normalisation.percentile = 100  # None
+        # "act like no resizing happend"
+        preview_config.target_resolution = 500
+        preview_config.interpolation = "nearest"
+
+    if preview_config.flux_conserved_resizing or preview_config.normalisation_method == "none":
+        logger.info(
+            f"Preview: flux_conserved_resizing={preview_config.flux_conserved_resizing}, normalisation_method={preview_config.normalisation_method}"
+        )
+        logger.info("Preview: Overriding normalisation_method to 'linear' for display purposes")
+        preview_config.normalisation_method = "linear"
+        preview_config.normalisation.percentile = 100  # None
+
+        logger.info(
+            f"Preview: Updated to normalisation_method={preview_config.normalisation_method}, flux_conserved_resizing={preview_config.flux_conserved_resizing}"
+        )
 
     # Process cutouts using cached FITS data and the refactored processing function
     all_results = []
@@ -475,16 +482,3 @@ def regenerate_preview_seed():
     PreviewCache.preview_seed = new_seed
     logger.info(f"Generated new preview seed: {new_seed}")
     return new_seed
-
-
-def get_cache_status() -> Dict:
-    """Get current cache status information."""
-    if PreviewCache.config_cache:
-        return {
-            "cached": True,
-            "num_sources": PreviewCache.config_cache.get("num_cached_sources", 0),
-            "num_fits": PreviewCache.config_cache.get("num_cached_fits", 0),
-            "cache_timestamp": PreviewCache.config_cache.get("cache_timestamp", 0),
-        }
-    else:
-        return {"cached": False}

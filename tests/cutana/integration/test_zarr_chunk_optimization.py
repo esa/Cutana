@@ -11,14 +11,16 @@ Tests verify that zarr archives are created with proper chunk sizes
 that don't unnecessarily split small datasets.
 """
 
-import numpy as np
-import zarr
 from pathlib import Path
+
+import numpy as np
 import pytest
+import zarr
 from dotmap import DotMap
+
 from cutana.cutout_writer_zarr import (
-    create_zarr_from_memory,
     calculate_optimal_chunk_shape,
+    create_zarr_from_memory,
 )
 
 

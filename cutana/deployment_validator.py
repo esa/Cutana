@@ -11,11 +11,11 @@ This module provides comprehensive validation that a Cutana installation is work
 including dependency checks, configuration validation, and a minimal end-to-end test.
 """
 
-import sys
 import os
-import tempfile
 import shutil
 import subprocess
+import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Dict, List
@@ -128,6 +128,7 @@ class DeploymentValidator:
         import_name_mapping = {
             "astropy": [("astropy.io.fits", None), ("astropy.wcs", None)],
             "pillow": [("PIL", None)],
+            "scikit_image": [("skimage", None)],
         }
 
         # Build list of dependencies to check
@@ -228,10 +229,11 @@ class DeploymentValidator:
             # Import required modules
             import numpy as np
             import pandas as pd
+            import zarr
             from astropy.io import fits
             from astropy.wcs import WCS
-            import zarr
-            from cutana import get_default_config, Orchestrator
+
+            from cutana import Orchestrator, get_default_config
 
             # Create temporary directories
             temp_data_dir = Path(tempfile.mkdtemp(prefix="cutana_e2e_data_"))
@@ -308,7 +310,7 @@ class DeploymentValidator:
 
             # Run processing
             orchestrator = Orchestrator(config)
-            result = orchestrator.start_processing(catalogue_data)
+            result = orchestrator.start_processing(str(catalogue_path))
 
             if result.get("status") != "completed":
                 logger.error(f"  Processing failed: {result}")

@@ -13,15 +13,16 @@ UI StatusPanel → BackendInterface → Orchestrator → JobTracker → Progress
 
 import time
 from unittest.mock import Mock, patch
-import pytest
-import pandas as pd
 
+import pandas as pd
+import pytest
+
+from cutana import get_default_config
+from cutana.job_tracker import JobTracker
+from cutana.orchestrator import Orchestrator
+from cutana.progress_report import ProgressReport
 from cutana_ui.main_screen.status_panel import StatusPanel
 from cutana_ui.utils.backend_interface import BackendInterface
-from cutana.orchestrator import Orchestrator
-from cutana.job_tracker import JobTracker
-from cutana.progress_report import ProgressReport
-from cutana import get_default_config
 
 
 class TestStatusPanelE2E:
@@ -90,27 +91,26 @@ class TestStatusPanelE2E:
 
         # Create a mock orchestrator that simulates processing
         mock_orchestrator = Mock(spec=Orchestrator)
-        mock_progress_data = {
-            "total_sources": 10,
-            "completed_sources": 0,
-            "failed_sources": 0,
-            "progress_percent": 0.0,
-            "throughput": 0.0,
-            "eta_seconds": None,
-            "memory_percent": 25.0,
-            "cpu_percent": 50.0,
-            "memory_available_gb": 8.0,
-            "memory_total_gb": 16.0,
-            "active_processes": 1,
-            "total_memory_footprint_mb": 512.0,
-            "process_errors": 0,
-            "process_warnings": 0,
-            "start_time": time.time(),
-            "is_processing": True,
-        }
 
-        # Use ProgressReport for mock return
-        mock_progress_report = ProgressReport.from_dict(mock_progress_data)
+        # Create ProgressReport directly
+        mock_progress_report = ProgressReport(
+            total_sources=10,
+            completed_sources=0,
+            failed_sources=0,
+            progress_percent=0.0,
+            throughput=0.0,
+            eta_seconds=None,
+            memory_percent=25.0,
+            cpu_percent=50.0,
+            memory_available_gb=8.0,
+            memory_total_gb=16.0,
+            active_processes=1,
+            total_memory_footprint_mb=512.0,
+            process_errors=0,
+            process_warnings=0,
+            start_time=time.time(),
+            is_processing=True,
+        )
         mock_orchestrator.get_progress_for_ui.return_value = mock_progress_report
 
         # Set mock orchestrator in backend
@@ -127,10 +127,25 @@ class TestStatusPanelE2E:
         assert status["memory_percent"] == 25.0
 
         # Simulate progress
-        mock_progress_data["completed_sources"] = 5
-        mock_progress_data["progress_percent"] = 50.0
-        mock_progress_report = ProgressReport.from_dict(mock_progress_data)
-        mock_orchestrator.get_progress_for_ui.return_value = mock_progress_report
+        mock_progress_report_updated = ProgressReport(
+            total_sources=10,
+            completed_sources=5,
+            failed_sources=0,
+            progress_percent=50.0,
+            throughput=0.0,
+            eta_seconds=None,
+            memory_percent=25.0,
+            cpu_percent=50.0,
+            memory_available_gb=8.0,
+            memory_total_gb=16.0,
+            active_processes=1,
+            total_memory_footprint_mb=512.0,
+            process_errors=0,
+            process_warnings=0,
+            start_time=time.time(),
+            is_processing=True,
+        )
+        mock_orchestrator.get_progress_for_ui.return_value = mock_progress_report_updated
 
         status = await BackendInterface.get_processing_status()
         assert status["completed_sources"] == 5

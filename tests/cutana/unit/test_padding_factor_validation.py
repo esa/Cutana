@@ -7,8 +7,9 @@
 """Unit tests for padding_factor parameter validation."""
 
 import pytest
-from cutana.validate_config import validate_config
+
 from cutana.get_default_config import get_default_config
+from cutana.validate_config import validate_config
 
 
 class TestPaddingFactorValidation:

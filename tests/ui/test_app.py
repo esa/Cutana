@@ -7,6 +7,7 @@
 """Tests for the main application with unified UI."""
 
 from unittest.mock import patch
+
 from dotmap import DotMap
 
 from cutana_ui.app import CutanaApp, start
@@ -59,10 +60,10 @@ class TestCutanaApp:
             # Create a mock MainScreen instance that won't cause widget errors
             mock_main_screen_instance = mock_main_screen.return_value
 
-            app._on_configuration_complete(full_config, config_path)
+            app._on_configuration_complete(full_config)
 
             # Verify MainScreen was created with correct parameters
-            mock_main_screen.assert_called_once_with(config=full_config, config_path=config_path)
+            mock_main_screen.assert_called_once_with(config=full_config)
             # Verify container.children was set
             assert mock_container.children == [mock_main_screen_instance]
 
@@ -81,7 +82,6 @@ class TestCutanaApp:
         app = CutanaApp()
 
         assert app.container.layout.width == "100%"
-        assert app.container.layout.min_height == "100vh"
         assert "cutana-container" in app.container._dom_classes
 
 

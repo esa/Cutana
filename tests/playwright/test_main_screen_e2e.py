@@ -6,8 +6,9 @@
 #   the terms contained in the file 'LICENCE.txt'.
 """Main screen e2e tests for Cutana UI via Voila."""
 
-import pytest
 from pathlib import Path
+
+import pytest
 
 # Marks this as a Playwright test
 pytestmark = pytest.mark.playwright

@@ -6,13 +6,15 @@
 #   the terms contained in the file 'LICENCE.txt'.
 """Output folder selection component."""
 
-import ipywidgets as widgets
 from pathlib import Path
+
+import ipywidgets as widgets
 from loguru import logger
 
-from ..widgets.file_chooser import CutanaFileChooser
-from ..styles import ESA_BLUE_ACCENT, BACKGROUND_DARK, BORDER_COLOR, scale_px
 from cutana.get_default_config import get_default_config
+
+from ..styles import BACKGROUND_DARK, BORDER_COLOR, ESA_BLUE_ACCENT, scale_px
+from ..widgets.file_chooser import CutanaFileChooser
 
 
 class OutputFolderComponent(widgets.VBox):
@@ -148,4 +150,4 @@ class OutputFolderComponent(widgets.VBox):
             return cfg.output_dir
         except Exception as e:
             logger.warning(f"Failed to get default from config: {e}")
-            return str(Path.cwd() / "cutana" / "output")
+            return str(Path.cwd() / "cutana_output")

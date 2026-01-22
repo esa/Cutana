@@ -28,9 +28,9 @@ Test Suite Details:
 - Main Screen Workflow: Complete workflow from CSV selection to processing screen
 """
 
+import os
 import subprocess
 import sys
-import os
 
 
 def run_playwright_tests(headed=True, specific_test=None):

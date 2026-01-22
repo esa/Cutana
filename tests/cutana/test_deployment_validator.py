@@ -10,9 +10,10 @@ Test for deployment validation module.
 This test ensures the deployment validation function is importable and executable.
 """
 
-import pytest
 import os
 from unittest.mock import patch
+
+import pytest
 
 
 def test_deployment_validation_importable():

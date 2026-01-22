@@ -7,16 +7,16 @@
 """Custom file/folder chooser wrapper for Cutana UI."""
 
 import os
+
 import ipywidgets as widgets
 from ipyfilechooser import FileChooser
-from loguru import logger
 
 from ..styles import (
     BACKGROUND_DARK,
     BORDER_COLOR,
+    ESA_BLUE_ACCENT,
     TEXT_COLOR,
     TEXT_COLOR_LIGHT,
-    ESA_BLUE_ACCENT,
     scale_px,
 )
 
@@ -187,79 +187,6 @@ class CutanaFileChooser(widgets.VBox):
     def selected_filename(self):
         """Get the selected filename."""
         return self.file_chooser.selected_filename
-
-    def set_selected_file(self, file_path):
-        """Try to programmatically select a file in the file chooser."""
-        try:
-            from pathlib import Path
-
-            if not file_path or not Path(file_path).exists():
-                logger.debug(f"File path invalid or doesn't exist: {file_path}")
-                return False
-
-            file_path_obj = Path(file_path)
-            parent_dir = str(file_path_obj.parent)
-            filename = file_path_obj.name
-
-            logger.debug(f"Attempting to select file: {file_path}")
-            logger.debug(f"Parent directory: {parent_dir}")
-            logger.debug(f"Filename: {filename}")
-
-            # Set the directory path first
-            self.file_chooser.path = parent_dir
-
-            # Method 1: Use default_filename and default_path (most reliable for ipyfilechooser)
-            success = False
-            try:
-                self.file_chooser.default_path = parent_dir
-                self.file_chooser.default_filename = filename
-
-                # Force refresh to update the UI
-                if hasattr(self.file_chooser, "refresh"):
-                    self.file_chooser.refresh()
-
-                # Check if selection worked
-                current_selection = self.selected
-                if current_selection and Path(current_selection).name == filename:
-                    success = True
-                    logger.debug("Method 1 (default_path + default_filename) succeeded")
-
-            except Exception as e:
-                logger.debug(f"Method 1 failed: {e}")
-
-            # Method 2: Try setting the 'default' property directly
-            if not success:
-                try:
-                    self.file_chooser.default = str(file_path)
-                    current_selection = self.selected
-                    if current_selection and str(current_selection) == str(file_path):
-                        success = True
-                        logger.debug("Method 2 (default property) succeeded")
-                except Exception as e:
-                    logger.debug(f"Method 2 failed: {e}")
-
-            # Method 3: Direct assignment to selected (might not work but worth trying)
-            if not success:
-                try:
-                    # This is a last resort and might not work due to widget constraints
-                    if hasattr(self.file_chooser, "_selected"):
-                        self.file_chooser._selected = str(file_path)
-                        current_selection = self.selected
-                        if current_selection and str(current_selection) == str(file_path):
-                            success = True
-                            logger.debug("Method 3 (direct _selected) succeeded")
-                except Exception as e:
-                    logger.debug(f"Method 3 failed: {e}")
-
-            final_selection = self.selected
-            logger.debug(f"Final selection: {final_selection}")
-            logger.debug(f"Selection success: {success}")
-
-            return success
-
-        except Exception as e:
-            logger.error(f"set_selected_file failed: {e}")
-            return False
 
     def reset(self, path=None):
         """Reset the file chooser."""

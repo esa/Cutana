@@ -14,13 +14,14 @@ Tests cover:
 - FITS file information extraction
 """
 
-from unittest.mock import patch, MagicMock
-import pytest
+from unittest.mock import MagicMock, patch
+
 import numpy as np
+import pytest
 from astropy.io import fits
 from astropy.wcs import WCS
 
-from cutana.fits_reader import load_fits_file, validate_fits_file, get_fits_info
+from cutana.fits_reader import load_fits_file
 
 
 class TestFitsReader:
@@ -117,71 +118,6 @@ class TestFitsReader:
 
         with pytest.raises(ValueError, match="Invalid FITS file"):
             load_fits_file(str(corrupted_file), ["PRIMARY"])
-
-    def test_validate_fits_file(self, mock_fits_file):
-        """Test FITS file validation."""
-        # Valid file should pass
-        assert validate_fits_file(mock_fits_file) is True
-
-        # Non-existent file should fail
-        assert validate_fits_file("/nonexistent/file.fits") is False
-
-    def test_validate_fits_file_corrupted(self, tmp_path):
-        """Test validation with corrupted FITS file."""
-        corrupted_file = tmp_path / "corrupted.fits"
-        with open(corrupted_file, "w") as f:
-            f.write("This is not a FITS file")
-
-        assert validate_fits_file(str(corrupted_file)) is False
-
-    def test_get_fits_info(self, mock_fits_file):
-        """Test getting FITS file information."""
-        info = get_fits_info(mock_fits_file)
-
-        assert "path" in info
-        assert "num_extensions" in info
-        assert "extensions" in info
-        assert "primary_shape" in info
-        assert "file_size" in info
-        assert info["path"] == mock_fits_file
-        assert isinstance(info["extensions"], list)
-        assert len(info["extensions"]) > 0
-
-        # Check first extension info (PRIMARY)
-        ext_info = info["extensions"][0]
-        assert "index" in ext_info
-        assert "name" in ext_info
-        assert "type" in ext_info
-        assert "shape" in ext_info
-        assert "has_data" in ext_info
-        assert ext_info["index"] == 0
-        assert ext_info["has_data"] is True
-        assert ext_info["shape"] == (1000, 1000)  # Our mock data shape
-
-    def test_get_fits_info_missing_file(self):
-        """Test getting info for missing FITS file."""
-        info = get_fits_info("/nonexistent/file.fits")
-
-        assert "path" in info
-        assert "error" in info
-        assert "valid" in info
-        assert info["valid"] is False
-        assert info["path"] == "/nonexistent/file.fits"
-
-    def test_get_fits_info_multiple_extensions(self, mock_fits_file):
-        """Test getting info for FITS file with multiple extensions."""
-        info = get_fits_info(mock_fits_file)
-
-        # Should have PRIMARY + 3 image extensions
-        assert info["num_extensions"] == 4
-        assert len(info["extensions"]) == 4
-
-        # Check that all expected extensions are present
-        extension_names = [ext["name"] for ext in info["extensions"]]
-        assert "PRIMARY" in extension_names
-        assert "VIS" in extension_names
-        assert "NIR-Y" in extension_names
-        assert "NIR-H" in extension_names
 
     @patch("astropy.io.fits.open")
     @patch("os.path.exists")

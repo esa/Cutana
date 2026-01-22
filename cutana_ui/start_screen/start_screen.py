@@ -6,28 +6,30 @@
 #   the terms contained in the file 'LICENCE.txt'.
 """Unified start screen combining file selection, analysis, and configuration."""
 
-import ipywidgets as widgets
 import asyncio
+
+import ipywidgets as widgets
 from loguru import logger
 
-from .file_selection import FileSelectionComponent
-from .configuration_component import ConfigurationComponent
-from .output_folder import OutputFolderComponent
-from ..widgets.loading_spinner import LoadingSpinner
+from cutana.get_default_config import get_default_config
+
+from ..styles import (
+    BACKGROUND_DARK,
+    COMMON_STYLES,
+    CONTAINER_HEIGHT,
+    CONTAINER_WIDTH,
+    scale_px,
+)
+from ..utils.backend_interface import BackendInterface
+from ..utils.log_manager import get_console_log_level, set_console_log_level
 from ..widgets.header_version_help import (
     HelpPopup,
     create_header_container,
 )
-from ..utils.backend_interface import BackendInterface
-from cutana.get_default_config import get_default_config, save_config_with_timestamp
-from ..styles import (
-    COMMON_STYLES,
-    BACKGROUND_DARK,
-    CONTAINER_WIDTH,
-    CONTAINER_HEIGHT,
-    scale_px,
-    scale_vh,
-)
+from ..widgets.loading_spinner import LoadingSpinner
+from .configuration_component import ConfigurationComponent
+from .file_selection import FileSelectionComponent
+from .output_folder import OutputFolderComponent
 
 
 class StartScreen(widgets.VBox):
@@ -50,12 +52,14 @@ class StartScreen(widgets.VBox):
             logger.warning("Could not import cutana version")
             version_text = "version unknown"
 
-        # Create header container with version and help button
-        self.header_container, self.help_button = create_header_container(
+        # Create header container with version, log level dropdown, and help button
+        self.header_container, self.help_button, self.log_level_dropdown = create_header_container(
             version_text=version_text,
             container_width=CONTAINER_WIDTH,
             help_button_callback=self._toggle_help,
+            log_level_callback=set_console_log_level,
             logo_title="CUTANA Cutout Generator Configuration",
+            initial_log_level=get_console_log_level(),
         )
 
         # Create help panel
@@ -135,7 +139,6 @@ class StartScreen(widgets.VBox):
             ],
             layout=widgets.Layout(
                 width="100%",
-                min_height=f"{scale_vh(95)}vh",
                 background=BACKGROUND_DARK,
                 padding=f"{scale_px(3)}px",  # Reduced padding for tighter spacing
             ),
@@ -292,7 +295,7 @@ class StartScreen(widgets.VBox):
             self.file_selection.show_error(f"Unexpected error during catalogue analysis: {str(e)}")
             self._update_layout()
 
-    def _on_start_click(self, b):
+    def _on_start_click(self, _b):
         """Handle start button click."""
         try:
             # Gather all configuration
@@ -346,13 +349,11 @@ class StartScreen(widgets.VBox):
                 f"Selected extensions from start screen: {selected_ext_names} (out of {available_ext_names})"
             )
 
-            # Save configuration with timestamp
-            config_path = save_config_with_timestamp(full_config, config["output_dir"])
-            logger.info(f"Configuration saved to: {config_path}")
+            # Do not save the config here
 
             # Proceed to main screen
             if self.on_complete:
-                self.on_complete(full_config, config_path)
+                self.on_complete(full_config)
 
         except Exception as e:
             logger.error(f"Error starting Cutana: {e}")
