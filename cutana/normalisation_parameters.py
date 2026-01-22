@@ -17,11 +17,11 @@ The parameters are organized by normalization method and include:
 - Method-specific defaults for unified parameters
 """
 
-from typing import Dict, Any, Tuple
-from dotmap import DotMap
-import fitsbolt
-from loguru import logger
+from typing import Any, Dict, Tuple
 
+import fitsbolt
+from dotmap import DotMap
+from loguru import logger
 
 # =============================================================================
 # GENERAL NORMALIZATION PARAMETERS
@@ -43,9 +43,6 @@ class NormalisationDefaults:
     CROP_ENABLE = False  # Whether to enable crop for maximum value computation
     CROP_HEIGHT = 64  # Default crop height (must be smaller than image resolution)
     CROP_WIDTH = 64  # Default crop width (must be smaller than image resolution)
-
-    # Interpolation method for image resizing
-    INTERPOLATION = "bilinear"  # Default interpolation method
 
 
 class NormalisationRanges:
@@ -203,6 +200,79 @@ def get_method_tooltip(method: str) -> str:
 # =============================================================================
 
 
+def build_fitsbolt_params_from_external_cfg(
+    external_cfg: DotMap, num_channels: int
+) -> Dict[str, Any]:
+    """
+    Build fitsbolt parameters dictionary from an external fitsbolt configuration.
+
+    This function handles the external_fitsbolt_cfg DotMap from AnomalyMatch,
+    converting it to the format expected by fitsbolt.normalise_images().
+
+    Args:
+        external_cfg: External fitsbolt config DotMap (from AnomalyMatch's fb_create_cfg())
+        num_channels: Number of channels in the images to be normalized
+
+    Returns:
+        Dictionary of fitsbolt parameters ready for normalise_images()
+    """
+    fitsbolt_params = {
+        "normalisation_method": external_cfg.normalisation_method,
+        "show_progress": False,
+        "num_workers": 1,  # Parallelism handled externally by cutana
+    }
+
+    # Extract normalisation sub-config
+    norm_cfg = external_cfg.normalisation
+
+    # Add method-specific parameters based on normalisation method
+    method = external_cfg.normalisation_method
+
+    if method == fitsbolt.NormalisationMethod.CONVERSION_ONLY:
+        # No additional parameters needed for simple dtype conversion
+        pass
+
+    elif method == fitsbolt.NormalisationMethod.LOG:
+        fitsbolt_params["norm_log_scale_a"] = norm_cfg.log_scale_a
+        max_val = getattr(norm_cfg, "maximum_value", None)
+        min_val = getattr(norm_cfg, "minimum_value", None)
+        if max_val is not None:
+            fitsbolt_params["norm_maximum_value"] = max_val
+        if min_val is not None:
+            fitsbolt_params["norm_minimum_value"] = min_val
+
+    elif method == fitsbolt.NormalisationMethod.ZSCALE:
+        fitsbolt_params["norm_zscale_n_samples"] = norm_cfg.zscale.n_samples
+        fitsbolt_params["norm_zscale_contrast"] = norm_cfg.zscale.contrast
+
+    elif method == fitsbolt.NormalisationMethod.ASINH:
+        # ASINH uses per-channel scale and clip values
+        fitsbolt_params["norm_asinh_scale"] = norm_cfg.asinh_scale
+        fitsbolt_params["norm_asinh_clip"] = norm_cfg.asinh_clip
+
+    elif method == fitsbolt.NormalisationMethod.MIDTONES:
+        raise ValueError(
+            "MIDTONES normalisation method is not supported in Cutana streaming mode. "
+            "Please use CONVERSION_ONLY, LOG, ZSCALE, or ASINH."
+        )
+
+    else:
+        raise ValueError(
+            f"Unsupported normalisation method in external config: {method}. "
+            "Supported methods: CONVERSION_ONLY, LOG, ZSCALE, ASINH."
+        )
+
+    # Handle crop for maximum value if configured
+    # Use getattr to safely check if the key exists (may be missing after TOML serialization)
+    crop_for_max = getattr(norm_cfg, "crop_for_maximum_value", None)
+    if crop_for_max is not None:
+        fitsbolt_params["norm_crop_for_maximum_value"] = crop_for_max
+
+    logger.debug(f"Built fitsbolt params from external config: method={method}")
+
+    return fitsbolt_params
+
+
 def convert_cfg_to_fitsbolt_cfg(config: DotMap, num_channels: int = 1) -> Dict[str, Any]:
     """Convert Cutana configuration to fitsbolt parameters dictionary.
 
@@ -274,5 +344,5 @@ def convert_cfg_to_fitsbolt_cfg(config: DotMap, num_channels: int = 1) -> Dict[s
         logger.debug(
             f"ASINH normalization: a={a}, percentile={percentile}, channels={num_channels}"
         )
-
+    fitsbolt_params["num_workers"] = 1  # Single-threaded processing; parallelism handled externally
     return fitsbolt_params

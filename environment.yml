@@ -12,12 +12,14 @@ dependencies:
   - black                    # Code formatting
   - dotmap                   # Dot-accessible dictionaries
   - flake8                   # Linting
+  - vulture                  # Dead code detection
   - fsspec                   # Filesystem abstraction for partial FITS loading
-  - ipykernel==6.30.1        # Jupyter kernel
+  - ipykernel>=6.29,<7      # Jupyter kernel (pinned <7, see issue #265)
   - ipywidgets               # Jupyter widgets
   - loguru                   # Structured logging
   - numpy                    # Array operations
   - matplotlib               # For preview rendering
+  - scikit-image             # Image transformations and utilities
   - pandas                   # DataFrame operations
   - pip                      # Package installer
   - portalocker>=2.0         # Cross-platform file locking
@@ -29,7 +31,8 @@ dependencies:
   - tqdm                     # nice progress bar
   - voila                    # Notebook to web app conversion
   - pip:
-      - fitsbolt>=0.1.5        # FITS file loading and normalisation
+      - drizzle>=2.0.1         # Image resampling with drizzle algorithm
+      - fitsbolt>=0.1.6        # FITS file loading and normalisation
       - images-to-zarr>=0.3.5  # Image to Zarr conversion
       - ipyfilechooser         # File/folder selection widget
       - memory-profiler        # Memory usage profiling

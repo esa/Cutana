@@ -17,14 +17,16 @@ Tests cover:
 """
 
 from unittest.mock import patch
-import pytest
+
 import numpy as np
+import pytest
 from dotmap import DotMap
+
 from cutana.cutout_writer_zarr import (
-    generate_process_subfolder,
-    create_zarr_from_memory,
-    prepare_cutouts_for_zarr,
     create_process_zarr_archive_initial,
+    create_zarr_from_memory,
+    generate_process_subfolder,
+    prepare_cutouts_for_zarr,
 )
 
 

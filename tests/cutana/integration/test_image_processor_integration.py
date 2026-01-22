@@ -17,11 +17,12 @@ Tests cover:
 
 import numpy as np
 import pytest
+
 from cutana.image_processor import (
-    resize_images,
-    convert_data_type,
     apply_normalisation,
     combine_channels,
+    convert_data_type,
+    resize_batch_tensor,
 )
 
 
@@ -192,13 +193,20 @@ class TestImageProcessorEnhanced:
         sizes = [(64, 64), (256, 256), (192, 192)]
 
         for target_size in sizes:
-            resized = resize_images(original_image, target_size)
+            source_cutouts = {"source_0": {"VIS": original_image}}
+            resized = resize_batch_tensor(
+                source_cutouts,
+                target_resolution=target_size,
+                interpolation="bilinear",
+                flux_conserved_resizing=False,
+                pixel_scales_dict={"VIS": 0.1},
+            )
 
-            assert resized.shape == (1,) + target_size  # Single image becomes batch
+            assert resized.shape == (1,) + target_size + (1,)  # (N_sources, H, W, N_extensions)
 
             # Statistical properties should be approximately preserved
             original_mean = np.mean(original_image)
-            resized_mean = np.mean(resized[0])  # Access first image in batch
+            resized_mean = np.mean(resized[0, :, :, 0])  # Access first source, first channel
 
             # Allow some tolerance for interpolation effects
             assert abs(resized_mean - original_mean) / original_mean < 0.1
@@ -224,21 +232,36 @@ class TestImageProcessorEnhanced:
 
     def test_complete_processing_pipeline_validation(self, realistic_cutout_data, mock_config):
         """Test complete processing pipeline produces valid scientific data."""
-        # Create batch array from cutout data
-        cutouts_list = []
+        # Create source_cutouts dict from realistic data - single source with all channels
+        source_cutouts = {"source_0": {}}
+        pixel_scales_dict = {}
         for channel, cutout in realistic_cutout_data.items():
-            cutouts_list.append(cutout)
-
-        cutouts_batch = np.array(cutouts_list)
+            source_cutouts["source_0"][channel] = cutout
+            pixel_scales_dict[channel] = 0.1
 
         # Process using individual functions
-        resized = resize_images(cutouts_batch, target_size=(64, 64), interpolation="bilinear")
+        resized = resize_batch_tensor(
+            source_cutouts,
+            target_resolution=(64, 64),
+            interpolation="bilinear",
+            flux_conserved_resizing=False,
+            pixel_scales_dict=pixel_scales_dict,
+        )
+
+        # Reshape for normalization: (N_sources, H, W, N_extensions) -> (N, H, W)
+        N_sources, H, W, N_extensions = resized.shape
         mock_config.normalisation_method = "asinh"
         normalized = apply_normalisation(resized, mock_config)
         processed_batch = convert_data_type(normalized, "float32")
 
-        assert processed_batch.shape[0] == len(cutouts_list)  # Same number of cutouts
-        assert processed_batch.shape[1:] == (64, 64)  # Target resolution
+        assert processed_batch.shape[-1] == len(
+            realistic_cutout_data
+        )  # Same number of cutouts (one per channel)
+        assert processed_batch.shape[1:] == (
+            64,
+            64,
+            len(source_cutouts["source_0"].keys()),
+        )  # Target resolution
         assert processed_batch.dtype == np.float32
 
         # Verify each processed cutout
@@ -385,14 +408,22 @@ class TestImageProcessorEnhanced:
         large_image[1000:1048, 1000:1048] += 10000
 
         # Test resizing (most memory-intensive operation)
-        resized = resize_images(large_image, (512, 512))
+        source_cutouts = {"source_0": {"VIS": large_image}}
+        resized = resize_batch_tensor(
+            source_cutouts,
+            target_resolution=(512, 512),
+            interpolation="bilinear",
+            flux_conserved_resizing=False,
+            pixel_scales_dict={"VIS": 0.1},
+        )
 
-        assert resized.shape == (1, 512, 512)  # Single image becomes batch
+        assert resized.shape == (1, 512, 512, 1)  # (N_sources, H, W, N_extensions)
         assert resized.dtype == np.float32
 
-        # Test normalization on batch
+        # Test normalization on batch - reshape for normalization
+        resized_for_norm = resized.reshape(1, 512, 512)
         mock_config.normalisation_method = "asinh"
-        normalized = apply_normalisation(resized, mock_config)
+        normalized = apply_normalisation(resized_for_norm, mock_config)
 
         assert normalized.shape == (1, 512, 512)  # Batch format
         assert np.all(np.isfinite(normalized))

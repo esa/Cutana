@@ -1,4 +1,4 @@
-[//]: # (Copyright &#40;c&#41; European Space Agency, 2025.)
+[//]: # (Copyright © European Space Agency, 2025.)
 [//]: # ()
 [//]: # (This file is subject to the terms and conditions defined in file 'LICENCE.txt', which)
 [//]: # (is part of this source code package. No part of the package, including)
@@ -67,7 +67,7 @@ config.source_catalogue = "sources.csv" # See format below
 config.output_dir = "cutouts_output/"
 config.output_format = "zarr"  # or "fits"
 config.target_resolution = 256
-config.selected_extensions = ["VIS"]  # Extensions to process
+config.selected_extensions = [{'name': 'VIS', 'ext': 'PrimaryHDU'}]  # Extensions to process
 # 1 output channel for VIS, details explained below
 config.channel_weights = {
         "VIS": [1.0],
@@ -81,7 +81,7 @@ results = orchestrator.run()
 
 ## Input Data Format
 
-Your source catalogue must be a CSV file containing these columns:
+Your source catalogue must be a CSV/FITS/PARQUET file containing these columns:
 
 ```csv
 SourceID,RA,Dec,diameter_pixel,fits_file_paths
@@ -100,7 +100,38 @@ TILE_102018666_12346,45.124,12.457,256,"['/path/to/tile_vis.fits','/path/to/tile
 
 **ZARR Format** (recommended): All cutouts stored in a efficient archives, ideal for large datasets and analysis workflows. Cutana uses the [Zarr format](https://zarr.readthedocs.io/en/stable/) for high-performance storage and the [images_to_zarr](https://github.com/gomezzz/images_to_zarr/) library for conversion. (See the Output section below for sample code to access)
 
-**FITS Format**: Individual FITS files per source, best for compatibility with existing astronomical software.
+**FITS Format**: Individual FITS files per source, best for compatibility with existing astronomical software. Mandatory format for `do_only_cutout_extraction`, 
+which skips all processing aside from the flux converison, which can be disabled.
+
+## WCS (World Coordinate System) Handling
+
+### FITS Output
+FITS cutouts **preserve full WCS information** with accurate astrometric calibration:
+
+- **Automatic pixel scale correction**: When cutouts are resized (e.g., from extracted size to `target_resolution`), the WCS pixel scale is automatically adjusted to maintain accurate coordinate transformations
+- **Reference coordinate centering**: WCS reference pixel (`CRPIX`) is set to the cutout center, with reference coordinates (`CRVAL`) pointing to the source position
+- **Format compatibility**: Supports CD matrix, CDELT, and PC+CDELT WCS formats from original FITS files
+- **Sky area preservation**: Total sky coverage remains constant while pixel scale adjusts for resize operations
+
+### Zarr Output
+**Important**: Zarr archives **do not contain WCS information**. The WCS data is not recorded in the image metadata stored within the Zarr files. The central point and image size (in pixels or arcseconds, depending on what is provided) is recorded.
+
+### Flux-Conserved Output
+
+For scientific analysis requiring photometric accuracy, Cutana supports flux-conserving resizing:
+
+```python
+config.flux_conserved_resizing = True
+config.data_type = "float32"
+config.normalisation_method = "none"
+```
+
+**Important**: When using flux-conserved resizing, you should:
+- Set `data_type = "float32"` to preserve numerical precision
+- Use `normalisation_method = "none"` to keep original flux values
+- This mode preserves total flux during the resizing operation, essential for photometric measurements
+
+Note: Flux conservation uses [drizzle](https://github.com/spacetelescope/drizzle), which may affect performance
 
 ## Multi-Channel Processing
 
@@ -116,8 +147,8 @@ The `channel_weights` parameter controls how multiple FITS files are combined in
 # Configure channel weights (ordered dictionary format)
 config.channel_weights = {
     "VIS": [1.0, 0.0, 0.5],    # RGB weights for VIS band
-    "NIR_H": [0.0, 1.0, 0.3],  # RGB weights for NIR H-band
-    "NIR_J": [0.0, 0.0, 0.8]   # RGB weights for NIR J-band
+    "NIR-H": [0.0, 1.0, 0.3],  # RGB weights for NIR H-band
+    "NIR-J": [0.0, 0.0, 0.8]   # RGB weights for NIR J-band
 }
 ```
 
@@ -129,8 +160,8 @@ TILE_123_456,45.1,12.4,128,"['/path/to/vis.fits', '/path/to/nir_h.fits', '/path/
 
 The order of files in `fits_file_paths` must correspond to the order of keys in `channel_weights`:
 1. `/path/to/vis.fits` → `VIS` extension
-2. `/path/to/nir_h.fits` → `NIR_H` extension
-3. `/path/to/nir_j.fits` → `NIR_J` extension
+2. `/path/to/nir-h.fits` → `NIR-H` extension
+3. `/path/to/nir-j.fits` → `NIR-J` extension
 
 ---
 
@@ -159,6 +190,10 @@ config_path = save_config_toml(config, f"{config.output_dir}/cutana_config.toml"
 In the case of zarr files the output will be organised in batches.
 Per batch one folder is created each with an `images.zarr` and an `images_metadata.parquet`.
 The folders are named using the format `batch_cutout_process_{index}_{unique_id}` where each process gets a unique identifier.
+
+Setting `do_only_cutout_extraction` to True along with output_format `fits` allows cutouts to be directly created without normalisation/resizing or channel combination.
+This is currently incompatible with zarr output. The flux conversion will still be applied and the `data_type` determined by the input.
+
 
 #### Metadata
 With the output zarr files, a metadata parquet file is created containing the following information: 
@@ -334,14 +369,16 @@ The following table describes all configuration parameters available in Cutana:
 | `output_dir`                                  | str      | "cutana_output"           | Directory path                               | Output directory for results                            |
 | `output_format`                               | str      | "zarr"                    | zarr, fits                                   | Output format                                           |
 | `data_type`                                   | str      | "float32"                 | float32, uint8                               | Output data type                                        |
+| `flux_conserved_resizing`                     | bool     | False                     | -                                            | Enable flux-conserving resizing (use with float32 + none normalisation, uses drizzle (slower)) |
 | **Processing Configuration**                  |
 | `max_workers`                                 | int      | 16                        | 1-1024                                       | Maximum number of worker processes                      |
 | `N_batch_cutout_process`                      | int      | 1000                      | 10-10000                                     | Batch size within each process                          |
 | `max_workflow_time_seconds`                   | int      | 1354571                   | 600-5000000                                  | Maximum total workflow time (~2 weeks default)          |
 | **Cutout Processing Parameters**              |
+| `do_only_cutout_extraction`                   | bool     | False                     | -                                            | If True, must set "fits", no norm/resize/combination img|
 | `target_resolution`                           | int      | 256                       | 16-2048                                      | Target cutout size in pixels (square cutouts)           |
 | `padding_factor`                              | float    | 1.0                       | 0.25-10.0                                    | Padding factor for cutout extraction (1.0 = no padding) |
-| `normalisation_method`                        | str      | "linear"                  | linear, log, asinh, zscale, none             | Normalisation method                                    |
+| `normalisation_method`                        | str      | "linear"                  | linear, log, asinh, zscale, none             | Normalisation method, method must not be none for unit8 output |
 | `interpolation`                               | str      | "bilinear"                | bilinear, nearest, cubic, lanczos            | Interpolation method                                    |
 | **FITS File Handling**                        |
 | `fits_extensions`                             | list     | ["PRIMARY"]               | List of str/int                              | Default FITS extensions to process                      |
@@ -361,6 +398,7 @@ The following table describes all configuration parameters available in Cutana:
 | `normalisation.crop_height`                   | int      | -                         | 0-5000                                       | Crop height in pixels                                   |
 | **Advanced Processing Settings**              |
 | `channel_weights`                             | dict     | {"PRIMARY": [1.0]}        | Dict of str: list[float]                     | Channel weights for multi-channel processing            |
+| `external_fitsbolt_cfg`                       | DotMap   | None                      | FITSBolt config or None                      | External FITSBolt config for ML pipeline integration (overrides normalisation settings) |
 | **File Management**                           |
 | `tracking_file`                               | str      | "workflow_tracking.json"  | -                                            | Job tracking file                                       |
 | `config_file`                                 | str      | None                      | File path                                    | Path to saved configuration file                        |
@@ -373,6 +411,8 @@ The following table describes all configuration parameters available in Cutana:
 | `loadbalancer.max_sources_per_process`        | int      | 150000                    | 1+                                           | Maximum sources per job/process                         |
 | `loadbalancer.log_interval`                   | int      | 30                        | 5-300                                        | Log memory estimates every N seconds                    |
 | `loadbalancer.event_log_file`                 | str      | None                      | File path                                    | Optional file path for LoadBalancer event logging       |
+| `loadbalancer.skip_memory_calibration_wait`   | bool     | False                     | -                                            | Skip waiting for first worker memory measurements on launch of cutout creation and proceed immediately with a static memory estimate       |
+| `process_threads`                             | int      | None                      | 1-128, None                                  | Thread limit per process (None = auto: cores // 4)      |
 | **UI Configuration**                          |
 | `ui.preview_samples`                          | int      | 10                        | 1-50                                         | Number of preview samples to generate                   |
 | `ui.preview_size`                             | int      | 256                       | 16-512                                       | Size of preview cutouts                                 |
@@ -415,11 +455,11 @@ config = get_default_config()
 config.output_dir = "cutouts_output/"
 config.output_format = "zarr"
 config.target_resolution = 256
-config.selected_extensions = ["VIS", "NIR_H", "NIR_J"]
+config.selected_extensions = [{'name': 'VIS', 'ext': 'PrimaryHDU'}, {'name': 'NIR-H', 'ext': 'PrimaryHDU'},{'name': 'NIR-J', 'ext': 'PrimaryHDU'}]
 config.channel_weights = {
     "VIS": [1.0, 0.0, 0.5],
-    "NIR_H": [0.0, 1.0, 0.3],
-    "NIR_J": [0.0, 0.0, 0.8]
+    "NIR-H": [0.0, 1.0, 0.3],
+    "NIR-J": [0.0, 0.0, 0.8]
 }
 
 # Process cutouts
@@ -435,7 +475,7 @@ result = orchestrator.start_processing(catalogue_df)
   - `status` (str): "completed", "failed", or "stopped"
   - `total_sources` (int): Number of sources processed
   - `completed_batches` (int): Number of completed processing batches
-  - `mapping_csv` (str): Path to source-to-zarr mapping CSV file
+  - `mapping_parquet` (str): Path to source-to-zarr mapping `*.parquet` file
   - `error` (str): Error message if status is "failed"
 
 ##### `run()`
@@ -453,6 +493,61 @@ result = orchestrator.run()
 
 **Returns:**
 - `dict`: Same format as `start_processing()`
+
+#### Streaming Mode (Advanced)
+
+Process large catalogues in batches for integration into data pipelines using `StreamingOrchestrator`.
+
+The `StreamingOrchestrator` class provides a dedicated API for streaming workflows with optional **asynchronous batch preparation**, allowing the next batch to be prepared in the background while you process the current one.
+
+```python
+from cutana import get_default_config, StreamingOrchestrator
+
+config = get_default_config()
+config.source_catalogue = "sources.csv"
+config.output_dir = "streaming_output/"
+config.target_resolution = 256
+config.selected_extensions = [{'name': 'VIS', 'ext': 'PrimaryHDU'}, {'name': 'NIR-H', 'ext': 'PrimaryHDU'}]
+config.channel_weights =  {"VIS": [1.0,0.0],
+                         "NIR-H": [0.0,1.0]}
+
+# Create streaming orchestrator
+orchestrator = StreamingOrchestrator(config)
+
+# Initialize streaming - set synchronised_loading=False for async batch preparation
+orchestrator.init_streaming(
+    batch_size=10000,
+    write_to_disk=False,  # Return cutouts in memory (zero disk I/O)
+    synchronised_loading=False  # Prepare next batch in background
+)
+
+# Process batches
+for i in range(orchestrator.get_batch_count()):
+    result = orchestrator.next_batch()
+
+    # result['cutouts']: numpy array of shape (N, H, W, C)
+    # result['metadata']: list of source metadata dicts
+    # result['batch_number']: 1-indexed batch number
+
+    # Your ML inference or analysis here...
+    process_cutouts(result['cutouts'])
+
+    # With async mode, the next batch is already preparing in background!
+
+orchestrator.cleanup()
+```
+
+**Key Parameters for `init_streaming()`:**
+- `batch_size` (int): Maximum sources per batch
+- `write_to_disk` (bool): If False, returns cutouts via shared memory (recommended for ML pipelines)
+- `synchronised_loading` (bool):
+  - `True` (default): Each batch is prepared when `next_batch()` is called
+  - `False`: Next batch is prepared in background while you process the current one
+
+**Async Mode Benefits:**
+When `synchronised_loading=False`, Cutana spawns a subprocess to prepare the next batch while your code processes the current batch. If your processing time is similar to batch preparation time, you can achieve up to 2x throughput.
+
+See `examples/async_streaming.py` for a benchmark comparing synchronous vs asynchronous streaming.
 
 #### Progress and Status Methods
 

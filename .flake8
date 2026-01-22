@@ -27,4 +27,5 @@ exclude =
     tracking*.json,
     conftest.py,
     playwright.config.py,
-    .csv
+    .csv,
+    .vulture_whitelist.py

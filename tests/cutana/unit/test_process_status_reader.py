@@ -17,11 +17,12 @@ Tests cover:
 """
 
 import json
-import time
 import tempfile
+import time
 from pathlib import Path
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 from cutana.process_status_reader import ProcessStatusReader
 

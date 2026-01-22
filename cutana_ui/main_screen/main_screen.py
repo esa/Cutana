@@ -9,30 +9,31 @@
 import ipywidgets as widgets
 from loguru import logger
 
-from .configuration_panel import ConfigurationPanel
-from .preview_panel import PreviewPanel
-from .status_panel import StatusPanel
+from cutana.get_default_config import save_config_with_timestamp
+
+from ..styles import (
+    BACKGROUND_DARK,
+    BORDER_COLOR,
+    COMMON_STYLES,
+    MAIN_WIDTH,
+    PANEL_WIDTH,
+    scale_px,
+)
+from ..utils.log_manager import get_console_log_level, set_console_log_level
 from ..widgets.header_version_help import (
     HelpPopup,
     create_header_container,
 )
-from ..styles import (
-    COMMON_STYLES,
-    BACKGROUND_DARK,
-    BORDER_COLOR,
-    MAIN_WIDTH,
-    PANEL_WIDTH,
-    scale_px,
-    scale_vh,
-)
+from .configuration_panel import ConfigurationPanel
+from .preview_panel import PreviewPanel
+from .status_panel import StatusPanel
 
 
 class MainScreen(widgets.VBox):
     """Main processing interface with configuration, preview, and status panels."""
 
-    def __init__(self, config, config_path=None):
+    def __init__(self, config):
         self.config = config
-        self.config_path = config_path
 
         # Log selected extensions coming from start screen
         logger.info(
@@ -57,12 +58,14 @@ class MainScreen(widgets.VBox):
             logger.warning("Could not import cutana version")
             version_text = "version unknown"
 
-        # Create header container with version and help button
-        self.header_container, self.help_button = create_header_container(
+        # Create header container with version, log level dropdown, and help button
+        self.header_container, self.help_button, self.log_level_dropdown = create_header_container(
             version_text=version_text,
             container_width=MAIN_WIDTH,
             help_button_callback=self._toggle_help,
+            log_level_callback=set_console_log_level,
             logo_title="CUTANA Cutout Generator",
+            initial_log_level=get_console_log_level(),
         )
 
         # Create panels with explicit height ratios
@@ -177,13 +180,12 @@ class MainScreen(widgets.VBox):
             ],
             layout=widgets.Layout(
                 width="100%",
-                min_height=f"{scale_vh(95)}vh",
                 background=BACKGROUND_DARK,
                 padding=f"{scale_px(3)}px",  # Reduced padding for tighter spacing
             ),
         )
 
-    def _on_start_click(self, b):
+    def _on_start_click(self, _b):
         """Handle start/stop button click."""
         if self.is_processing:
             # Currently processing - stop
@@ -205,8 +207,13 @@ class MainScreen(widgets.VBox):
         # Get updated configuration from config panel
         updated_config = self.config_panel.get_current_config()
 
+        # write the config for the user
+        config_path = save_config_with_timestamp(updated_config, self.config["output_dir"])
+        logger.info(f"Configuration saved to: {config_path}")
+
         # Call backend to start processing
         import asyncio
+
         from ..utils.backend_interface import BackendInterface
 
         async def start_backend():
@@ -265,6 +272,7 @@ class MainScreen(widgets.VBox):
 
         # Actually stop the backend processing
         import asyncio
+
         from ..utils.backend_interface import BackendInterface
 
         async def stop_backend():

@@ -8,7 +8,7 @@
 
 import ipywidgets as widgets
 
-from ..styles import ESA_BLUE_ACCENT, BORDER_COLOR
+from ..styles import BORDER_COLOR, ESA_BLUE_ACCENT
 
 
 class LoadingSpinner(widgets.VBox):

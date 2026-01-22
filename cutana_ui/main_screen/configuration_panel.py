@@ -7,14 +7,15 @@
 """Configuration panel for the main screen."""
 
 import ipywidgets as widgets
-from ..widgets.configuration_widget import SharedConfigurationWidget
+
 from ..styles import (
-    ESA_BLUE_ACCENT,
     BACKGROUND_DARK,
     BORDER_COLOR,
+    ESA_BLUE_ACCENT,
     PANEL_WIDTH,
     scale_px,
 )
+from ..widgets.configuration_widget import SharedConfigurationWidget
 
 
 class ConfigurationPanel(widgets.VBox):

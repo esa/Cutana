@@ -15,13 +15,14 @@ This module is responsible for:
 """
 
 import json
-import sys
-import time
-import tempfile
-import portalocker
 import os
+import sys
+import tempfile
+import time
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict
+
+import portalocker
 from loguru import logger
 
 
@@ -280,27 +281,6 @@ class ProcessStatusWriter:
                 f"Process {process_id} completed: {completed_count} success, {failed_count} failed"
             )
         return success
-
-    def cleanup_progress_file(self, process_id: str) -> bool:
-        """
-        Remove progress file for completed process.
-
-        Args:
-            process_id: Process identifier
-
-        Returns:
-            True if cleanup was successful, False otherwise
-        """
-        progress_file = self._get_progress_file_path(process_id)
-
-        try:
-            if progress_file.exists():
-                progress_file.unlink()
-                logger.debug(f"Cleaned up progress file for {process_id}")
-            return True
-        except Exception as e:
-            logger.warning(f"Failed to cleanup progress file for {process_id}: {e}")
-            return False
 
     def cleanup_all_progress_files(self) -> int:
         """

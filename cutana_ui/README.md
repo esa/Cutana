@@ -1,4 +1,4 @@
-[//]: # (Copyright &#40;c&#41; European Space Agency, 2025.)
+[//]: # (Copyright © European Space Agency, 2025.)
 [//]: # ()
 [//]: # (This file is subject to the terms and conditions defined in file 'LICENCE.txt', which)
 [//]: # (is part of this source code package. No part of the package, including)
@@ -42,6 +42,7 @@ Once configured, the main screen provides three panels:
   - Channel combination weights (how to blend different extensions)
   - Normalisation method for consistent image appearance (powered by [fitsbolt](https://github.com/Lasloruhberg/fitsbolt))
   - Interpolation order for the resizing
+  - Flux conserved resizing: Output is locked to float32 and none normalisation. resizing will be done with drizzle(slow)
 
 
 - **Preview Panel** (top right): Shows sample cutouts from your first image tile so you can verify settings before processing all data. When clicking on the "reload" button in the top right, a new set of targets will be displayed.
@@ -51,7 +52,7 @@ The images will be sampled from the upper quartile of objects by size from up to
 
 ## Input Data Requirements
 
-Your source catalogue must be a CSV file with these columns (it must contain either diameter in arcsec or in pixels):
+Your source catalogue must be a CSV/FITS/PARQUET file with these columns (it must contain either diameter in arcsec or in pixels):
 
 - `SourceID`: Unique identifier for each astronomical object
 - `RA`: Right Ascension in degrees (0-360°, ICRS coordinate system)
@@ -63,8 +64,8 @@ Your source catalogue must be a CSV file with these columns (it must contain eit
 **Example CSV:**
 ```csv
 SourceID,RA,Dec,diameter_arcsec,diameter_pixel,fits_file_paths
-GaiaDR3_001,150.1234,2.5678,10.0,256,["/data/euclid/tile_001.fits"]
-GaiaDR3_002,150.2468,2.4567,8.5,220,["/data/euclid/tile_002.fits"]
+GaiaDR3_001,150.1234,2.5678,10.0,256,"['/data/euclid/tile_001.fits']"
+GaiaDR3_002,150.2468,2.4567,8.5,220,"['/data/euclid/tile_002.fits']"
 ```
 
 ## Output Formats
@@ -76,6 +77,13 @@ GaiaDR3_002,150.2468,2.4567,8.5,220,["/data/euclid/tile_002.fits"]
 ---
 
 ## General Notes
+
+### Log Level Selector
+The header includes a log level dropdown (Debug, Info, Warning, Error) that controls the verbosity of logs displayed in the Jupyter notebook output. This affects only the console output - file logging is unaffected.
+
+**Note**: Using "Debug" log level can generate excessive output which may negatively impact Jupyter notebook performance. For normal operation, "Warning" (default) or "Info" is recommended.
+
+### Datalabs Usage
 If using Cutana on Datalabs, currently you will need to reopen a tab with the Datakab containing the Notebook/Process every 48 hours to keep it running.
 
 ### Runtime on Q1

@@ -7,22 +7,23 @@
 """Preview panel for the main screen."""
 
 import asyncio
+import base64
+import io
+
 import ipywidgets as widgets
 import matplotlib.pyplot as plt
-from matplotlib.figure import Figure
-import io
-import base64
 from loguru import logger
+from matplotlib.figure import Figure
 
-from ..utils.backend_interface import BackendInterface
-from ..widgets.loading_spinner import LoadingSpinner
 from ..styles import (
-    ESA_BLUE_ACCENT,
-    TEXT_COLOR_MUTED,
     BACKGROUND_DARK,
     BORDER_COLOR,
+    ESA_BLUE_ACCENT,
+    TEXT_COLOR_MUTED,
     scale_px,
 )
+from ..utils.backend_interface import BackendInterface
+from ..widgets.loading_spinner import LoadingSpinner
 
 
 class PreviewPanel(widgets.VBox):
@@ -113,7 +114,7 @@ class PreviewPanel(widgets.VBox):
         """Set up event handlers."""
         pass
 
-    def _on_refresh_clicked(self, b):
+    def _on_refresh_clicked(self, _b):
         """Handle refresh button click - generate new samples."""
         # Generate new seed to get fresh sample selection
         BackendInterface.regenerate_preview_seed()

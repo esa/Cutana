@@ -7,3 +7,7 @@
 """Python module to hold constants"""
 
 JANSKY_AB_ZEROPONT = 3631.0  # jansky https://en.wikipedia.org/wiki/AB_magnitude
+
+# Default chunk size for streaming catalogue reads (rows per chunk).
+# Used by catalogue_streamer for memory-efficient catalogue processing.
+DEFAULT_CATALOGUE_CHUNK_SIZE = 100000

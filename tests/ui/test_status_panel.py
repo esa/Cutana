@@ -10,8 +10,9 @@ Unit tests for status panel UI components.
 Tests focus on basic functionality and error handling to improve coverage.
 """
 
-import pytest
 from unittest.mock import Mock, patch
+
+import pytest
 
 
 class TestStatusPanelComponent:

@@ -16,31 +16,29 @@ This module handles:
 """
 
 import json
+import os
+import select
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
-import tempfile
-import os
-import ast
+from multiprocessing import shared_memory
 from pathlib import Path
-from typing import Dict, List, Any, Optional
-import pandas as pd
-from loguru import logger
-from dotmap import DotMap
+from typing import Any, Dict, List, Tuple
 
-from .logging_config import setup_logging
-from .job_tracker import JobTracker
-from .job_creator import JobCreator
-from .loadbalancer import LoadBalancer
-from .catalogue_preprocessor import (
-    preprocess_catalogue,
-    load_and_validate_catalogue,
-    CatalogueValidationError,
-)
+import numpy as np
+import pandas as pd
+from dotmap import DotMap
+from loguru import logger
+
+from .catalogue_preprocessor import preprocess_catalogue, validate_catalogue_sample
+from .catalogue_streamer import CatalogueBatchReader, CatalogueIndex, estimate_catalogue_size
 from .get_default_config import save_config_toml
-from .validate_config import validate_config, validate_config_for_processing
+from .job_tracker import JobTracker
+from .loadbalancer import LoadBalancer
 from .progress_report import ProgressReport
+from .validate_config import validate_config, validate_config_for_processing
 
 
 class Orchestrator:
@@ -72,14 +70,9 @@ class Orchestrator:
         # Extract key parameters with proper defaults
         self.max_workers = self.config.max_workers
 
-        # Set up logging in the output directory
-        log_dir = Path(self.config.output_dir) / "logs"
-        setup_logging(
-            log_level=self.config.log_level,
-            log_dir=str(log_dir),
-            console_level=self.config.console_log_level,
-            session_timestamp=self.config.session_timestamp,
-        )
+        # Logging is disabled by default (library best practice).
+        # Users who want to see logs should call logger.enable("cutana")
+        # and add their own handlers, or use cutana.setup_logging() explicitly.
         logger.info("Configuration validation completed successfully")
 
         # Process management
@@ -105,6 +98,78 @@ class Orchestrator:
         if self.status_panel:
             logger.info("Status panel reference provided for direct UI updates")
         logger.debug(f"Configuration: {dict(self.config)}")
+
+    def _init_catalogue_index_and_reader(
+        self, catalogue_path: str
+    ) -> Tuple[CatalogueIndex, CatalogueBatchReader]:
+        """
+        Initialize catalogue index and batch reader for on-demand row access.
+
+        This method builds the infrastructure for memory-efficient batch processing:
+        1. Estimates catalogue size for logging/planning
+        2. Validates a sample of the catalogue (first 10k rows)
+        3. Builds a CatalogueIndex: lightweight mapping of FITS sets to row indices
+        4. Creates a CatalogueBatchReader: reads specific rows on-demand
+
+        Used by both Orchestrator.start_processing() and StreamingOrchestrator.init_streaming()
+        to avoid code duplication.
+
+        Memory usage: O(index_size) where index stores only row indices per FITS set,
+        NOT the actual catalogue data. Actual data is loaded on-demand per batch.
+
+        Args:
+            catalogue_path: Path to catalogue file (CSV or Parquet)
+
+        Returns:
+            Tuple of (CatalogueIndex, CatalogueBatchReader)
+
+        Raises:
+            ValueError: If catalogue validation fails or file cannot be read
+        """
+        # Estimate catalogue size for logging
+        try:
+            estimated_rows = estimate_catalogue_size(catalogue_path)
+            logger.info(f"Estimated catalogue size: {estimated_rows:,} rows")
+        except Exception as e:
+            logger.warning(f"Could not estimate catalogue size: {e}")
+
+        # Validate a sample from the catalogue
+        logger.info("Validating catalogue sample...")
+        validation_errors = validate_catalogue_sample(
+            catalogue_path,
+            sample_size=10000,
+            skip_fits_check=False,
+        )
+        if validation_errors:
+            error_msg = "; ".join(validation_errors[:5])
+            if len(validation_errors) > 5:
+                error_msg += f" (and {len(validation_errors) - 5} more errors)"
+            raise ValueError(f"Catalogue validation failed: {error_msg}")
+        logger.info("Catalogue sample validation passed")
+
+        # Build lightweight catalogue index
+        logger.info("Building catalogue index (streaming mode)...")
+        catalogue_index = CatalogueIndex.build_from_path(
+            catalogue_path,
+            batch_size=100000,
+        )
+        total_sources = catalogue_index.row_count
+        logger.info(
+            f"Built index: {total_sources:,} sources, "
+            f"{len(catalogue_index.fits_set_to_row_indices):,} unique FITS sets"
+        )
+
+        # Log FITS set statistics
+        stats = catalogue_index.get_fits_set_statistics()
+        logger.info(
+            f"FITS set statistics: avg {stats['avg_sources_per_set']:.1f} sources/set, "
+            f"max {stats['max_sources_per_set']}, min {stats['min_sources_per_set']}"
+        )
+
+        # Initialize batch reader
+        batch_reader = CatalogueBatchReader(catalogue_path)
+
+        return catalogue_index, batch_reader
 
     def _send_ui_update(self, force: bool = False, completed_sources: int = None):
         """
@@ -139,37 +204,6 @@ class Orchestrator:
 
         except Exception as e:
             logger.error(f"Error sending UI update: {e}")
-
-    def _calculate_eta(
-        self, completed_batches: int, total_batches: int, start_time: float
-    ) -> Optional[float]:
-        """
-        Calculate estimated time to completion using JobTracker smoothing.
-
-        Args:
-            completed_batches: Number of completed batches
-            total_batches: Total number of batches
-            start_time: Workflow start time
-
-        Returns:
-            Smoothed estimated seconds to completion, or None if not calculable
-        """
-        # Delegate to JobTracker for smoothed ETA calculation
-        return self.job_tracker.calculate_smoothed_eta(completed_batches, total_batches, start_time)
-
-    def _format_time(self, seconds: Optional[float]) -> str:
-        """Format time in seconds to human readable string."""
-        if seconds is None:
-            return "Unknown"
-
-        if seconds < 60:
-            return f"{seconds:.0f}s"
-        elif seconds < 3600:
-            minutes = seconds / 60
-            return f"{minutes:.1f}m"
-        else:
-            hours = seconds / 3600
-            return f"{hours:.1f}h"
 
     def _log_periodic_progress_update(
         self,
@@ -267,45 +301,9 @@ class Orchestrator:
 
         logger.info("======================")
 
-    def _delegate_sources_to_processes(self, catalogue_data: pd.DataFrame) -> List[pd.DataFrame]:
-        """
-        Delegate sources to worker processes using optimized job creation.
-
-        Args:
-            catalogue_data: DataFrame containing source information
-
-        Returns:
-            List of DataFrames, each representing a batch for one process
-        """
-        total_sources = len(catalogue_data)
-
-        # Handle edge case of empty catalogue
-        if total_sources == 0:
-            logger.info("Empty catalogue, creating single empty batch")
-            return [pd.DataFrame()]
-
-        # Use JobCreator to create optimized jobs based on FITS file usage
-        job_creator = JobCreator(
-            max_sources_per_process=self.config.loadbalancer.max_sources_per_process
-        )
-        jobs = job_creator.create_jobs(catalogue_data)
-
-        # Analyze efficiency
-        efficiency = job_creator.analyze_job_efficiency(jobs)
-        logger.info(
-            f"Job creation efficiency: {efficiency.get('fits_load_reduction', 0):.1f}% reduction in FITS loads"
-        )
-        logger.info(
-            f"Average FITS reuse ratio: {efficiency.get('average_fits_reuse_ratio', 0):.1f}"
-        )
-
-        logger.info(
-            f"Created {len(jobs)} optimized jobs from {total_sources} sources "
-            f"(max_sources_per_process: {self.config.loadbalancer.max_sources_per_process})"
-        )
-        return jobs
-
-    def _spawn_cutout_process(self, process_id: str, source_batch: pd.DataFrame) -> None:
+    def _spawn_cutout_process(
+        self, process_id: str, source_batch: pd.DataFrame, write_to_disk: bool
+    ) -> None:
         """
         Spawn a cutout process for a batch of sources using subprocess.
 
@@ -314,6 +312,7 @@ class Orchestrator:
         Args:
             process_id: Unique identifier for the process
             source_batch: DataFrame containing sources for this process
+            write_to_disk: Whether to write outputs to disk (True) or keep in memory (False)
         """
         temp_files = []
         try:
@@ -328,6 +327,9 @@ class Orchestrator:
 
             # Prepare config for subprocess - pass as-is since validation ensures consistency
             subprocess_config = DotMap(self.config.copy(), _dynamic=False)
+
+            # Set write_to_disk for this subprocess
+            subprocess_config.write_to_disk = write_to_disk
 
             # Extract batch index from process_id (e.g., "cutout_process_001_unique_id" -> "001")
             batch_index = process_id.split("_")[2] if "_" in process_id else process_id
@@ -371,21 +373,45 @@ class Orchestrator:
             if not progress_file_exists:
                 logger.warning(f"Progress file not confirmed for {process_id}, proceeding anyway")
 
-            # Start subprocess with redirected output to avoid pipe deadlock
-            # The subprocess writes debug logs to stderr which can fill pipes and cause deadlock
-            # Instead, redirect to files so we can still debug if needed
-            log_dir = Path(self.config.output_dir) / "logs" / "subprocesses"
-            log_dir.mkdir(parents=True, exist_ok=True)
-
-            stdout_file = log_dir / f"{process_id}_stdout.log"
-            stderr_file = log_dir / f"{process_id}_stderr.log"
+            # Check if in-memory mode (write_to_disk=False) for pipe communication
+            write_to_disk = subprocess_config.write_to_disk
 
             logger.debug(f"Starting subprocess with command: {' '.join(cmd)}")
-            logger.debug(f"Subprocess logs: stdout={stdout_file}, stderr={stderr_file}")
-            logger.debug(f"Temp files: {temp_files}")
+            logger.debug(f"write_to_disk={write_to_disk}")
 
-            with open(stdout_file, "w") as stdout_f, open(stderr_file, "w") as stderr_f:
-                process = subprocess.Popen(cmd, stdout=stdout_f, stderr=stderr_f, text=True)
+            if not write_to_disk:
+                # In-memory mode: use PIPE for stdin/stdout communication (shared memory streaming)
+                # stderr still goes to file for logging
+                log_dir = Path(self.config.output_dir) / "logs" / "subprocesses"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                stderr_file = log_dir / f"{process_id}_stderr.log"
+
+                logger.debug(
+                    f"In-memory mode: using PIPE for stdin/stdout, stderr to {stderr_file}"
+                )
+
+                with open(stderr_file, "w") as stderr_f:
+                    process = subprocess.Popen(
+                        cmd,
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=stderr_f,
+                        text=True,
+                        bufsize=1,  # Line buffered
+                    )
+            else:
+                # Disk mode: redirect output to files to avoid pipe deadlock
+                log_dir = Path(self.config.output_dir) / "logs" / "subprocesses"
+                log_dir.mkdir(parents=True, exist_ok=True)
+
+                stdout_file = log_dir / f"{process_id}_stdout.log"
+                stderr_file = log_dir / f"{process_id}_stderr.log"
+
+                logger.debug(f"Disk mode: stdout={stdout_file}, stderr={stderr_file}")
+                logger.debug(f"Temp files: {temp_files}")
+
+                with open(stdout_file, "w") as stdout_f, open(stderr_file, "w") as stderr_f:
+                    process = subprocess.Popen(cmd, stdout=stdout_f, stderr=stderr_f, text=True)
 
             # Store temp files with process for cleanup later
             process._temp_files = temp_files
@@ -416,6 +442,180 @@ class Orchestrator:
                     "timestamp": time.time(),
                 }
             )
+
+    def _receive_cutouts_from_shm(
+        self, process_id: str, batch_number: int, timeout_seconds: int
+    ) -> tuple:
+        """
+        Receive cutouts from subprocess via shared memory streaming.
+
+        Reads chunks from shared memory as worker sends them via stdout pipe.
+        Sends ACK after each chunk is processed. Accumulates all cutouts and metadata.
+
+        Args:
+            process_id: Process identifier
+            batch_number: Batch number (0-indexed)
+            timeout_seconds: Timeout for the whole operation
+
+        Returns:
+            Tuple of (all_cutouts, all_metadata)
+
+        Raises:
+            RuntimeError: If process fails or times out
+        """
+        process = self.active_processes.get(process_id)
+        if not process:
+            raise RuntimeError(f"Process {process_id} not found in active processes")
+
+        all_cutouts = []
+        all_metadata = []
+        start_time = time.time()
+
+        logger.info(f"Batch {batch_number + 1}: Receiving cutouts via shared memory")
+
+        try:
+            while True:
+                # Check timeout to prevent indefinite blocking if subprocess hangs or stalls
+                # Terminates the subprocess and raises error if exceeded
+                if time.time() - start_time > timeout_seconds:
+                    logger.error(f"Batch {batch_number + 1} timed out while receiving cutouts")
+                    process.terminate()
+                    process.wait(timeout=10.0)
+                    self.active_processes.pop(process_id, None)
+                    raise RuntimeError(f"Batch {batch_number + 1} timed out receiving cutouts")
+
+                # Check if process is still alive
+                process_exit_code = process.poll()
+                if process_exit_code is not None:
+                    # Process terminated - try to read any remaining output, then break
+                    logger.debug(
+                        f"Batch {batch_number + 1}: Subprocess terminated with code {process_exit_code}"
+                    )
+                    # Try one more read in case there's buffered output
+                    try:
+                        remaining_line = process.stdout.readline()
+                        if remaining_line:
+                            try:
+                                msg = json.loads(remaining_line)
+                                if msg.get("type") == "complete":
+                                    logger.info(
+                                        f"Batch {batch_number + 1}: Got completion message from terminated process"
+                                    )
+                            except json.JSONDecodeError:
+                                pass
+                    except Exception:
+                        pass
+                    break
+
+                # Read line from stdout (non-blocking with timeout)
+                # Use select to check if data is available (Unix-like) or just readline with timeout (Windows)
+                if sys.platform == "win32":
+                    # On Windows, just try to read (will block until data or process ends)
+                    # The overall timeout mechanism will handle hung processes
+                    line = process.stdout.readline()
+                else:
+                    # On Unix, use select for proper timeout
+                    ready, _, _ = select.select([process.stdout], [], [], 1.0)
+                    if not ready:
+                        continue
+                    line = process.stdout.readline()
+
+                if not line:
+                    continue
+
+                try:
+                    msg = json.loads(line)
+                except json.JSONDecodeError:
+                    logger.debug(f"Non-JSON line from subprocess: {line[:100]}")
+                    continue
+
+                msg_type = msg.get("type")
+
+                if msg_type == "chunk":
+                    # Read chunk from shared memory
+                    shm_name = msg["shm_name"]
+                    shape = tuple(msg["shape"])
+                    dtype = np.dtype(msg["dtype"])
+                    chunk_metadata = msg["metadata"]
+
+                    # Attach to shared memory
+                    shm = None
+                    try:
+                        shm = shared_memory.SharedMemory(name=shm_name)
+
+                        # Create numpy array from shared memory
+                        chunk_array = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
+
+                        # Copy data out of shared memory (important!)
+                        chunk_copy = chunk_array.copy()
+
+                        # Extract individual cutouts from chunk
+                        for i in range(len(chunk_copy)):
+                            all_cutouts.append(chunk_copy[i])
+
+                        all_metadata.extend(chunk_metadata)
+
+                        logger.debug(
+                            f"Batch {batch_number + 1}: Received chunk with {len(chunk_copy)} cutouts "
+                            f"({msg['nbytes'] / 1024 / 1024:.1f}MB)"
+                        )
+
+                    finally:
+                        # Close shared memory (worker will unlink it after ACK)
+                        if shm is not None:
+                            shm.close()
+
+                    # Send ACK to worker so it can cleanup and proceed
+                    process.stdin.write("ACK\n")
+                    process.stdin.flush()
+
+                elif msg_type == "complete":
+                    total_cutouts = msg.get("total_cutouts", 0)
+                    logger.info(
+                        f"Batch {batch_number + 1}: Received completion message "
+                        f"({total_cutouts} total cutouts)"
+                    )
+                    break
+
+                else:
+                    logger.warning(f"Unknown message type from subprocess: {msg_type}")
+
+            # Wait for process to finish
+            return_code = process.wait(timeout=10.0)
+
+            if return_code != 0:
+                logger.error(f"Batch {batch_number + 1} subprocess exited with code {return_code}")
+                raise RuntimeError(
+                    f"Batch {batch_number + 1} subprocess failed with code {return_code}"
+                )
+
+            # Clean up process from active list
+            self.active_processes.pop(process_id, None)
+
+            logger.info(
+                f"Batch {batch_number + 1}: Successfully received {len(all_cutouts)} cutouts "
+                f"via shared memory (subprocess completed)"
+            )
+
+            # Stack all cutouts into single numpy array
+            if all_cutouts:
+                all_cutouts = np.stack(all_cutouts)
+                logger.debug(f"Stacked cutouts into array with shape: {all_cutouts.shape}")
+
+            return all_cutouts, all_metadata
+
+        except Exception as e:
+            # Cleanup on error
+            if process_id in self.active_processes:
+                try:
+                    process.terminate()
+                    process.wait(timeout=10.0)
+                except Exception:
+                    pass
+                self.active_processes.pop(process_id, None)
+
+            logger.error(f"Error receiving cutouts from shared memory: {e}")
+            raise
 
     def _monitor_processes(self, timeout_seconds: int) -> List[Dict[str, Any]]:
         """
@@ -486,8 +686,8 @@ class Orchestrator:
                         except OSError:
                             pass
 
-                # Clean up
-                del self.active_processes[process_id]
+                # Clean up (use pop to avoid KeyError if already removed by stop_processing)
+                self.active_processes.pop(process_id, None)
 
                 # Update LoadBalancer with new worker count
                 self.load_balancer.update_active_worker_count(len(self.active_processes))
@@ -565,56 +765,64 @@ class Orchestrator:
                         except OSError:
                             pass
 
-                # Clean up
-                del self.active_processes[process_id]
+                # Clean up (use pop to avoid KeyError if already removed by stop_processing)
+                self.active_processes.pop(process_id, None)
 
                 # Update LoadBalancer with new worker count
                 self.load_balancer.update_active_worker_count(len(self.active_processes))
 
         return completed_processes
 
-    def _write_source_mapping_csv(self, output_dir: Path) -> str:
+    def _write_source_mapping_parquet(self, output_dir: Path) -> str:
         """
-        Write CSV file mapping source IDs to their zarr file locations.
+        Write Parquet file mapping source IDs to their zarr file locations.
 
         Args:
-            output_dir: Output directory where CSV should be written
+            output_dir: Output directory where Parquet should be written
 
         Returns:
-            Path to created CSV file
+            Path to created Parquet file
         """
         try:
             if not hasattr(self, "source_to_batch_mapping") or not self.source_to_batch_mapping:
-                logger.warning("No source-to-batch mapping available, skipping CSV creation")
+                logger.warning("No source-to-batch mapping available, skipping Parquet creation")
                 return None
 
-            csv_path = output_dir / "source_to_zarr_mapping.csv"
+            parquet_path = output_dir / "source_to_zarr_mapping.parquet"
 
-            # Create DataFrame and write to CSV
+            # Create DataFrame and write to Parquet
             import pandas as pd
 
             df = pd.DataFrame(self.source_to_batch_mapping)
-            df.to_csv(csv_path, index=False)
+            df.to_parquet(parquet_path, index=False)
 
-            logger.info(f"Created source mapping CSV with {len(df)} entries at: {csv_path}")
-            return str(csv_path)
+            logger.info(
+                f"Created source mapping Parquet file with {len(df)} entries at: {parquet_path}"
+            )
+            return str(parquet_path)
 
         except Exception as e:
-            logger.error(f"Failed to write source mapping CSV: {e}")
+            logger.error(f"Failed to write source mapping Parquet file: {e}")
             return None
 
-    def start_processing(self, catalogue_data: pd.DataFrame) -> Dict[str, Any]:
+    def start_processing(self, catalogue_path: str) -> Dict[str, Any]:
         """
-        Start the main cutout processing workflow.
+        Start the main cutout processing workflow using streaming catalogue loading.
+
+        Uses memory-efficient streaming for catalogues of any size (supports 10M+ sources):
+        1. Builds a lightweight index (FITS set to row indices mapping)
+        2. Validates a sample of the catalogue
+        3. Reads only the specific rows needed for each batch on-demand
+
+        Memory usage: O(index_size) + O(batch_size) instead of O(catalogue_size)
 
         Args:
-            catalogue_data: DataFrame containing source catalogue
+            catalogue_path: Path to catalogue file (CSV or Parquet)
 
         Returns:
             Dictionary containing workflow results and status
         """
         # Validate configuration for processing
-        # Skip path checking since we're passing DataFrame directly
         try:
             validate_config_for_processing(self.config, check_paths=False)
             logger.info("Configuration validation for processing completed successfully")
@@ -626,7 +834,7 @@ class Orchestrator:
                 "error_type": "config_validation_error",
             }
 
-        # Ensure output directory exists now that we're starting processing
+        # Ensure output directory exists
         try:
             output_dir = Path(self.config.output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -639,56 +847,60 @@ class Orchestrator:
                 "error_type": "output_directory_error",
             }
 
-        # Validate and preprocess catalogue
-        logger.info("Validating and preprocessing catalogue...")
+        # Initialize streaming infrastructure (validates catalogue, builds index, creates reader)
         try:
-            catalogue_data = preprocess_catalogue(catalogue_data, self.config)
-            logger.info("Catalogue validation and preprocessing completed successfully")
-        except CatalogueValidationError as e:
-            logger.error(f"Catalogue validation failed: {e}")
+            catalogue_index, batch_reader = self._init_catalogue_index_and_reader(catalogue_path)
+            total_sources = catalogue_index.row_count
+        except ValueError as e:
+            logger.error(str(e))
             return {
                 "status": "failed",
-                "error": f"Catalogue validation failed: {e}",
-                "error_type": "validation_error",
+                "error": str(e),
+                "error_type": "streaming_init_error",
             }
         except Exception as e:
-            logger.error(f"Catalogue preprocessing failed: {e}")
+            logger.error(f"Failed to initialize streaming infrastructure: {e}")
             return {
                 "status": "failed",
-                "error": f"Catalogue preprocessing failed: {e}",
-                "error_type": "preprocessing_error",
+                "error": f"Failed to initialize streaming infrastructure: {e}",
+                "error_type": "streaming_init_error",
             }
 
-        total_sources = len(catalogue_data)
-        logger.info(f"Starting cutout processing for {total_sources} sources")
+        logger.info(f"Starting streaming cutout processing for {total_sources:,} sources")
 
         # Update config with load balancer recommendations
         self.load_balancer.update_config_with_loadbalancing(self.config, total_sources)
 
-        # Apply load balancer settings if not explicitly overridden
+        # Apply load balancer settings
         if self.config.loadbalancer.max_workers != self.config.max_workers:
             logger.info(f"LoadBalancer updated max_workers: {self.config.loadbalancer.max_workers}")
             self.config.max_workers = self.config.loadbalancer.max_workers
 
         logger.info(
-            f"LoadBalancer updated max_sources_per_process: {self.config.loadbalancer.max_sources_per_process}"
+            f"LoadBalancer updated max_sources_per_process: "
+            f"{self.config.loadbalancer.max_sources_per_process}"
         )
 
         self.config.N_batch_cutout_process = self.config.loadbalancer.N_batch_cutout_process
-        logger.info(
-            f"LoadBalancer updated N_batch_cutout_process: {self.config.N_batch_cutout_process}"
-        )
-
         self.config.memory_limit_gb = self.config.loadbalancer.memory_limit_gb
-        logger.info(f"LoadBalancer updated memory_limit_gb: {self.config.memory_limit_gb:.1f}GB")
 
         # Initialize job tracking
         self.job_tracker.start_job(total_sources)
 
-        # Create batches
-        batches = self._delegate_sources_to_processes(catalogue_data)
+        # Get optimized batch ranges from the index (lightweight - just row indices)
+        # This does NOT load any actual catalogue data yet
+        batch_ranges = catalogue_index.get_optimized_batch_ranges(
+            max_sources_per_batch=self.config.loadbalancer.max_sources_per_process,
+            min_sources_per_batch=500,
+            max_fits_sets_per_batch=50,
+        )
+        total_batches = len(batch_ranges)
+        logger.info(
+            f"Created {total_batches} optimized batch ranges from "
+            f"{len(catalogue_index.fits_set_to_row_indices)} unique FITS sets"
+        )
 
-        # Track source to batch mapping for CSV output
+        # Track source to batch mapping
         self.source_to_batch_mapping = []
 
         try:
@@ -698,27 +910,25 @@ class Orchestrator:
             workflow_start_time = time.time()
             consecutive_failures = 0
             max_consecutive_failures = 5
-
-            # Track last progress update time
             last_progress_update = workflow_start_time
-            progress_update_interval = 5.0  # seconds
+            progress_update_interval = 5.0
 
             # Send initial UI update
             self._send_ui_update(force=True)
 
             while (
-                batch_index < len(batches) or self.active_processes
+                batch_index < total_batches or self.active_processes
             ) and not self._stop_requested:
                 current_time = time.time()
 
-                # Update LoadBalancer memory tracking and logging synchronously
+                # Update LoadBalancer memory tracking
                 try:
                     self.load_balancer.update_memory_tracking()
                     self.load_balancer.log_memory_status_if_needed()
                 except Exception as e:
                     logger.debug(f"LoadBalancer update error: {e}")
 
-                # Check overall workflow timeout
+                # Check workflow timeout
                 if current_time - workflow_start_time > max_workflow_time:
                     logger.error(
                         f"Workflow timeout after {max_workflow_time}s, "
@@ -735,44 +945,51 @@ class Orchestrator:
                     self.stop_processing()
                     break
 
-                # Periodic progress updates (every 5 seconds)
+                # Periodic progress updates
                 if current_time - last_progress_update >= progress_update_interval:
-                    # Get completed sources from job tracker
                     status = self.job_tracker.get_status()
                     completed_sources = status.get("completed_sources")
                     self._log_periodic_progress_update(
                         current_time,
                         workflow_start_time,
                         completed_batches,
-                        len(batches),
+                        total_batches,
                         completed_sources,
                         total_sources,
                     )
                     last_progress_update = current_time
-
-                    # Send UI update using the same completed_sources value to avoid inconsistency
                     self._send_ui_update(completed_sources=completed_sources)
                 else:
-                    # Send UI update without forcing recalculation (rate-limited internally)
                     self._send_ui_update()
 
                 # Use load balancer to decide if we can spawn new processes
-                if batch_index < len(batches) and not self._stop_requested:
-                    pending_batches = len(batches) - batch_index
+                if batch_index < total_batches and not self._stop_requested:
+                    pending_batches = total_batches - batch_index
                     recommendation = self.load_balancer.get_spawn_recommendation(
                         self.active_processes, pending_batches
                     )
 
                     if recommendation["spawn_new"] and not self._stop_requested:
-                        # Spawn new process with unique ID
                         import uuid
 
                         unique_id = str(uuid.uuid4())[:8]
                         process_id = f"cutout_process_{batch_index:03d}_{unique_id}"
 
-                        # write/ append for the zarr output mapping
+                        # Read batch on-demand from catalogue (true streaming)
+                        # Only loads this batch's rows, not the entire catalogue
+                        row_indices = batch_ranges[batch_index]
+                        batch_df = batch_reader.read_rows(row_indices)
+                        logger.debug(
+                            f"Read batch {batch_index + 1}/{total_batches} "
+                            f"({len(row_indices)} rows) on-demand"
+                        )
+
+                        # Preprocess the batch
+                        batch_df = preprocess_catalogue(batch_df, self.config)
+
+                        # Track source to zarr mapping
                         zarr_file = f"batch_{process_id}/images.zarr"
-                        for _, source_row in batches[batch_index].iterrows():
+                        for _, source_row in batch_df.iterrows():
                             self.source_to_batch_mapping.append(
                                 {
                                     "SourceID": source_row["SourceID"],
@@ -781,43 +998,31 @@ class Orchestrator:
                                 }
                             )
 
-                        self._spawn_cutout_process(process_id, batches[batch_index])
+                        self._spawn_cutout_process(
+                            process_id,
+                            batch_df,
+                            write_to_disk=self.config.write_to_disk,
+                        )
                         batch_index += 1
 
-                        logger.debug(
-                            f"Spawned new process based on load balancer recommendation: {recommendation['reason']}"
-                        )
+                        logger.debug(f"Spawned streaming process: {recommendation['reason']}")
                     else:
-                        if self._stop_requested:
-                            logger.debug("Stop requested - not spawning new processes")
-                        else:
-                            logger.debug(
-                                f"Load balancer recommendation: no spawn - {recommendation['reason']}"
-                            )
+                        if not self._stop_requested:
+                            logger.debug(f"Load balancer: no spawn - {recommendation['reason']}")
 
                 # Monitor existing processes
                 completed_processes_info = self._monitor_processes(
                     timeout_seconds=self.config.max_workflow_time_seconds
                 )
 
-                # Track consecutive failures using results from monitoring
+                # Track consecutive failures
                 if completed_processes_info:
-                    # Update load balancer memory statistics from completed processes
                     for process_info in completed_processes_info:
                         process_id = process_info.get("process_id")
                         if process_id:
-                            logger.debug(
-                                f"Orchestrator: Updating LoadBalancer memory statistics for completed process: {process_id}"
-                            )
                             self.load_balancer.update_memory_statistics(process_id)
 
-                    # Check if any completed processes had successful results
-                    any_success = False
-                    for process_info in completed_processes_info:
-                        if process_info.get("successful", False):
-                            any_success = True
-                            break
-
+                    any_success = any(p.get("successful", False) for p in completed_processes_info)
                     if any_success:
                         consecutive_failures = 0
                     else:
@@ -826,91 +1031,52 @@ class Orchestrator:
 
                     completed_batches += len(completed_processes_info)
 
-                # Brief sleep to avoid busy waiting - reduced for more responsive UI
+                # Brief sleep
                 if self.active_processes and not self._stop_requested:
                     time.sleep(1.0)
                 elif self._stop_requested:
-                    # When stop is requested, sleep briefly but check more frequently
                     time.sleep(0.1)
 
-                # Log progress periodically
-                if completed_batches > 0 and completed_batches % 5 == 0:
-                    runtime = current_time - workflow_start_time
-                    logger.info(
-                        f"Completed {completed_batches}/{len(batches)} batches "
-                        f"(runtime: {runtime:.1f}s)"
-                    )
+            # Clean up batch reader
+            batch_reader.close()
 
-            # Send final UI update - ALWAYS force 100% completion when workflow completes
-            logger.info(
-                f"Sending final UI update with 100% completion: {total_sources}/{total_sources} sources"
-            )
+            # Send final UI update
+            logger.info(f"Sending final UI update: {total_sources}/{total_sources} sources")
             self._send_ui_update(force=True, completed_sources=total_sources)
 
-            # Write source to zarr mapping CSV
+            # Write source to zarr mapping
             output_dir = Path(self.config.output_dir)
-            mapping_csv_path = self._write_source_mapping_csv(output_dir)
+            mapping_parquet_path = self._write_source_mapping_parquet(output_dir)
 
-            logger.info(f"Cutout processing completed for {total_sources} sources")
+            logger.info(f"Streaming cutout processing completed for {total_sources:,} sources")
 
             return {
                 "status": "completed",
                 "total_sources": total_sources,
                 "completed_batches": completed_batches,
-                "mapping_csv": mapping_csv_path,
+                "mapping_parquet": mapping_parquet_path,
+                "streaming_mode": True,
             }
 
         except Exception as e:
-
             error_traceback = traceback.format_exc()
-            logger.error(f"Error in processing workflow: {e}")
+            logger.error(f"Error in streaming processing workflow: {e}")
             logger.error(f"Full traceback:\n{error_traceback}")
 
-            # Send final UI update showing error
+            # Clean up batch reader on error
+            try:
+                batch_reader.close()
+            except Exception:
+                pass
+
             self._send_ui_update(force=True)
 
             return {
                 "status": "failed",
                 "error": str(e),
                 "error_traceback": error_traceback,
+                "streaming_mode": True,
             }
-
-    def _parse_fits_file_paths(self, fits_paths_str: str) -> List[str]:
-        """
-        Parse FITS file paths from string representation.
-        This is a port from job tracker
-        Args:
-            fits_paths_str: String containing FITS file paths (list format or single path)
-        Returns:
-            List of normalized FITS file paths
-        """
-        try:
-            if isinstance(fits_paths_str, str):
-                # Handle different string formats
-                if fits_paths_str.startswith("[") and fits_paths_str.endswith("]"):
-                    # String representation of list like "['path1', 'path2']"
-                    try:
-                        fits_paths = ast.literal_eval(fits_paths_str)
-                    except (ValueError, SyntaxError):
-                        logger.warning("Failed to parse fits_file_paths with ast.literal_eval")
-                        # Fallback: try to extract paths manually
-                        fits_paths = [
-                            path.strip().strip("'\"")
-                            for path in fits_paths_str.strip("[]").split(",")
-                        ]
-                else:
-                    # Single path string
-                    fits_paths = [fits_paths_str]
-            else:
-                fits_paths = fits_paths_str
-
-            # Normalize paths to handle Windows path separators properly
-            normalized_paths = [os.path.normpath(path) for path in fits_paths]
-            return normalized_paths
-
-        except Exception as e:
-            logger.error(f"Error parsing FITS paths '{fits_paths_str}': {e}")
-            return []
 
     def get_progress(self) -> Dict[str, Any]:
         """
@@ -1023,33 +1189,18 @@ class Orchestrator:
         """
         Run the orchestrator main loop. Meant for backend usage to be called after orchestrator creation.
 
+        Uses streaming catalogue loading for memory-efficient processing of large catalogues.
+
         Returns:
             Dict[str, Any]: The final status report after running the orchestrator.
         """
-
-        try:
-            catalogue_df = load_and_validate_catalogue(self.config.source_catalogue)
-            logger.info(f"Loaded and validated catalogue with {len(catalogue_df)} sources")
-        except CatalogueValidationError as e:
-            logger.error(f"Catalogue validation failed: {e}")
-            return {
-                "status": "error",
-                "error": f"Catalogue validation failed: {e}",
-                "error_type": "validation_error",
-            }
-        result = self.start_processing(catalogue_df)
+        catalogue_path = self.config.source_catalogue
+        result = self.start_processing(catalogue_path)
         return result
 
     def cleanup(self):
-        """Clean up resources including logging handlers."""
-        try:
-            logger.debug("Starting Orchestrator cleanup")
-            from .logging_config import cleanup_logging
-
-            cleanup_logging()
-        except Exception as e:
-            # Use print since logger might be cleaned up
-            print(f"Warning: Orchestrator cleanup failed: {e}")
+        """Clean up resources."""
+        logger.debug("Starting Orchestrator cleanup")
 
     def __del__(self):
         """Ensure cleanup when object is destroyed."""

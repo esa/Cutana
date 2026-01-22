@@ -12,7 +12,7 @@ instead of manually constructing large dictionaries.
 """
 
 from dataclasses import dataclass
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 
 @dataclass
@@ -73,17 +73,6 @@ class ProgressReport:
         return cls()
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ProgressReport":
-        """Create ProgressReport from dictionary, handling missing keys gracefully."""
-        # Get all field names from the dataclass
-        field_names = {field.name for field in cls.__dataclass_fields__.values()}
-
-        # Filter the input data to only include valid fields
-        filtered_data = {k: v for k, v in data.items() if k in field_names}
-
-        return cls(**filtered_data)
-
-    @classmethod
     def from_status_components(
         cls,
         full_status: Dict[str, Any],
@@ -124,7 +113,6 @@ class ProgressReport:
         if completion_status.get("has_progress_files", False):
             file_completed = completion_status.get("completed_sources_from_files", 0)
             is_fully_completed = completion_status.get("is_fully_completed", False)
-            completion_percent = completion_status.get("completion_percent", 0.0)
 
             # Use file-based completion data if it's more recent than in-memory data
             if file_completed > full_status.get("completed_sources", 0):

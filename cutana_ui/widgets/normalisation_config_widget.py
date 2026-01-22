@@ -12,10 +12,9 @@ parameters (a, n_samples, contrast).
 """
 
 import ipywidgets as widgets
-from loguru import logger
 from dotmap import DotMap
+from loguru import logger
 
-from ..styles import TEXT_COLOR_LIGHT
 from cutana.normalisation_parameters import (
     NormalisationRanges,
     NormalisationSteps,
@@ -24,6 +23,8 @@ from cutana.normalisation_parameters import (
     get_method_specific_a_step,
     get_method_tooltip,
 )
+
+from ..styles import TEXT_COLOR_LIGHT
 
 
 class NormalisationConfigWidget(widgets.VBox):
@@ -45,6 +46,9 @@ margin: 10px 0 5px 0; border-bottom: 1px solid #335E6E; padding-bottom: 3px;">No
         logger.debug(f"Config normalisation method: {config_normalisation}")
         normalisation_value = "linear" if config_normalisation == "none" else config_normalisation
 
+        # Reference to format dropdown (to be set externally)
+        self.format_dropdown_ref = None
+
         # Percentile input (appears for all stretch methods) - aligned with main parameters
         self.percentile_label = widgets.HTML(
             value=f'<div style="color: {TEXT_COLOR_LIGHT}; font-weight: 500; font-size: 12px; display: flex; align-items: center; height: 100%;">Percentile:</div>',
@@ -56,8 +60,18 @@ margin: 10px 0 5px 0; border-bottom: 1px solid #335E6E; padding-bottom: 3px;">No
             max=NormalisationRanges.PERCENTILE_MAX,
             step=NormalisationSteps.PERCENTILE_STEP,
             layout=widgets.Layout(width="120px", height="32px"),
-            tooltip=f"Percentile clipping for normalization \
-({NormalisationRanges.PERCENTILE_MIN + 0.1}-{NormalisationRanges.PERCENTILE_MAX})",
+            tooltip=f"Percentile clipping for normalization ({NormalisationRanges.PERCENTILE_MIN + 0.1}-{NormalisationRanges.PERCENTILE_MAX})",
+        )
+
+        # Flux-conserved resizing checkbox - placed before normalisation dropdown
+        self.flux_conserved_label = widgets.HTML(
+            value=f'<div style="color: {TEXT_COLOR_LIGHT}; font-weight: 500; font-size: 12px; display: flex; align-items: center; height: 100%; white-space: nowrap;">Flux-conserving resize:</div>',
+            layout=widgets.Layout(height="32px", width="100%"),
+        )
+        self.flux_conserved_checkbox = widgets.Checkbox(
+            value=getattr(self.config, "flux_conserved_resizing", False),
+            layout=widgets.Layout(width="120px", height="32px"),
+            tooltip="Use flux-conserved resizing (drizzle). Forces float32 output and normalisation=none",
         )
 
         # Normalisation method dropdown - aligned with main parameters
@@ -66,9 +80,10 @@ margin: 10px 0 5px 0; border-bottom: 1px solid #335E6E; padding-bottom: 3px;">No
             layout=widgets.Layout(height="32px", width="100%"),
         )
         self.normalisation_dropdown = widgets.Dropdown(
-            options=["linear", "log", "asinh", "zscale"],
+            options=["none", "linear", "log", "asinh", "zscale"],
             value=normalisation_value,
             layout=widgets.Layout(width="120px", height="32px"),
+            tooltip="Normalisation method (none = no normalisation applied)",
         )
 
         # Unified 'a' parameter input (conditional - for ASINH and LOG) - aligned with main parameters
@@ -166,6 +181,8 @@ margin: 10px 0 5px 0; border-bottom: 1px solid #335E6E; padding-bottom: 3px;">No
         input_width = "120px"  # Match main parameter grid
         self.normalisation_grid = widgets.GridBox(
             children=[
+                self.flux_conserved_label,
+                self.flux_conserved_checkbox,
                 self.normalisation_label,
                 self.normalisation_dropdown,
                 self.percentile_label,
@@ -204,8 +221,41 @@ margin: 10px 0 5px 0; border-bottom: 1px solid #335E6E; padding-bottom: 3px;">No
         # Set up event handlers
         self._setup_events()
 
+    def set_format_dropdown_ref(self, format_dropdown):
+        """
+        Set reference to the format dropdown widget.
+
+        This allows the normalisation widget to control the format dropdown
+        when flux_conserved resizing is enabled (forcing float32).
+
+        Args:
+            format_dropdown: The format dropdown widget from configuration_widget
+        """
+        self.format_dropdown_ref = format_dropdown
+        logger.debug(f"Format dropdown reference set")
+
     def _setup_events(self):
         """Set up event handlers for normalisation parameters."""
+
+        def on_flux_conserved_change(change):
+            logger.debug(f"Flux conserved changed: {change['old']} -> {change['new']}")
+            if change["new"]:
+                # Force normalisation to none and disable normalisation dropdown
+                self.normalisation_dropdown.value = "none"
+                self.normalisation_dropdown.disabled = True
+                # Force float32 in format dropdown if reference exists
+                if self.format_dropdown_ref is not None:
+                    self.format_dropdown_ref.value = "float32"
+                    self.format_dropdown_ref.disabled = True
+            else:
+                # Re-enable normalisation dropdown
+                self.normalisation_dropdown.disabled = False
+                # Re-enable format dropdown if reference exists
+                if self.format_dropdown_ref is not None:
+                    self.format_dropdown_ref.disabled = False
+            self._update_parameter_visibility()
+            if self._config_change_callback:
+                self._config_change_callback()
 
         def on_normalisation_change(change):
             logger.debug(f"Normalisation method changed: {change['old']} -> {change['new']}")
@@ -227,6 +277,7 @@ margin: 10px 0 5px 0; border-bottom: 1px solid #335E6E; padding-bottom: 3px;">No
                 self._config_change_callback()
 
         # Connect configuration change callbacks
+        self.flux_conserved_checkbox.observe(on_flux_conserved_change, names="value")
         self.normalisation_dropdown.observe(on_normalisation_change, names="value")
         self.percentile_input.observe(on_config_change, names="value")
         self.a_input.observe(on_config_change, names="value")
@@ -239,24 +290,32 @@ margin: 10px 0 5px 0; border-bottom: 1px solid #335E6E; padding-bottom: 3px;">No
     def _update_parameter_visibility(self):
         """Show/hide method-specific parameters based on selected normalisation method."""
         normalisation_method = self.normalisation_dropdown.value
+        flux_conserved = self.flux_conserved_checkbox.value
 
-        # Show or hide unified 'a' parameter for ASINH and LOG
+        # If normalisation is "none", hide all normalisation parameters
+        is_none = normalisation_method == "none"
+
+        # Percentile is shown for all methods except "none"
+        self.percentile_label.layout.display = "none" if is_none else ""
+        self.percentile_input.layout.display = "none" if is_none else ""
+
+        # Show or hide unified 'a' parameter for ASINH and LOG (but not for "none")
         needs_a_param = normalisation_method in ["asinh", "log"]
-        self.a_label.layout.display = "block" if needs_a_param else "none"
-        self.a_input.layout.display = "block" if needs_a_param else "none"
+        self.a_label.layout.display = "" if needs_a_param else "none"
+        self.a_input.layout.display = "" if needs_a_param else "none"
 
-        # Show or hide ZScale parameter controls
+        # Show or hide ZScale parameter controls (but not for "none")
         is_zscale = normalisation_method == "zscale"
-        self.n_samples_label.layout.display = "block" if is_zscale else "none"
-        self.n_samples_input.layout.display = "block" if is_zscale else "none"
-        self.contrast_label.layout.display = "block" if is_zscale else "none"
-        self.contrast_input.layout.display = "block" if is_zscale else "none"
+        self.n_samples_label.layout.display = "" if is_zscale else "none"
+        self.n_samples_input.layout.display = "" if is_zscale else "none"
+        self.contrast_label.layout.display = "" if is_zscale else "none"
+        self.contrast_input.layout.display = "" if is_zscale else "none"
 
-        # Crop parameters are visible for all normalization methods
+        # Crop parameters are visible for all normalization methods except "none"
         # The crop_size input is only visible when crop is enabled
-        crop_enabled = self.crop_enable_checkbox.value
-        self.crop_size_label.layout.display = "block" if crop_enabled else "none"
-        self.crop_size_input.layout.display = "block" if crop_enabled else "none"
+        crop_enabled = self.crop_enable_checkbox.value and not is_none
+        self.crop_size_label.layout.display = "" if crop_enabled else "none"
+        self.crop_size_input.layout.display = "" if crop_enabled else "none"
 
         # Update the 'a' parameter value and range based on method using centralized parameters
         if needs_a_param:
@@ -283,6 +342,18 @@ margin: 10px 0 5px 0; border-bottom: 1px solid #335E6E; padding-bottom: 3px;">No
             # This ensures users see the appropriate default for each method
             self.a_input.value = default_val
 
+        # Update normalisation dropdown state based on flux_conserved
+        self.normalisation_dropdown.disabled = flux_conserved
+
+        # Disable interpolation dropdown when flux_conserved is enabled
+        # (flux conserved uses drizzle which has its own resampling method)
+        # Keep visible but disabled to maintain consistent UI layout
+        self.interpolation_dropdown.disabled = flux_conserved
+
+        # Update format dropdown state based on flux_conserved if reference exists
+        if self.format_dropdown_ref is not None:
+            self.format_dropdown_ref.disabled = flux_conserved
+
     def set_config_change_callback(self, callback):
         """Set callback for configuration changes."""
         self._config_change_callback = callback
@@ -290,6 +361,9 @@ margin: 10px 0 5px 0; border-bottom: 1px solid #335E6E; padding-bottom: 3px;">No
     def update_config(self, config):
         """Update normalisation parameters from config."""
         self.config = config
+
+        # Restore flux-conserved checkbox
+        self.flux_conserved_checkbox.value = config.flux_conserved_resizing
 
         # Restore normalization parameter values
         self.percentile_input.value = config.normalisation.percentile
@@ -307,10 +381,7 @@ margin: 10px 0 5px 0; border-bottom: 1px solid #335E6E; padding-bottom: 3px;">No
         self.interpolation_dropdown.value = getattr(config, "interpolation", "bilinear")
 
         # Restore normalisation method
-        normalisation_value = (
-            "linear" if config.normalisation_method == "none" else config.normalisation_method
-        )
-        self.normalisation_dropdown.value = normalisation_value
+        self.normalisation_dropdown.value = config.normalisation_method
 
         # Update parameter visibility
         self._update_parameter_visibility()
@@ -319,19 +390,18 @@ margin: 10px 0 5px 0; border-bottom: 1px solid #335E6E; padding-bottom: 3px;">No
         """Get current normalisation configuration."""
         # Use the same size for both height and width (square crop)
         crop_size = self.crop_size_input.value
-        return {
-            "normalisation_method": self.normalisation_dropdown.value,
-            "interpolation": self.interpolation_dropdown.value,  # Include interpolation parameter
-            "normalisation": DotMap(
-                {
-                    "percentile": self.percentile_input.value,
-                    "a": self.a_input.value,
-                    "n_samples": self.n_samples_input.value,
-                    "contrast": self.contrast_input.value,
-                    "crop_enable": self.crop_enable_checkbox.value,
-                    "crop_height": crop_size,
-                    "crop_width": crop_size,
-                },
-                _dynamic=False,
-            ),
-        }
+        flux_conserved = self.flux_conserved_checkbox.value
+        config = DotMap(_dynamic=False)
+        config.flux_conserved_resizing = flux_conserved
+        config.normalisation_method = self.normalisation_dropdown.value
+        config.interpolation = self.interpolation_dropdown.value
+        config.normalisation = DotMap(_dynamic=False)
+        config.normalisation.percentile = self.percentile_input.value
+        config.normalisation.a = self.a_input.value
+        config.normalisation.n_samples = self.n_samples_input.value
+        config.normalisation.contrast = self.contrast_input.value
+        config.normalisation.crop_enable = self.crop_enable_checkbox.value
+        config.normalisation.crop_height = crop_size
+        config.normalisation.crop_width = crop_size
+
+        return config

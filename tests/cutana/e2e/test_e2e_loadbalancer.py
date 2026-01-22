@@ -8,16 +8,17 @@
 End-to-end tests for LoadBalancer integration with orchestrator.
 """
 
-import tempfile
 import shutil
+import tempfile
 from pathlib import Path
-from unittest.mock import patch, Mock
-import pandas as pd
-import numpy as np
+from unittest.mock import Mock, patch
 
-from cutana.orchestrator import Orchestrator
-from cutana.loadbalancer import LoadBalancer
+import numpy as np
+import pandas as pd
+
 from cutana.get_default_config import get_default_config
+from cutana.loadbalancer import LoadBalancer
+from cutana.orchestrator import Orchestrator
 
 
 class TestE2ELoadBalancer:
@@ -229,25 +230,6 @@ class TestE2ELoadBalancer:
                         # Should use Kubernetes limits
                         assert resources["resource_source"] == "kubernetes_pod"
                         assert resources["memory_total"] == 4 * 1024**3
-
-    def test_loadbalancer_reset_statistics(self):
-        """Test that load balancer can reset statistics for new job."""
-        lb = LoadBalancer(progress_dir=str(self.temp_dir), session_id="test")
-
-        # Add some statistics
-        lb.memory_samples = [1000, 2000, 3000]
-        lb.worker_memory_peak_mb = 3000
-        lb.main_process_memory_mb = 500
-        lb.processes_measured = 3
-
-        # Reset for new job
-        lb.reset_statistics()
-
-        # Verify reset
-        assert len(lb.worker_memory_history) == 0
-        assert lb.worker_memory_peak_mb is None
-        assert lb.main_process_memory_mb is None
-        assert lb.processes_measured == 0
 
     def test_loadbalancer_spawn_decision_scenarios(self):
         """Test various spawn decision scenarios."""

@@ -6,16 +6,17 @@
 #   the terms contained in the file 'LICENCE.txt'.
 """File selection component for start screen."""
 
-import ipywidgets as widgets
 from pathlib import Path
+
+import ipywidgets as widgets
 from loguru import logger
 
+from ..styles import BACKGROUND_DARK, BORDER_COLOR, ESA_BLUE_ACCENT, TEXT_COLOR_LIGHT, scale_px
 from ..widgets.file_chooser import CutanaFileChooser
-from ..styles import ESA_BLUE_ACCENT, TEXT_COLOR_LIGHT, BACKGROUND_DARK, BORDER_COLOR, scale_px
 
 
 class FileSelectionComponent(widgets.VBox):
-    """Component for selecting source catalogue file (CSV only)."""
+    """Component for selecting source catalogue file (CSV or Parquet)."""
 
     def __init__(self, on_file_selected=None):
         self.on_file_selected = on_file_selected
@@ -30,13 +31,13 @@ class FileSelectionComponent(widgets.VBox):
         self.instructions = widgets.HTML(
             value=f"""
             <p style="color: {TEXT_COLOR_LIGHT}; font-size: 12px; margin-bottom: 2px;">
-                Select a CSV file containing source catalogue data (see help for format).
+                Select a CSV or Parquet file containing source catalogue data (see help for format).
             </p>
             """
         )
 
-        # File chooser - CSV only, start in tests/test_data
-        self.file_chooser = CutanaFileChooser(filter_pattern=["*.csv"])
+        # File chooser - CSV and Parquet formats
+        self.file_chooser = CutanaFileChooser(filter_pattern=["*.csv", "*.parquet"])
 
         # Error display (initially hidden)
         self.error_display = widgets.HTML(
@@ -116,8 +117,8 @@ class FileSelectionComponent(widgets.VBox):
                 if file_path and file_path != self._last_selected:
                     self._last_selected = file_path
 
-                    if file_path.lower().endswith(".csv"):
-                        logger.info(f"✅ CSV file selected: {file_path}")
+                    if file_path.lower().endswith((".csv", ".parquet")):
+                        logger.info(f"✅ Catalogue file selected: {file_path}")
 
                         # Trigger callback for automatic analysis
                         if self.on_file_selected:
@@ -131,9 +132,12 @@ class FileSelectionComponent(widgets.VBox):
 
                                 logger.error(traceback.format_exc())
                     else:
-                        logger.warning(f"Non-CSV file selected: {file_path}")
+                        logger.warning(f"Non-catalogue file selected: {file_path}")
                 else:
-                    logger.debug(f"File path skipped - duplicate or empty: {file_path}")
+                    if not file_path:
+                        logger.debug("File path skipped - empty or invalid selection")
+                    else:
+                        logger.debug(f"File path skipped - already processed: {file_path}")
 
             except Exception as e:
                 logger.error(f"❌ Error in file selection handler: {e}")

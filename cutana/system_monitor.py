@@ -14,14 +14,14 @@ This module handles:
 - Cross-platform resource detection
 """
 
-import time
+import socket
 import threading
+import time
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
+
 import psutil
 from loguru import logger
-
-import socket
 
 
 class SystemMonitor:
@@ -206,7 +206,7 @@ class SystemMonitor:
             # Check if we're on datalabs and get Kubernetes limits
             resource_source = "system"
             if self._is_datalabs_environment():
-                k8s_memory_limit, k8s_cpu_limit = self._get_kubernetes_pod_limits()
+                k8s_memory_limit, _ = self._get_kubernetes_pod_limits()
 
                 if k8s_memory_limit is not None:
                     # Use Kubernetes memory limits instead of system memory

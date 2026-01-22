@@ -8,12 +8,13 @@
 Unit tests for LoadBalancer module.
 """
 
-import pytest
 import tempfile
 from unittest.mock import Mock, patch
 
-from cutana.loadbalancer import LoadBalancer
+import pytest
+
 from cutana.get_default_config import get_default_config
+from cutana.loadbalancer import LoadBalancer
 
 
 class TestLoadBalancer:
@@ -78,7 +79,7 @@ class TestLoadBalancer:
         config_small = get_default_config()
         config_small.max_workers = 16  # Set high so system resources are the limiting factor
         lb.update_config_with_loadbalancing(config_small, total_sources=50000)
-        assert config_small.loadbalancer.max_sources_per_process == 25000  # Small job
+        assert config_small.loadbalancer.max_sources_per_process == 12500  # Small job (<1M sources)
 
         # Test with unknown job size
         config_unknown = get_default_config()
@@ -345,19 +346,3 @@ class TestLoadBalancer:
         finally:
             # No monitoring thread cleanup needed
             pass
-
-    def test_reset_statistics(self):
-        """Test statistics reset."""
-        # Set some statistics
-        self.load_balancer.memory_samples = [1000, 2000, 3000]
-        self.load_balancer.worker_memory_peak_mb = 300
-        self.load_balancer.main_process_memory_mb = 500
-        self.load_balancer.processes_measured = 3
-
-        # Reset
-        self.load_balancer.reset_statistics()
-
-        assert len(self.load_balancer.worker_memory_history) == 0
-        assert self.load_balancer.worker_memory_peak_mb is None
-        assert self.load_balancer.main_process_memory_mb is None
-        assert self.load_balancer.processes_measured == 0

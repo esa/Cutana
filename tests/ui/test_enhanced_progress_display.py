@@ -11,13 +11,14 @@ Tests the complete data flow from LoadBalancer → Orchestrator → BackendInter
 to ensure the enhanced progress display shows detailed LoadBalancer information.
 """
 
-import pytest
 from unittest.mock import Mock, patch
 
+import pytest
+
+from cutana import get_default_config
+from cutana.orchestrator import Orchestrator
 from cutana_ui.main_screen.status_panel import StatusPanel
 from cutana_ui.utils.backend_interface import BackendInterface
-from cutana.orchestrator import Orchestrator
-from cutana import get_default_config
 
 
 class TestEnhancedProgressDisplay:

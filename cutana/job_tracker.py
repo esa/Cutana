@@ -15,12 +15,11 @@ This module handles:
 - Error recording and reporting
 """
 
-import time
 import tempfile
-from pathlib import Path
-from typing import Dict, List, Any, Optional
+import time
+from typing import Any, Dict, List, Optional
+
 from loguru import logger
-import json
 
 from .process_status_reader import ProcessStatusReader
 from .process_status_writer import ProcessStatusWriter
@@ -432,61 +431,3 @@ class JobTracker:
             return self.active_processes[process_id].get("sources_assigned", 0)
 
         return 0
-
-    def save_state(self) -> bool:
-        """
-        Save current job tracking state to file.
-
-        Returns:
-            True if save was successful
-        """
-        try:
-            state = {
-                "total_sources": self.total_sources,
-                "completed_sources": self.completed_sources,
-                "failed_sources": self.failed_sources,
-                "start_time": self.start_time,
-                "session_id": self.session_id,
-                "active_processes": self.active_processes,
-                "errors": self.errors,
-                "save_timestamp": time.time(),
-            }
-
-            with open(self.tracking_file, "w") as f:
-                json.dump(state, f, indent=2)
-
-            logger.debug(f"Saved job tracking state to {self.tracking_file}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to save job tracking state: {e}")
-            return False
-
-    def load_state(self) -> bool:
-        """
-        Load job tracking state from file.
-
-        Returns:
-            True if load was successful
-        """
-        try:
-            if Path(self.tracking_file).exists():
-                with open(self.tracking_file, "r") as f:
-                    state = json.load(f)
-
-                self.total_sources = state.get("total_sources", 0)
-                self.completed_sources = state.get("completed_sources", 0)
-                self.failed_sources = state.get("failed_sources", 0)
-                self.start_time = state.get("start_time")
-                self.active_processes = state.get("active_processes", {})
-                self.errors = state.get("errors", [])
-
-                logger.info(f"Loaded job tracking state from {self.tracking_file}")
-                return True
-            else:
-                logger.debug(f"No saved state found at {self.tracking_file}")
-                return False
-
-        except Exception as e:
-            logger.error(f"Failed to load job tracking state: {e}")
-            return False

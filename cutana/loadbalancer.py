@@ -15,13 +15,14 @@ This module handles:
 """
 
 import time
-from typing import Dict, Any, Tuple, List
 from collections import deque
-from loguru import logger
-from dotmap import DotMap
+from typing import Any, Dict, List, Tuple
 
-from .system_monitor import SystemMonitor
+from dotmap import DotMap
+from loguru import logger
+
 from .process_status_reader import ProcessStatusReader
+from .system_monitor import SystemMonitor
 
 
 class LoadBalancer:
@@ -50,6 +51,7 @@ class LoadBalancer:
         self.main_process_memory_reserve_gb = 2.0
         self.initial_workers = 1
         self.log_interval = 30
+        self.skip_memory_calibration_wait = False
 
         # Main process memory tracking
         self.main_process_memory_mb = None
@@ -70,7 +72,6 @@ class LoadBalancer:
         # Resource limits
         self.memory_limit_bytes = None
         self.cpu_limit = None
-        self.total_memory_gb = None
 
         # FITS size tracking for better estimation
         self.avg_fits_set_size_mb = None
@@ -235,7 +236,7 @@ class LoadBalancer:
                     self.worker_memory_history.append((current_time, per_worker_memory))
 
                     # Log the real measurement
-                    logger.info(
+                    logger.debug(
                         f"Real worker memory measurement: "
                         f"total_used={current_peak_memory:.1f}MB, "
                         f"baseline={self.baseline_memory_mb:.1f}MB, "
@@ -295,6 +296,7 @@ class LoadBalancer:
         self.main_process_memory_reserve_gb = config.loadbalancer.main_process_memory_reserve_gb
         self.initial_workers = config.loadbalancer.initial_workers
         self.log_interval = config.loadbalancer.log_interval
+        self.skip_memory_calibration_wait = config.loadbalancer.skip_memory_calibration_wait
 
         # Setup event logging if configured
         if config.loadbalancer.event_log_file:
@@ -329,9 +331,6 @@ class LoadBalancer:
                 f"Using Kubernetes CPU limit: {effective_cpu_count} cores ({cpu_limit_millicores} millicores)"
             )
 
-        # Store total memory for reference
-        self.total_memory_gb = resources["memory_total"] / (1024**3)
-
         # Determine CPU limit (N-1 cores from effective count)
         max_workers = int(min(config.max_workers, effective_cpu_count - 1))
 
@@ -345,10 +344,20 @@ class LoadBalancer:
         memory_limit_gb = memory_limit_bytes / (1024**3)
 
         # Determine max_sources_per_process based on job size
-        if total_sources is not None and total_sources < 1e6:
-            max_sources_per_process = 25000  # Smaller batches for smaller jobs
+        # Check if user has explicitly set max_sources_per_process
+        if (
+            hasattr(config.loadbalancer, "max_sources_per_process")
+            and config.loadbalancer.max_sources_per_process
+        ):
+            # User has set a value - respect it
+            max_sources_per_process = config.loadbalancer.max_sources_per_process
+            logger.info(f"Using user-configured max_sources_per_process: {max_sources_per_process}")
         else:
-            max_sources_per_process = 1e5  # Larger batches for large jobs
+            # Use automatic logic based on job size
+            if total_sources is not None and total_sources < 1e6:
+                max_sources_per_process = 12500  # Smaller batches for smaller jobs
+            else:
+                max_sources_per_process = 1e5  # Larger batches for large jobs
 
         # Set batch size for cutout process
         n_batch_cutout_process = self.batch_size
@@ -441,34 +450,6 @@ class LoadBalancer:
 
         if old_count != count:
             logger.info(f"Active worker count: {old_count} → {count}")
-
-    def update_fits_set_size(self, fits_paths: List[str]) -> None:
-        """
-        Update FITS set size estimate for better memory prediction.
-
-        Args:
-            fits_paths: List of FITS file paths in a set
-        """
-        try:
-            import os
-
-            total_size_mb = 0
-            for path in fits_paths:
-                if os.path.exists(path):
-                    size_bytes = os.path.getsize(path)
-                    total_size_mb += size_bytes / (1024 * 1024)
-
-            # Update running average
-            if self.avg_fits_set_size_mb is None:
-                self.avg_fits_set_size_mb = total_size_mb
-            else:
-                # Exponential moving average
-                self.avg_fits_set_size_mb = 0.7 * self.avg_fits_set_size_mb + 0.3 * total_size_mb
-
-            # FITS set size updated silently
-
-        except Exception as e:
-            logger.warning(f"Failed to update FITS set size: {e}")
 
     def _get_remaining_worker_memory(self) -> float:
         """
@@ -583,11 +564,15 @@ class LoadBalancer:
 
         # For additional workers, require real memory measurements from first worker
         # AND that the first worker has completed at least one source
-        if not self.calibration_completed or self.worker_memory_peak_mb is None:
+        # Skip this check if skip_memory_calibration_wait is enabled
+        if not self.skip_memory_calibration_wait and (
+            not self.calibration_completed or self.worker_memory_peak_mb is None
+        ):
             # Check if any active process has completed sources using JobTracker
             # IMPORTANT: Use the same session_id as the ProcessStatusReader to access the same progress files
-            from .job_tracker import JobTracker
             import tempfile
+
+            from .job_tracker import JobTracker
 
             temp_tracker = JobTracker(
                 progress_dir=tempfile.gettempdir(), session_id=self.process_reader.session_id
@@ -675,11 +660,28 @@ class LoadBalancer:
 
         # Check if we have measured memory yet
         if memory_per_worker is None:
-            # This shouldn't happen since we check for calibration above
-            # but handle it safely to avoid NoneType comparison errors
-            reason = "Worker memory peak not yet measured (unexpected state)"
-            logger.info(f"LoadBalancer spawn decision: NO - {reason}")
-            return False, reason
+            if self.skip_memory_calibration_wait:
+                # Use a heuristic estimate when skipping calibration wait
+                # Estimate: batch_size * target_resolution^2 * num_channels * 4 bytes (float32) * 2.5 safety factor
+                # Plus average FITS set size if available
+                cutout_memory_mb = (
+                    self.batch_size * self.target_resolution**2 * self.num_channels * 4 * 2.5
+                ) / (1024 * 1024)
+                fits_memory_mb = (
+                    self.avg_fits_set_size_mb if self.avg_fits_set_size_mb else 500
+                )  # Default 500MB for FITS
+                memory_per_worker = cutout_memory_mb + fits_memory_mb
+                memory_source = "estimated (calibration skipped)"
+                logger.warning(
+                    f"Skip calibration enabled - using estimated worker memory: {memory_per_worker:.1f}MB "
+                    f"(cutout: {cutout_memory_mb:.1f}MB + FITS: {fits_memory_mb:.1f}MB)"
+                )
+            else:
+                # This shouldn't happen since we check for calibration above
+                # but handle it safely to avoid NoneType comparison errors
+                reason = "Worker memory peak not yet measured (unexpected state)"
+                logger.info(f"LoadBalancer spawn decision: NO - {reason}")
+                return False, reason
 
         # Calculate memory requirement for one new worker using real measurements
         effective_memory = memory_per_worker
@@ -892,17 +894,3 @@ class LoadBalancer:
         }
 
         return status
-
-    def reset_statistics(self) -> None:
-        """Reset all collected statistics for a new job."""
-        self.main_memory_samples.clear()
-        self.main_process_memory_mb = None
-        self.worker_memory_history.clear()
-        self.worker_memory_peak_mb = None
-        self.worker_memory_allocation_mb = None
-        self.processes_measured = 0
-        self.active_worker_count = 0
-        self.avg_fits_set_size_mb = None
-        self.calibration_completed = False
-
-        # Statistics reset silently

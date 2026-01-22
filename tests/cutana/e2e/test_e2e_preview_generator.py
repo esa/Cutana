@@ -6,20 +6,21 @@
 #   the terms contained in the file 'LICENCE.txt'.
 """End-to-end tests for PreviewGenerator functionality."""
 
+import asyncio
 import tempfile
 from pathlib import Path
-import pandas as pd
+
 import numpy as np
+import pandas as pd
+import pytest
 from astropy.io import fits
 from astropy.wcs import WCS
-import pytest
-import asyncio
 
 from cutana.get_default_config import get_default_config
 from cutana.preview_generator import (
-    load_sources_for_previews,
-    generate_previews,
     clear_preview_cache,
+    generate_previews,
+    load_sources_for_previews,
 )
 
 

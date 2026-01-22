@@ -17,16 +17,12 @@ BASE_CONTAINER_WIDTH = 1600
 BASE_CONTAINER_HEIGHT = 900
 BASE_MAIN_WIDTH = 1400
 BASE_PANEL_WIDTH = 380
-BASE_PADDING = 20
-BASE_VIEWPORT_HEIGHT = 100  # vh units
 
 # Scaled dimensions
 CONTAINER_WIDTH = int(BASE_CONTAINER_WIDTH * UI_SCALE)
 CONTAINER_HEIGHT = int(BASE_CONTAINER_HEIGHT * UI_SCALE)
 MAIN_WIDTH = int(BASE_MAIN_WIDTH * UI_SCALE)
 PANEL_WIDTH = int(BASE_PANEL_WIDTH * UI_SCALE)
-PADDING = int(BASE_PADDING * UI_SCALE)
-VIEWPORT_HEIGHT = int(BASE_VIEWPORT_HEIGHT * UI_SCALE)
 
 
 def scale_px(pixels):
@@ -41,39 +37,9 @@ def scale_vh(vh_value):
     return int(vh_value * UI_SCALE)
 
 
-def scale_percent(base_pixels, container_pixels):
-    """Convert scaled pixels to percentage of container for responsive design."""
-    scaled_base = scale_px(base_pixels)
-    scaled_container = scale_px(container_pixels)
-    return min(100, max(0, (scaled_base / scaled_container) * 100))
-
-
-def get_responsive_width(target_px, max_px=None):
-    """Get a responsive width specification that scales properly."""
-    scaled_target = scale_px(target_px)
-    if max_px:
-        scaled_max = scale_px(max_px)
-        return f"min(100%, {scaled_target}px, {scaled_max}px)"
-    return f"min(100%, {scaled_target}px)"
-
-
-def get_container_constraints(width_px, height_px=None):
-    """Get consistent container constraints that maintain aspect ratios."""
-    constraints = {"width": "100%", "max_width": f"{scale_px(width_px)}px"}
-    if height_px:
-        constraints["max_height"] = f"{scale_px(height_px)}px"
-        constraints["height"] = "auto"
-    return constraints
-
-
-def get_ui_scale():
-    """Get the current UI scale factor."""
-    return UI_SCALE
-
-
 def set_ui_scale(scale):
     """Set the UI scale factor and recalculate dimensions."""
-    global UI_SCALE, CONTAINER_WIDTH, CONTAINER_HEIGHT, MAIN_WIDTH, PANEL_WIDTH, PADDING, VIEWPORT_HEIGHT
+    global UI_SCALE, CONTAINER_WIDTH, CONTAINER_HEIGHT, MAIN_WIDTH, PANEL_WIDTH
     UI_SCALE = scale
 
     # Recalculate scaled dimensions
@@ -81,8 +47,6 @@ def set_ui_scale(scale):
     CONTAINER_HEIGHT = int(BASE_CONTAINER_HEIGHT * UI_SCALE)
     MAIN_WIDTH = int(BASE_MAIN_WIDTH * UI_SCALE)
     PANEL_WIDTH = int(BASE_PANEL_WIDTH * UI_SCALE)
-    PADDING = int(BASE_PADDING * UI_SCALE)
-    VIEWPORT_HEIGHT = int(BASE_VIEWPORT_HEIGHT * UI_SCALE)
 
 
 # ESA Official Colors from colours.txt
@@ -91,14 +55,11 @@ ESA_BLUE_GREY = "#335E6E"  # Blue-grey
 ESA_BLUE_BRIGHT = "#009BDA"  # Bright blue
 ESA_BLUE_LIGHT = "#6DCFF6"  # Light blue
 ESA_BLUE_ACCENT = "#0098DB"  # Light blue accent
-ESA_TEAL = "#00AE9C"  # Teal/turquoise
 ESA_GREEN = "#008542"  # Green (for success)
 ESA_RED = "#EC1A2F"  # Bright red (for errors)
-ESA_ORANGE = "#FBAB18"  # Orange/amber (for warnings)
 
 # Background colors
 BACKGROUND_DARK = "#000000"  # Pure black background
-BACKGROUND_PANEL = "#003249"  # ESA Deep Space Blue for panels
 BORDER_COLOR = "#335E6E"  # ESA Blue-grey for borders
 
 # Text colors
@@ -192,6 +153,28 @@ COMMON_STYLES = """
     box-sizing: border-box;
     display: block;
     line-height: 1.4;
+}
+
+/* Dropdown arrow container */
+.widget-dropdown {
+    position: relative !important;
+    display: flex !important;
+    align-items: center !important;
+}
+
+.widget-dropdown::after {
+    content: "" !important;
+    position: absolute !important;
+    right: 12px !important;
+    top: 50%% !important;
+    transform: translateY(-50%%) !important;
+    width: 0 !important;
+    height: 0 !important;
+    border-left: 5px solid transparent !important;
+    border-right: 5px solid transparent !important;
+    border-top: 6px solid %(text_light)s !important;
+    pointer-events: none !important;
+    z-index: 1 !important;
 }
 
 .widget-dropdown select option {
@@ -438,6 +421,22 @@ input[type="number"]:focus {
     width: 100%%;
     height: 100%%;
 }
+
+/* Compact log level dropdown in header */
+.cutana-log-dropdown {
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+.cutana-log-dropdown select {
+    padding: 4px 8px !important;
+    margin: 0 !important;
+    min-height: 30px !important;
+    height: 30px !important;
+    font-size: 12px !important;
+    text-align: center !important;
+    text-align-last: center !important;
+}
 </style>
 """ % {
     "esa_blue_grey": ESA_BLUE_GREY,
@@ -452,9 +451,3 @@ input[type="number"]:focus {
     "error": ERROR_COLOR,
     "warning": WARNING_COLOR,
 }
-
-
-def apply_cutana_style(widget, class_name="cutana-container"):
-    """Apply Cutana styling to a widget."""
-    widget.add_class(class_name)
-    return widget

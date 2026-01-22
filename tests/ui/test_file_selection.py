@@ -10,8 +10,9 @@ Unit tests for file selection UI components.
 Tests focus on basic import and utility function coverage.
 """
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 
 class TestFileSelectionUtilities:
@@ -53,8 +54,8 @@ class TestFileSelectionUtilities:
 
     def test_path_utilities(self):
         """Test path utility functions."""
-        from pathlib import Path
         import os
+        from pathlib import Path
 
         # Test path manipulation
         test_paths = ["/home/user/data.csv", "/tmp/test.csv", "relative/path.csv"]

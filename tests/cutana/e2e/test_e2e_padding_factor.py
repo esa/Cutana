@@ -6,9 +6,10 @@
 #   the terms contained in the file 'LICENCE.txt'.
 """End-to-end test for padding_factor functionality."""
 
-import pytest
-import numpy as np
 from unittest.mock import MagicMock
+
+import numpy as np
+import pytest
 from astropy.wcs import WCS
 
 from cutana.cutout_extraction import extract_cutouts_vectorized_from_extension
@@ -59,7 +60,7 @@ class TestPaddingFactorE2E:
         expected_size = int(target_size * padding_factor)  # Should be 64
 
         # Extract cutout with padding factor
-        cutouts, success_mask = extract_cutouts_vectorized_from_extension(
+        cutouts, success_mask, _, _ = extract_cutouts_vectorized_from_extension(
             hdu=hdu,
             wcs_obj=wcs_obj,
             ra_array=np.array([180.0]),
@@ -95,7 +96,7 @@ class TestPaddingFactorE2E:
         expected_size = int(target_size * padding_factor)  # Should be 128
 
         # Extract cutout with padding factor
-        cutouts, success_mask = extract_cutouts_vectorized_from_extension(
+        cutouts, success_mask, _, _ = extract_cutouts_vectorized_from_extension(
             hdu=hdu,
             wcs_obj=wcs_obj,
             ra_array=np.array([180.0]),
@@ -125,7 +126,7 @@ class TestPaddingFactorE2E:
         expected_size = int(target_size * padding_factor)  # Should be 256
 
         # Extract cutout with padding factor
-        cutouts, success_mask = extract_cutouts_vectorized_from_extension(
+        cutouts, success_mask, _, _ = extract_cutouts_vectorized_from_extension(
             hdu=hdu,
             wcs_obj=wcs_obj,
             ra_array=np.array([180.0]),
@@ -160,7 +161,7 @@ class TestPaddingFactorE2E:
         expected_size = int(target_size * padding_factor)  # Should be 640
 
         # Extract cutout with padding factor
-        cutouts, success_mask = extract_cutouts_vectorized_from_extension(
+        cutouts, success_mask, _, _ = extract_cutouts_vectorized_from_extension(
             hdu=hdu,
             wcs_obj=wcs_obj,
             ra_array=np.array([180.0]),

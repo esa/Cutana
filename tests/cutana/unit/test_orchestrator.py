@@ -16,8 +16,10 @@ Tests cover:
 
 import time
 from unittest.mock import Mock, patch
-import pytest
+
 import pandas as pd
+import pytest
+
 from cutana.orchestrator import Orchestrator
 
 
@@ -30,10 +32,11 @@ class TestOrchestrator:
         from pathlib import Path
 
         test_data_dir = Path(__file__).parent.parent.parent / "test_data"
-        fits_file = (
-            test_data_dir
-            / "EUC_MER_BGSUB-MOSAIC-VIS_TILE102018211-ACBD03_20250825T203342.748Z_00.00.fits"
-        )
+        # Find the FITS file dynamically (timestamps may change)
+        fits_files = list(test_data_dir.glob("EUC_MER_BGSUB-MOSAIC-VIS_TILE102018211-*.fits"))
+        if not fits_files:
+            pytest.skip("No FITS test data found")
+        fits_file = fits_files[0]
 
         data = [
             {
@@ -109,7 +112,9 @@ class TestOrchestrator:
         orchestrator = Orchestrator(config)
 
         assert orchestrator.config == config
-        assert orchestrator.config.loadbalancer.max_sources_per_process == 150000
+        # max_sources_per_process is now optional (None by default) and gets set during update_config_with_loadbalancing
+        # During initialization without job data, it remains None
+        assert orchestrator.config.loadbalancer.max_sources_per_process is None
         assert orchestrator.config.max_workers > 0
         assert orchestrator.active_processes == {}
         assert orchestrator.job_tracker is not None
@@ -135,21 +140,6 @@ class TestOrchestrator:
             assert cpu_limit > 0 and cpu_limit <= 8  # Should be reasonable
             assert memory_limit_gb > 0  # Should have memory limit
 
-    def test_delegate_sources_to_processes(self, orchestrator, mock_catalogue_data):
-        """Test delegation of sources to worker processes."""
-        batches = orchestrator._delegate_sources_to_processes(mock_catalogue_data)
-
-        # Should create batches based on max_sources_per_process
-        assert len(batches) > 0
-        assert all(
-            len(batch) <= orchestrator.config.loadbalancer.max_sources_per_process
-            for batch in batches
-        )
-
-        # All sources should be included
-        total_sources = sum(len(batch) for batch in batches)
-        assert total_sources == len(mock_catalogue_data)
-
     @patch("cutana.orchestrator.save_config_toml")
     @patch("builtins.open")
     @patch("subprocess.Popen")
@@ -171,7 +161,7 @@ class TestOrchestrator:
         # Mock config saving
         mock_save_config.return_value = "/tmp/test_config.toml"
 
-        orchestrator._spawn_cutout_process(process_id, batch)
+        orchestrator._spawn_cutout_process(process_id, batch, write_to_disk=True)
 
         # Subprocess should be created with correct arguments
         mock_popen.assert_called_once()
@@ -235,17 +225,18 @@ class TestOrchestrator:
 
     def test_start_processing(self, tmp_path):
         """Test main processing loop with real data."""
-        from cutana import get_default_config
         from pathlib import Path
 
-        # Get real test data
-        test_data_dir = Path(__file__).parent.parent.parent / "test_data"
-        fits_file = (
-            test_data_dir
-            / "EUC_MER_BGSUB-MOSAIC-VIS_TILE102018211-ACBD03_20250825T203342.748Z_00.00.fits"
-        )
+        from cutana import get_default_config
 
-        # Create minimal test catalogue
+        # Get real test data - find dynamically (timestamps may change)
+        test_data_dir = Path(__file__).parent.parent.parent / "test_data"
+        fits_files = list(test_data_dir.glob("EUC_MER_BGSUB-MOSAIC-VIS_TILE102018211-*.fits"))
+        if not fits_files:
+            pytest.skip("No FITS test data found")
+        fits_file = fits_files[0]
+
+        # Create minimal test catalogue and save to file
         test_data = [
             {
                 "SourceID": "TestSource_001",
@@ -256,10 +247,12 @@ class TestOrchestrator:
             }
         ]
         catalogue_df = pd.DataFrame(test_data)
+        catalogue_path = tmp_path / "test_catalogue.parquet"
+        catalogue_df.to_parquet(catalogue_path, index=False)
 
         # Set up config
         config = get_default_config()
-        config.source_catalogue = str(tmp_path / "test_catalogue.csv")
+        config.source_catalogue = str(catalogue_path)
         config.output_dir = str(tmp_path / "output")
         config.max_sources_per_process = 1000
         config.N_batch_cutout_process = 100
@@ -269,7 +262,7 @@ class TestOrchestrator:
         # Create orchestrator and test
         orchestrator = Orchestrator(config)
         try:
-            result = orchestrator.start_processing(catalogue_df)
+            result = orchestrator.start_processing(str(catalogue_path))
             assert result["status"] == "completed" or result["status"] == "started"
             assert "total_sources" in result
         finally:
@@ -301,23 +294,6 @@ class TestOrchestrator:
             memory_available_gb = system_info.get("memory_available_gb", 0)
             assert memory_available_gb < 1.0  # Should detect < 1GB available
 
-    @patch("cutana.cutout_process.create_cutouts")
-    def test_error_handling_in_process(
-        self, mock_create_cutouts, orchestrator, mock_catalogue_data
-    ):
-        """Test error handling when cutout processes fail."""
-        mock_create_cutouts.side_effect = Exception("FITS file not found")
-
-        orchestrator.job_tracker = Mock()
-        orchestrator.job_tracker.record_error = Mock()
-
-        # This should handle the error gracefully
-        # Test batch and process_id available via mock_catalogue_data.iloc[:1] and "error_test_process"
-
-        # The actual error handling will be tested in integration tests
-        # Here we just ensure the framework supports error reporting
-        assert hasattr(orchestrator.job_tracker, "record_error")
-
     def test_progress_reporting(self, orchestrator):
         """Test progress reporting functionality."""
         orchestrator.job_tracker = Mock()
@@ -337,17 +313,18 @@ class TestOrchestrator:
         assert status["active_processes"] == 3
         assert "memory_usage" in status
 
-    def test_source_to_zarr_mapping_csv_creation(self, tmp_path):
-        """Test that source to zarr mapping CSV is created correctly."""
-        from cutana import get_default_config
+    def test_source_to_zarr_mapping_parquet_creation(self, tmp_path):
+        """Test that source to zarr mapping Parquet is created correctly."""
         from pathlib import Path
 
-        # Get real test data
+        from cutana import get_default_config
+
+        # Get real test data - find dynamically (timestamps may change)
         test_data_dir = Path(__file__).parent.parent.parent / "test_data"
-        fits_file = (
-            test_data_dir
-            / "EUC_MER_BGSUB-MOSAIC-VIS_TILE102018211-ACBD03_20250825T203342.748Z_00.00.fits"
-        )
+        fits_files = list(test_data_dir.glob("EUC_MER_BGSUB-MOSAIC-VIS_TILE102018211-*.fits"))
+        if not fits_files:
+            pytest.skip("No FITS test data found")
+        fits_file = fits_files[0]
 
         # Create test catalogue with known source IDs using real FITS file
         test_catalogue = pd.DataFrame(
@@ -369,9 +346,13 @@ class TestOrchestrator:
             ]
         )
 
+        # Save catalogue to parquet file
+        catalogue_path = tmp_path / "test_catalogue.parquet"
+        test_catalogue.to_parquet(catalogue_path, index=False)
+
         # Set up config
         config = get_default_config()
-        config.source_catalogue = str(tmp_path / "test_catalogue.csv")
+        config.source_catalogue = str(catalogue_path)
         config.output_dir = str(tmp_path / "output")
         config.max_sources_per_process = 1000
         config.N_batch_cutout_process = 100
@@ -380,17 +361,17 @@ class TestOrchestrator:
 
         orchestrator = Orchestrator(config)
         try:
-            result = orchestrator.start_processing(test_catalogue)
+            result = orchestrator.start_processing(str(catalogue_path))
 
-            # Check that processing completed and CSV was created
+            # Check that processing completed and Parquet was created
             assert result["status"] == "completed"
-            assert "mapping_csv" in result
+            assert "mapping_parquet" in result
 
-            csv_path = Path(result["mapping_csv"])
-            assert csv_path.exists()
+            parquet_path = Path(result["mapping_parquet"])
+            assert parquet_path.exists()
 
             # Read and verify CSV contents
-            csv_df = pd.read_csv(csv_path)
+            csv_df = pd.read_parquet(parquet_path)
             assert len(csv_df) == 2
             assert set(csv_df.columns) == {"SourceID", "zarr_file", "batch_index"}
 
@@ -482,7 +463,7 @@ class TestOrchestrator:
             process_id = "test_process_fail"
 
             # This should handle the error and clean up temp files
-            orchestrator._spawn_cutout_process(process_id, batch)
+            orchestrator._spawn_cutout_process(process_id, batch, write_to_disk=True)
 
             # Process should not be added to active_processes on failure
             assert process_id not in orchestrator.active_processes
@@ -550,19 +531,19 @@ class TestOrchestrator:
             assert completed[0]["successful"] is False  # No sources completed
             assert completed[0]["reason"] == "completed"  # Process completed but with 0 sources
 
-    def test_write_source_mapping_csv_no_mapping(self, orchestrator, tmp_path):
-        """Test CSV writing when no source mapping is available."""
+    def test_write_source_mapping_parquet_no_mapping(self, orchestrator, tmp_path):
+        """Test Parquet writing when no source mapping is available."""
         output_dir = tmp_path
 
         # No source_to_batch_mapping attribute should be created
-        result = orchestrator._write_source_mapping_csv(output_dir)
+        result = orchestrator._write_source_mapping_parquet(output_dir)
 
         assert result is None
-        csv_path = output_dir / "source_to_zarr_mapping.csv"
-        assert not csv_path.exists()
+        parquet_path = output_dir / "source_to_zarr_mapping.parquet"
+        assert not parquet_path.exists()
 
-    def test_write_source_mapping_csv_with_data(self, orchestrator, tmp_path):
-        """Test CSV writing with actual mapping data."""
+    def test_write_source_mapping_parquet_with_data(self, orchestrator, tmp_path):
+        """Test Parquet writing with actual mapping data."""
         output_dir = tmp_path
 
         # Set up source mapping data
@@ -571,75 +552,19 @@ class TestOrchestrator:
             {"SourceID": "source_002", "zarr_file": "batch_001/images.zarr", "batch_index": 1},
         ]
 
-        result = orchestrator._write_source_mapping_csv(output_dir)
+        result = orchestrator._write_source_mapping_parquet(output_dir)
 
         assert result is not None
-        csv_path = tmp_path / "source_to_zarr_mapping.csv"
-        assert csv_path.exists()
-
-        # Verify CSV contents
+        parquet_path = tmp_path / "source_to_zarr_mapping.parquet"
+        assert parquet_path.exists()
+        # Verify Parquet contents
         import pandas as pd
 
-        df = pd.read_csv(csv_path)
+        df = pd.read_parquet(parquet_path)
         assert len(df) == 2
         assert set(df.columns) == {"SourceID", "zarr_file", "batch_index"}
         assert df.iloc[0]["SourceID"] == "source_001"
         assert df.iloc[1]["zarr_file"] == "batch_001/images.zarr"
-
-    def test_delegate_sources_edge_cases(self, config):
-        """Test source delegation with edge cases."""
-        orchestrator = Orchestrator(config)
-
-        # Test with empty catalogue
-        empty_df = pd.DataFrame()
-        batches = orchestrator._delegate_sources_to_processes(empty_df)
-        assert len(batches) == 1  # Should create at least one batch
-        assert len(batches[0]) == 0
-
-        # Test with single source
-        single_df = pd.DataFrame(
-            [
-                {
-                    "SourceID": "test_001",
-                    "RA": 10.0,
-                    "Dec": 20.0,
-                    "fits_file_paths": "['/test/file.fits']",
-                }
-            ]
-        )
-        batches = orchestrator._delegate_sources_to_processes(single_df)
-        assert len(batches) == 1
-        assert len(batches[0]) == 1
-
-        # Test with many sources (more than max_sources_per_process * max_workers)
-        config.max_sources_per_process = 1000
-        config.max_workers = 2
-        config.N_batch_cutout_process = 100
-        orchestrator = Orchestrator(config)
-
-        large_df = pd.DataFrame(
-            [
-                {
-                    "SourceID": f"test_{i:03d}",
-                    "RA": 10.0,
-                    "Dec": 20.0,
-                    "fits_file_paths": "['/test/file.fits']",
-                }
-                for i in range(10)
-            ]
-        )
-        batches = orchestrator._delegate_sources_to_processes(large_df)
-
-        # JobCreator creates optimized batches based on max_sources_per_process
-        # With 10 sources and max_sources_per_process=1000, expect 1 batch (10/1000=1)
-        expected_batches = (
-            len(large_df) + config.max_sources_per_process - 1
-        ) // config.max_sources_per_process
-        assert len(batches) == expected_batches
-
-        # All sources should be distributed
-        total_distributed = sum(len(batch) for batch in batches)
-        assert total_distributed == len(large_df)
 
     def test_orchestrator_invalid_config_type(self, config):
         """Test orchestrator initialization with invalid config type - hits line 52."""
@@ -647,20 +572,6 @@ class TestOrchestrator:
         with pytest.raises(TypeError) as exc_info:
             Orchestrator({"invalid": "dict_config"})
         assert "Config must be DotMap" in str(exc_info.value)
-
-    def test_calculate_eta_no_completed_batches(self, orchestrator):
-        """Test ETA calculation with zero completed batches - hits line 93."""
-        # Test line 93: return None when completed_batches == 0
-        eta = orchestrator._calculate_eta(0, 100, time.time())
-        assert eta is None
-
-    def test_calculate_eta_valid_batches(self, orchestrator):
-        """Test ETA calculation with valid completed batches - hits lines 95-101."""
-        start_time = time.time() - 300  # 5 minutes ago
-        eta = orchestrator._calculate_eta(25, 100, start_time)
-        assert eta is not None
-        assert isinstance(eta, float)
-        assert eta > 0
 
     def test_resource_calculation_methods(self, orchestrator):
         """Test resource calculation through load balancer."""
@@ -684,8 +595,10 @@ class TestOrchestrator:
         mock_process.pid = 12345
         mock_popen.return_value = mock_process
 
-        # Use correct method signature: _spawn_cutout_process(process_id, source_batch)
-        orchestrator._spawn_cutout_process("test_process_001", mock_catalogue_data)
+        # Use correct method signature: _spawn_cutout_process(process_id, source_batch, write_to_disk)
+        orchestrator._spawn_cutout_process(
+            "test_process_001", mock_catalogue_data, write_to_disk=True
+        )
 
         mock_popen.assert_called_once()
 
@@ -723,14 +636,3 @@ class TestOrchestrator:
 
             # Should have made logging calls
             assert mock_logger.info.called
-
-    def test_time_formatting(self, orchestrator):
-        """Test time formatting utility - hits lines 105+."""
-        # Test various time values - be less specific about exact format
-        result_30s = orchestrator._format_time(30)
-        assert "s" in result_30s  # Should contain seconds
-
-        result_90s = orchestrator._format_time(90)
-        assert "m" in result_90s  # Should contain minutes
-
-        assert orchestrator._format_time(None) == "Unknown"

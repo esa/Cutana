@@ -7,6 +7,7 @@
 """SVG loading utilities for Cutana UI."""
 
 from importlib.resources import files
+
 from loguru import logger
 
 
