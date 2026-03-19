@@ -295,7 +295,7 @@ def convert_cfg_to_fitsbolt_cfg(config: DotMap, num_channels: int = 1) -> Dict[s
     if method == "log":
         norm_method = fitsbolt.NormalisationMethod.LOG
     elif method == "linear":
-        norm_method = fitsbolt.NormalisationMethod.CONVERSION_ONLY
+        norm_method = fitsbolt.NormalisationMethod.LINEAR
     elif method == "asinh":
         norm_method = fitsbolt.NormalisationMethod.ASINH
     elif method == "zscale":

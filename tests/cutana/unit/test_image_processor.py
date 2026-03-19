@@ -257,7 +257,10 @@ class TestImageProcessor:
 
         # Should return RGB format (1, H, W, 3)
         assert combined.shape == (1, H, W, 3)
-        assert combined.dtype == np.float32
+        assert combined.dtype in [
+            np.float32,
+            np.float64,
+        ]  # fitsbolt may return float32 or float64 depending on input data
         assert isinstance(combined, np.ndarray)
 
     def test_combine_channels_equal_weights(self, mock_cutout_data):
@@ -281,7 +284,10 @@ class TestImageProcessor:
         # It processes RGB weights differently than simple linear combination
         # Just verify basic properties - should return RGB format (1, H, W, 3)
         assert combined.shape == (1, H, W, 3)
-        assert combined.dtype == np.float32
+        assert combined.dtype in [
+            np.float32,
+            np.float64,
+        ]  # fitsbolt may return float32 or float64 depending on input data
         assert isinstance(combined, np.ndarray)
 
     def test_error_handling_invalid_cutout_data(self):

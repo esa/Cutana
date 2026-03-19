@@ -311,6 +311,15 @@ def apply_normalisation(images: np.ndarray, config: DotMap) -> np.ndarray:
 
     # Add images array to parameters (done here to avoid unnecessary copying)
     fitsbolt_params["images"] = images_array
+    # TODO(hotfix): Use config.data_type to determine output dtype for fitsbolt normalization
+    if config.data_type == "uint8":
+        fitsbolt_params["output_dtype"] = np.uint8
+    elif config.data_type == "float32":
+        fitsbolt_params["output_dtype"] = np.float32
+    elif config.data_type == "float64":
+        fitsbolt_params["output_dtype"] = np.float64
+    else:  # default to float32 if unknown
+        fitsbolt_params["output_dtype"] = np.float32
 
     try:
         # Apply fitsbolt batch normalization with parameters
