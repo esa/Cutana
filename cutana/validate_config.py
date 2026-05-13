@@ -13,7 +13,9 @@ ensuring all required parameters are present and have valid values.
 import inspect
 import os
 
+import numpy as np
 from dotmap import DotMap
+from fitsbolt import NormalisationMethod
 from loguru import logger
 
 from .normalisation_parameters import NormalisationRanges
@@ -60,6 +62,8 @@ def _return_required_and_optional_keys():
             False,
             None,
         ],  # Write outputs to disk vs in-memory streaming
+        # === Preprocessing Configuration ===
+        "skip_catalogue_validation": [bool, None, None, False, None],
         # === Processing Configuration ===
         "max_workers": [int, 1, 1024, False, None],  # 1-1024 workers
         "N_batch_cutout_process": [int, 10, 10000, False, None],  # 10-10k batch size
@@ -484,8 +488,6 @@ def validate_config(cfg: DotMap, check_paths: bool = True) -> None:
             # We don't use fitsbolt.validate_config() because the external config
             # may have None for optional fields (e.g. channel_combination) that
             # fitsbolt's full validation would reject
-            from fitsbolt import NormalisationMethod
-
             norm_method = value.normalisation_method
             if not isinstance(norm_method, NormalisationMethod):
                 raise ValueError(
@@ -503,6 +505,9 @@ def validate_config(cfg: DotMap, check_paths: bool = True) -> None:
         else:
             raise ValueError(f"Unknown data type for {param_name}: {dtype}")
 
+    # Enforce consistency between fitsbolt's config and main config
+    _enforce_consistency_external_fitsbolt_cfg(cfg)
+
     # Custom cross-parameter validation
     _validate_flux_conversion_config(cfg)
 
@@ -519,6 +524,38 @@ def validate_config(cfg: DotMap, check_paths: bool = True) -> None:
         logger.info("Config: validation partially successful")
     else:
         logger.info("Config: validation successful")
+
+
+def _enforce_consistency_external_fitsbolt_cfg(config):
+    """
+    Ensure config.external_fitsbolt_cfg.output_dtype matches main config's data_type.
+
+    Args:
+        config: The configuration object (DotMap).
+    """
+    if config.external_fitsbolt_cfg is None:
+        return
+
+    logger.debug("Enforcing consistency between external_fitsbolt_cfg and main config")
+
+    # Note: we assume that cutana's config has already been validated at this point,
+    # so config.data_type is guaranteed to be valid
+    target_dtype = np.uint8 if config.data_type == "uint8" else np.float32
+
+    if "output_dtype" in config.external_fitsbolt_cfg:
+        if config.external_fitsbolt_cfg.output_dtype != target_dtype:
+            logger.warning(
+                f"config.external_fitsbolt_cfg.output_dtype ({config.external_fitsbolt_cfg.output_dtype}) "
+                f"does not match main config.data_type ({config.data_type}). "
+                f"Overriding to match main config."
+            )
+    else:
+        logger.warning(
+            f"config.external_fitsbolt_cfg.output_dtype not set. Setting it to match main "
+            f"config.data_type ({config.data_type})."
+        )
+
+    config.external_fitsbolt_cfg.output_dtype = target_dtype
 
 
 def _validate_flux_conversion_config(config):
@@ -593,6 +630,28 @@ def validate_channel_order_consistency(tensor_channel_names, channel_weights, we
     """
     # Get channel names from weights (in the order they will be applied)
     config_channel_names = list(channel_weights.keys())
+
+    # combine_channels applies channel_weights positionally to tensor extensions:
+    # the first weight binds to extension 0, the second to extension 1, etc.
+    # When the tensor has more channels than channel_weights, the surplus
+    # extensions are zero-weighted and silently dropped. Tolerate the lone-weight
+    # substring case (e.g. {"VIS": [1]} over ["VIS_a", "VIS_b"]) which is
+    # consistent with weak-check semantics; reject everything else (issue #315).
+    if len(tensor_channel_names) > len(config_channel_names):
+        tolerated = (
+            len(config_channel_names) == 1 and config_channel_names[0] in tensor_channel_names[0]
+        )
+        if not tolerated:
+            raise AssertionError(
+                f"Configuration would silently drop tensor extensions: "
+                f"{len(tensor_channel_names)} tensor channels "
+                f"({tensor_channel_names}) but channel_weights has "
+                f"{len(config_channel_names)} entry/entries "
+                f"({config_channel_names}). combine_channels applies weights "
+                f"positionally — extra tensor channels are dropped. Add weights "
+                f"for the additional channels or restrict fits_extensions / "
+                f"fits_file_paths."
+            )
 
     if weak_check:
         # Weak check: use substring matching for cases where tensor names contain full paths

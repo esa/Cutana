@@ -15,15 +15,17 @@ Tests cover:
 - Integration testing with real data transformations
 """
 
+import fitsbolt
 import numpy as np
 import pytest
+from dotmap import DotMap
 
 from cutana.image_processor import (
     apply_normalisation,
     combine_channels,
-    convert_data_type,
     resize_batch_tensor,
 )
+from cutana.normalisation_parameters import NormalisationDefaults
 
 
 class TestImageProcessorEnhanced:
@@ -32,21 +34,17 @@ class TestImageProcessorEnhanced:
     @pytest.fixture
     def mock_config(self):
         """Create mock config for apply_normalisation tests."""
-        from dotmap import DotMap
-
         return DotMap(
             {
                 "normalisation_method": "linear",
                 "normalisation": {
-                    "a": None,
-                    "percentile": None,
-                    "n_samples": None,
-                    "contrast": None,
+                    "a": NormalisationDefaults.ASINH_A,
+                    "percentile": NormalisationDefaults.PERCENTILE,
+                    "n_samples": NormalisationDefaults.N_SAMPLES,
+                    "contrast": NormalisationDefaults.CONTRAST,
+                    "crop_enable": False,
                 },
-                "norm_minimum_value": None,
-                "norm_maximum_value": None,
-                "norm_crop_for_maximum_value": None,
-                "norm_log_calculate_minimum_value": False,
+                "external_fitsbolt_cfg": DotMap(),
             }
         )
 
@@ -81,9 +79,13 @@ class TestImageProcessorEnhanced:
         """Test real fitsbolt linear normalization without mocking."""
         original_image = synthetic_astronomical_image.copy()
 
+        # apply_normalisation expects batch format (N, H, W)
+        image_batch = original_image[np.newaxis, :, :]
+
         # Apply linear normalization
         mock_config.normalisation_method = "linear"
-        normalized = apply_normalisation(original_image, mock_config)
+        normalized_batch = apply_normalisation(image_batch, mock_config)
+        normalized = normalized_batch[0]
 
         # Verify normalization occurred
         assert normalized.shape == original_image.shape
@@ -109,8 +111,12 @@ class TestImageProcessorEnhanced:
         # Ensure all values are positive for log
         original_image = np.maximum(original_image, 0.1)
 
+        # apply_normalisation expects batch format (N, H, W)
+        image_batch = original_image[np.newaxis, :, :]
+
         mock_config.normalisation_method = "log"
-        normalized = apply_normalisation(original_image, mock_config)
+        normalized_batch = apply_normalisation(image_batch, mock_config)
+        normalized = normalized_batch[0]
 
         # Verify basic properties
         assert normalized.shape == original_image.shape
@@ -128,8 +134,12 @@ class TestImageProcessorEnhanced:
         """Test real fitsbolt asinh normalization."""
         original_image = synthetic_astronomical_image.copy()
 
+        # apply_normalisation expects batch format (N, H, W)
+        image_batch = original_image[np.newaxis, :, :]
+
         mock_config.normalisation_method = "asinh"
-        normalized = apply_normalisation(original_image, mock_config)
+        normalized_batch = apply_normalisation(image_batch, mock_config)
+        normalized = normalized_batch[0]
 
         # Verify basic properties
         assert normalized.shape == original_image.shape
@@ -147,8 +157,12 @@ class TestImageProcessorEnhanced:
         """Test real fitsbolt zscale normalization."""
         original_image = synthetic_astronomical_image.copy()
 
+        # apply_normalisation expects batch format (N, H, W)
+        image_batch = original_image[np.newaxis, :, :]
+
         mock_config.normalisation_method = "zscale"
-        normalized = apply_normalisation(original_image, mock_config)
+        normalized_batch = apply_normalisation(image_batch, mock_config)
+        normalized = normalized_batch[0]
 
         # Verify basic properties
         assert normalized.shape == original_image.shape
@@ -164,12 +178,16 @@ class TestImageProcessorEnhanced:
         """Test that normalization preserves the overall image structure."""
         original_image = synthetic_astronomical_image.copy()
 
+        # apply_normalisation expects batch format (N, H, W)
+        image_batch = original_image[np.newaxis, :, :]
+
         # Test different normalization methods
         methods = ["linear", "log", "asinh", "zscale"]
 
         for method in methods:
             mock_config.normalisation_method = method
-            normalized = apply_normalisation(original_image, mock_config)
+            normalized_batch = apply_normalisation(image_batch, mock_config)
+            normalized = normalized_batch[0]
 
             # The bright source should still be at the center
             center_region = normalized[60:68, 60:68]  # 8x8 region around center
@@ -211,25 +229,6 @@ class TestImageProcessorEnhanced:
             # Allow some tolerance for interpolation effects
             assert abs(resized_mean - original_mean) / original_mean < 0.1
 
-    def test_data_type_conversion_range_preservation(self):
-        """Test that data type conversions preserve appropriate ranges."""
-        # Test with known data ranges
-        test_data = np.linspace(0, 1, 10000).reshape(100, 100).astype(np.float32)
-
-        # Test float32 -> uint8
-        uint8_data = convert_data_type(test_data, "uint8")
-        assert uint8_data.dtype == np.uint8
-        assert uint8_data.min() >= 0
-        assert uint8_data.max() <= 255
-        assert uint8_data.min() < 50  # Should use low values
-        assert uint8_data.max() > 200  # Should use high values
-
-        # Test uint8 -> float32
-        float32_data = convert_data_type(uint8_data, "float32")
-        assert float32_data.dtype == np.float32
-        assert 0 <= float32_data.min() <= 0.1
-        assert 0.9 <= float32_data.max() <= 1.0
-
     def test_complete_processing_pipeline_validation(self, realistic_cutout_data, mock_config):
         """Test complete processing pipeline produces valid scientific data."""
         # Create source_cutouts dict from realistic data - single source with all channels
@@ -251,8 +250,8 @@ class TestImageProcessorEnhanced:
         # Reshape for normalization: (N_sources, H, W, N_extensions) -> (N, H, W)
         N_sources, H, W, N_extensions = resized.shape
         mock_config.normalisation_method = "asinh"
-        normalized = apply_normalisation(resized, mock_config)
-        processed_batch = convert_data_type(normalized, "float32")
+        mock_config.data_type = "float32"
+        processed_batch = apply_normalisation(resized, mock_config)
 
         assert processed_batch.shape[-1] == len(
             realistic_cutout_data
@@ -287,12 +286,16 @@ class TestImageProcessorEnhanced:
         # Add some noise
         extreme_image += np.random.normal(0, 1, extreme_image.shape).astype(np.float32)
 
+        # apply_normalisation expects batch format (N, H, W)
+        image_batch = extreme_image[np.newaxis, :, :]
+
         # Test different normalization methods
         methods = ["linear", "log", "asinh", "zscale"]
 
         for method in methods:
             mock_config.normalisation_method = method
-            normalized = apply_normalisation(extreme_image, mock_config)
+            normalized_batch = apply_normalisation(image_batch, mock_config)
+            normalized = normalized_batch[0]
 
             # Should handle extreme values without creating invalid data
             assert np.all(np.isfinite(normalized))
@@ -349,9 +352,9 @@ class TestImageProcessorEnhanced:
         actual_mean = np.mean(actual_combined)
 
         # Since all input pixels were uniform, output should also be uniform
-        assert np.allclose(
-            actual_combined, expected_value, rtol=1e-6
-        ), f"Expected uniform value {expected_value}, got mean {actual_mean} with std {np.std(actual_combined)}"
+        assert np.allclose(actual_combined, expected_value, rtol=1e-6), (
+            f"Expected uniform value {expected_value}, got mean {actual_mean} with std {np.std(actual_combined)}"
+        )
 
         # Test with more complex multi-channel output
         multi_channel_weights = {
@@ -372,28 +375,29 @@ class TestImageProcessorEnhanced:
         actual_ch0 = np.mean(combined_multi[0, :, :, 0])
         actual_ch1 = np.mean(combined_multi[0, :, :, 1])
 
-        assert np.isclose(
-            actual_ch0, expected_ch0, rtol=1e-6
-        ), f"Channel 0: Expected {expected_ch0}, got {actual_ch0}"
-        assert np.isclose(
-            actual_ch1, expected_ch1, rtol=1e-6
-        ), f"Channel 1: Expected {expected_ch1}, got {actual_ch1}"
+        assert np.isclose(actual_ch0, expected_ch0, rtol=1e-6), (
+            f"Channel 0: Expected {expected_ch0}, got {actual_ch0}"
+        )
+        assert np.isclose(actual_ch1, expected_ch1, rtol=1e-6), (
+            f"Channel 1: Expected {expected_ch1}, got {actual_ch1}"
+        )
 
         # Verify channels have different values as expected
-        assert not np.allclose(
-            combined_multi[0, :, :, 0], combined_multi[0, :, :, 1], rtol=1e-3
-        ), "Channels should have different values based on different weight combinations"
+        assert not np.allclose(combined_multi[0, :, :, 0], combined_multi[0, :, :, 1], rtol=1e-3), (
+            "Channels should have different values based on different weight combinations"
+        )
 
     def test_processing_consistency_across_runs(self, synthetic_astronomical_image, mock_config):
         """Test that processing is consistent across multiple runs."""
         # Same input should produce same output (deterministic)
-        image1 = synthetic_astronomical_image.copy()
-        image2 = synthetic_astronomical_image.copy()
+        # apply_normalisation expects batch format (N, H, W)
+        batch1 = synthetic_astronomical_image.copy()[np.newaxis, :, :]
+        batch2 = synthetic_astronomical_image.copy()[np.newaxis, :, :]
 
         # Apply same processing
         mock_config.normalisation_method = "linear"
-        norm1 = apply_normalisation(image1, mock_config)
-        norm2 = apply_normalisation(image2, mock_config)
+        norm1 = apply_normalisation(batch1, mock_config)
+        norm2 = apply_normalisation(batch2, mock_config)
 
         # Should be identical (or very close if using stochastic methods)
         if norm1.dtype == norm2.dtype:
@@ -430,25 +434,23 @@ class TestImageProcessorEnhanced:
 
     def test_error_recovery_corrupted_data(self, mock_config):
         """Test error recovery with corrupted or invalid data."""
-        # Test with NaN values
-        corrupted_image = np.random.random((64, 64)).astype(np.float32)
-        corrupted_image[30:34, 30:34] = np.nan
+        # Test with NaN values - use batch format (N, H, W)
+        corrupted_image = np.random.random((1, 64, 64)).astype(np.float32)
+        corrupted_image[0, 30:34, 30:34] = np.nan
 
         mock_config.normalisation_method = "linear"
-        # Should handle gracefully or use fallback
+        # Should handle gracefully or raise RuntimeError
         try:
             normalized = apply_normalisation(corrupted_image, mock_config)
             # If it succeeds, should not propagate NaNs
             if not np.any(np.isnan(normalized)):
                 assert True  # Good, handled the NaNs
-        except Exception:
+        except (RuntimeError, Exception):
             # If it fails, that's also acceptable error handling
             assert True
 
     def test_fitsbolt_version_compatibility(self):
         """Test basic fitsbolt functionality to ensure version compatibility."""
-        import fitsbolt
-
         # Test basic functionality
         test_image = np.random.random((32, 32)).astype(np.float32)
 

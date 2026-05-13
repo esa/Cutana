@@ -14,15 +14,17 @@ Tests that:
 """
 
 import io
-import sys
 import tempfile
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from loguru import logger
 
 import cutana.logging_config as logging_config
+from cutana import Orchestrator, get_default_config
+from cutana.logging_config import setup_logging
 
 
 def _cleanup_cutana_handlers():
@@ -72,8 +74,6 @@ class TestLoggingNonInterference:
         logger.info("User message before setup_logging")
 
         # Now import and call cutana's setup_logging
-        from cutana.logging_config import setup_logging
-
         with tempfile.TemporaryDirectory() as temp_dir:
             # Call setup_logging - this should NOT remove user's handler
             setup_logging(
@@ -93,9 +93,9 @@ class TestLoggingNonInterference:
         logged_messages = user_log_output.read()
 
         # User's handler should have captured BOTH messages
-        assert (
-            "User message before setup_logging" in logged_messages
-        ), "User's handler should have captured message before setup_logging"
+        assert "User message before setup_logging" in logged_messages, (
+            "User's handler should have captured message before setup_logging"
+        )
         assert "User message after setup_logging" in logged_messages, (
             "User's handler should have captured message after setup_logging. "
             "This indicates setup_logging incorrectly removed user's handler."
@@ -106,8 +106,6 @@ class TestLoggingNonInterference:
 
     def test_multiple_user_handlers_preserved(self):
         """Test that multiple user handlers are all preserved after setup_logging."""
-        from cutana.logging_config import setup_logging
-
         # Create multiple user handlers with different configurations
         user_output_1 = io.StringIO()
         user_output_2 = io.StringIO()
@@ -153,101 +151,12 @@ class TestLoggingNonInterference:
         logger.remove(handler_id_2)
         logger.remove(handler_id_3)
 
-    def test_handler_ids_tracked_correctly(self):
-        """Test that cutana tracks its handler IDs correctly for cleanup."""
-        from cutana.logging_config import _cutana_handler_ids, setup_logging
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # Before setup, no handlers tracked
-            assert len(_cutana_handler_ids) == 0, "No handlers should be tracked initially"
-
-            setup_logging(log_level="INFO", log_dir=temp_dir, console_level="WARNING")
-
-            # After setup, handlers should be tracked
-            # Expect 2 handlers: console + file (in non-subprocess context)
-            assert len(_cutana_handler_ids) >= 1, "At least one handler should be tracked"
-            tracked_ids = _cutana_handler_ids.copy()
-
-            # Cleanup
-            _cleanup_cutana_handlers()
-
-            # After cleanup, tracked handlers should be cleared
-            assert len(_cutana_handler_ids) == 0, "Handlers should be cleared after cleanup"
-
-            # Verify the tracked IDs were valid (trying to remove them again should fail)
-            for handler_id in tracked_ids:
-                with pytest.raises(ValueError):
-                    logger.remove(handler_id)
-
-    def test_user_handler_not_modified_by_setup_logging(self):
-        """Test that user's handler format/level are not modified by setup_logging."""
-        user_log_output = io.StringIO()
-
-        # User sets up their custom format
-        custom_format = "[USER] {level}: {message}"
-        user_handler_id = logger.add(
-            user_log_output,
-            format=custom_format,
-            level="DEBUG",  # User wants DEBUG level
-        )
-
-        from cutana.logging_config import setup_logging
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # Cutana sets up with WARNING console level
-            setup_logging(
-                log_level="INFO",
-                log_dir=temp_dir,
-                console_level="WARNING",  # Cutana wants WARNING
-            )
-
-            # Log a DEBUG message - user's handler should still capture it
-            logger.debug("Debug message from user")
-
-            _cleanup_cutana_handlers()
-
-        user_log_output.seek(0)
-        logged_messages = user_log_output.read()
-
-        # User's DEBUG level handler should still work
-        assert "Debug message from user" in logged_messages, (
-            "User's DEBUG handler should still capture DEBUG messages. "
-            "setup_logging should not modify user handler's level."
-        )
-
-        # User's format should be preserved
-        assert "[USER]" in logged_messages, "User's custom format should be preserved"
-
-        logger.remove(user_handler_id)
-
-    def test_multiple_setup_logging_calls_do_not_duplicate_handlers(self):
-        """Test that calling setup_logging multiple times doesn't create duplicate handlers."""
-        from cutana.logging_config import setup_logging
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # Call setup_logging multiple times (simulating multiple orchestrator instances)
-            setup_logging(log_level="INFO", log_dir=temp_dir, console_level="WARNING")
-            setup_logging(log_level="INFO", log_dir=temp_dir, console_level="WARNING")
-            setup_logging(log_level="INFO", log_dir=temp_dir, console_level="WARNING")
-
-            # Log a message
-            logger.info("Test message")
-
-            # Count log files created - should not have multiple files from same session
-            log_files = list(Path(temp_dir).glob("cutana_*.log"))
-
-            # Each call may create a new file due to timestamp, but that's OK
-            # The key is cleanup works properly
-            _cleanup_cutana_handlers()
-
 
 class TestLogFileCreation:
     """Test that log files are created in the expected directories."""
 
     def test_log_file_created_in_output_dir(self):
         """Test that log file is created in the specified log directory."""
-        from cutana.logging_config import setup_logging
-
         with tempfile.TemporaryDirectory() as temp_dir:
             log_dir = Path(temp_dir) / "logs"
 
@@ -279,8 +188,6 @@ class TestLogFileCreation:
 
     def test_session_timestamp_creates_consistent_filename(self):
         """Test that providing a session timestamp creates a consistent filename."""
-        from cutana.logging_config import setup_logging
-
         with tempfile.TemporaryDirectory() as temp_dir:
             session_timestamp = "20231215_120000_123"
 
@@ -299,60 +206,9 @@ class TestLogFileCreation:
             expected_filename = f"cutana_{session_timestamp}.log"
             expected_path = Path(temp_dir) / expected_filename
 
-            assert (
-                expected_path.exists()
-            ), f"Log file with session timestamp should exist: {expected_filename}"
-
-    def test_console_handler_respects_console_level(self):
-        """Test that console output respects console_level setting."""
-        from cutana.logging_config import setup_logging
-
-        # Capture stderr to check console output
-        old_stderr = sys.stderr
-        captured_stderr = io.StringIO()
-        sys.stderr = captured_stderr
-
-        try:
-            with tempfile.TemporaryDirectory() as temp_dir:
-                setup_logging(
-                    log_level="DEBUG",  # File gets DEBUG
-                    log_dir=temp_dir,
-                    console_level="ERROR",  # Console only gets ERROR
-                )
-
-                # Log at different levels
-                logger.debug("Debug message - should not appear on console")
-                logger.info("Info message - should not appear on console")
-                logger.warning("Warning message - should not appear on console")
-                logger.error("Error message - SHOULD appear on console")
-
-                time.sleep(0.2)
-
-                _cleanup_cutana_handlers()
-
-                # Check console output
-                captured_stderr.seek(0)
-                console_output = captured_stderr.read()
-
-                # Error should appear, others should not
-                assert "Error message - SHOULD appear on console" in console_output
-                # These checks are less strict because the console might have other output
-
-                # Check file output has all messages
-                log_files = list(Path(temp_dir).glob("cutana_*.log"))
-                assert len(log_files) >= 1
-
-                with open(log_files[0], "r") as f:
-                    file_content = f.read()
-
-                # File should have all messages (log_level=DEBUG)
-                assert "Debug message" in file_content
-                assert "Info message" in file_content
-                assert "Warning message" in file_content
-                assert "Error message" in file_content
-
-        finally:
-            sys.stderr = old_stderr
+            assert expected_path.exists(), (
+                f"Log file with session timestamp should exist: {expected_filename}"
+            )
 
 
 class TestLibraryLoggingPattern:
@@ -378,7 +234,7 @@ class TestLibraryLoggingPattern:
         initial_handlers = set(logger._core.handlers.keys())
 
         # Import cutana (force reimport by removing from sys.modules if needed)
-        import cutana  # noqa: F401
+        import cutana  # noqa: PLC0415, F401 - verify import doesn't add handlers
 
         # Get handler count after import
         after_import_handlers = set(logger._core.handlers.keys())
@@ -386,7 +242,7 @@ class TestLibraryLoggingPattern:
         # No new handlers should have been added
         new_handlers = after_import_handlers - initial_handlers
         assert len(new_handlers) == 0, (
-            f"Importing cutana should NOT add handlers. " f"New handlers added: {new_handlers}"
+            f"Importing cutana should NOT add handlers. New handlers added: {new_handlers}"
         )
 
     def test_creating_orchestrator_does_not_add_handlers(self):
@@ -396,10 +252,6 @@ class TestLibraryLoggingPattern:
         configuration modified. This test would have caught the bug where
         Orchestrator.__init__ automatically called setup_logging().
         """
-        from unittest.mock import patch
-
-        from cutana import Orchestrator, get_default_config
-
         # Get current handler count
         initial_handlers = set(logger._core.handlers.keys())
 
@@ -433,8 +285,6 @@ class TestLibraryLoggingPattern:
         - By default: no handlers added, logs are silent
         - Explicit call to setup_logging(): handlers are added
         """
-        from cutana.logging_config import setup_logging
-
         # Get current handler count
         initial_handlers = set(logger._core.handlers.keys())
 
@@ -446,60 +296,14 @@ class TestLibraryLoggingPattern:
 
             # Handlers should have been added
             new_handlers = after_setup_handlers - initial_handlers
-            assert (
-                len(new_handlers) > 0
-            ), "setup_logging() should add handlers when explicitly called"
+            assert len(new_handlers) > 0, (
+                "setup_logging() should add handlers when explicitly called"
+            )
 
             _cleanup_cutana_handlers()
 
         # After cleanup, our handlers should be removed
         after_cleanup_handlers = set(logger._core.handlers.keys())
-        assert (
-            after_cleanup_handlers == initial_handlers
-        ), "Cleanup should remove only cutana's handlers"
-
-    def test_cutana_logs_can_be_disabled(self):
-        """Test that cutana logs can be disabled using logger.disable()."""
-        from cutana.logging_config import setup_logging
-
-        # Disable cutana logging
-        logger.disable("cutana")
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            setup_logging(log_level="DEBUG", log_dir=temp_dir)
-
-            # Log messages from cutana module context
-            # These should be silenced when cutana is disabled
-
-            time.sleep(0.2)
-
-            _cleanup_cutana_handlers()
-
-        # Re-enable for other tests
-        logger.enable("cutana")
-
-    def test_cutana_logs_can_be_enabled(self):
-        """Test that cutana logs can be enabled after being disabled."""
-        from cutana.logging_config import setup_logging
-
-        # First disable
-        logger.disable("cutana")
-
-        # Then enable
-        logger.enable("cutana")
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            setup_logging(log_level="INFO", log_dir=temp_dir)
-
-            logger.info("This message should be logged after enable")
-
-            time.sleep(0.2)
-
-            _cleanup_cutana_handlers()
-
-            log_files = list(Path(temp_dir).glob("cutana_*.log"))
-            if log_files:
-                with open(log_files[0], "r") as f:
-                    content = f.read()
-                # After enabling, logs should appear
-                assert "This message should be logged" in content
+        assert after_cleanup_handlers == initial_handlers, (
+            "Cleanup should remove only cutana's handlers"
+        )

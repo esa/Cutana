@@ -5,6 +5,7 @@
 #   this file, may be copied, modified, propagated, or distributed except according to
 #   the terms contained in the file 'LICENCE.txt'.
 """Tests for custom UI widgets."""
+
 from unittest.mock import MagicMock
 
 from cutana_ui.widgets.file_chooser import CutanaFileChooser
@@ -113,9 +114,9 @@ class TestCutanaFileChooser:
 class TestHeaderLogLevelDropdown:
     """Test the log level dropdown in header container."""
 
-    def test_header_returns_three_elements(self):
-        """Test that create_header_container returns header, help button, and log dropdown."""
-        header, help_button, log_dropdown = create_header_container(
+    def test_header_returns_four_elements(self):
+        """Test that create_header_container returns header, help button, config button and log dropdown."""
+        header, help_button, config_button, log_dropdown = create_header_container(
             version_text="v1.0.0",
             container_width=1200,
             help_button_callback=lambda x: None,
@@ -123,11 +124,12 @@ class TestHeaderLogLevelDropdown:
 
         assert header is not None
         assert help_button is not None
+        assert config_button is not None
         assert log_dropdown is not None
 
     def test_log_dropdown_options(self):
         """Test that log dropdown has correct options."""
-        _, _, log_dropdown = create_header_container(
+        _, _, _, log_dropdown = create_header_container(
             version_text="v1.0.0",
             container_width=1200,
             help_button_callback=lambda x: None,
@@ -138,7 +140,7 @@ class TestHeaderLogLevelDropdown:
 
     def test_log_dropdown_default_value(self):
         """Test that log dropdown defaults to Warning."""
-        _, _, log_dropdown = create_header_container(
+        _, _, _, log_dropdown = create_header_container(
             version_text="v1.0.0",
             container_width=1200,
             help_button_callback=lambda x: None,
@@ -150,7 +152,7 @@ class TestHeaderLogLevelDropdown:
         """Test that changing log level invokes callback with uppercase value."""
         callback = MagicMock()
 
-        _, _, log_dropdown = create_header_container(
+        _, _, _, log_dropdown = create_header_container(
             version_text="v1.0.0",
             container_width=1200,
             help_button_callback=lambda x: None,
@@ -165,7 +167,7 @@ class TestHeaderLogLevelDropdown:
 
     def test_log_dropdown_no_callback_without_handler(self):
         """Test that no error occurs when callback is None."""
-        _, _, log_dropdown = create_header_container(
+        _, _, _, log_dropdown = create_header_container(
             version_text="v1.0.0",
             container_width=1200,
             help_button_callback=lambda x: None,

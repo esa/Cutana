@@ -27,7 +27,6 @@ def apply_flux_conversion(config, img: np.ndarray, header) -> np.ndarray:
     """
 
     if config.apply_flux_conversion:
-
         if config.user_flux_conversion_function:
             img = config.user_flux_conversion_function(img, header)
         else:

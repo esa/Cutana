@@ -56,7 +56,6 @@ class TestCutanaApp:
             patch("cutana_ui.app.setup_ui_logging") as mock_setup_logging,
             patch.object(app, "container") as mock_container,
         ):
-
             # Create a mock MainScreen instance that won't cause widget errors
             mock_main_screen_instance = mock_main_screen.return_value
 

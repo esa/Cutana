@@ -102,8 +102,9 @@ def load_fits_file(
         # Extract WCS for each requested extension
         for ext_name in fits_extensions:
             try:
-                # Handle PRIMARY extension (index 0)
-                if ext_name == "PRIMARY" and len(hdul) > 0:
+                # Handle PRIMARY extension (index 0, string "0", or "PRIMARY")
+                is_primary = ext_name == "PRIMARY" or ext_name == 0 or ext_name == "0"
+                if is_primary and len(hdul) > 0:
                     header = hdul[0].header
                 elif ext_name in hdul:
                     header = hdul[ext_name].header
@@ -112,7 +113,7 @@ def load_fits_file(
                     continue
 
                 # Check if this extension has image data
-                if ext_name == "PRIMARY":
+                if is_primary:
                     hdu = hdul[0]
                 else:
                     hdu = hdul[ext_name]

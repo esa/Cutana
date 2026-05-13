@@ -29,13 +29,23 @@ _wcs_header_cache: Dict[int, Tuple[fits.Header, Any]] = {}
 
 
 def _get_cached_wcs_info(wcs: WCS) -> Tuple[fits.Header, Any]:
-    """Get cached WCS header and pixel scale matrix, computing if not cached."""
+    """Get cached WCS header and pixel scale matrix, computing if not cached.
+
+    ``pixel_scale_matrix`` can raise for degenerate/malformed WCS (e.g. missing
+    CD/CDELT keywords). We fall back to ``None`` so downstream code can use the
+    simple-scaling branch, but we surface the root cause at warning level rather
+    than swallowing it silently.
+    """
     wcs_id = id(wcs)
     if wcs_id not in _wcs_header_cache:
         header = wcs.to_header()
         try:
             pixel_scale_matrix = wcs.pixel_scale_matrix
-        except Exception:
+        except Exception as e:
+            logger.warning(
+                f"Could not compute pixel_scale_matrix for WCS (id={wcs_id}), "
+                f"falling back to simple scaling: {e}"
+            )
             pixel_scale_matrix = None
         _wcs_header_cache[wcs_id] = (header, pixel_scale_matrix)
     return _wcs_header_cache[wcs_id]
@@ -302,19 +312,23 @@ def write_single_fits_cutout(
         # Create primary HDU
         primary_hdu = fits.PrimaryHDU()
 
-        # Add metadata to primary header using batch update (more efficient)
-        primary_hdu.header.update(
-            {
-                "SOURCE": source_id,
-                "RA": metadata.get("ra", 0.0),
-                "DEC": metadata.get("dec", 0.0),
-                "SIZEARC": metadata.get("diameter_arcsec", 0.0),
-                "SIZEPIX": metadata.get("diameter_pixel", 0),
-                "PROCTIME": metadata.get("processing_timestamp", time.time()),
-                "STRETCH": metadata.get("stretch", "linear"),
-                "DTYPE": metadata.get("data_type", "float32"),
-            }
-        )
+        # Add metadata to primary header using batch update (more efficient).
+        # PIXSCALE and TILE are always set (even when None) so consumers can rely
+        # on a stable schema and use header[key] without KeyError handling. None
+        # is written as a FITS UNDEFINED card and round-trips back to None.
+        primary_header_updates = {
+            "SOURCE": source_id,
+            "RA": metadata.get("ra", 0.0),
+            "DEC": metadata.get("dec", 0.0),
+            "SIZEARC": metadata.get("diameter_arcsec", 0.0),
+            "SIZEPIX": metadata.get("diameter_pixel", 0),
+            "PROCTIME": metadata.get("processing_timestamp", time.time()),
+            "STRETCH": metadata.get("stretch", "linear"),
+            "DTYPE": metadata.get("data_type", "float32"),
+            "PIXSCALE": metadata.get("pixel_scale_arcsec_per_pixel"),
+            "TILE": metadata.get("tile"),
+        }
+        primary_hdu.header.update(primary_header_updates)
 
         # Create HDU list
         hdu_list = [primary_hdu]
@@ -493,7 +507,7 @@ def write_fits_batch(
                     if channel_weight_keys:
                         channel_name = channel_weight_keys[ij]
                     else:
-                        channel_name = f"channel_{ij+1}"  # Generic output channel names
+                        channel_name = f"channel_{ij + 1}"  # Generic output channel names
                     processed_cutouts[channel_name] = source_cutout[:, :, ij]
 
                     # Look up WCS using the original channel name from channel_names if available,

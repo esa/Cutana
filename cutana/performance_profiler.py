@@ -12,10 +12,13 @@ processing steps within the cutout creation pipeline. Each cutout process
 instance should have one profiler to monitor performance.
 """
 
+import json
 import os
+import sys
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
+import numpy as np
 from loguru import logger
 
 
@@ -30,23 +33,25 @@ class PerformanceProfiler:
     - Output writing time
     """
 
-    def __init__(self, process_id: Optional[str] = None):
+    def __init__(
+        self,
+        process_id: Optional[str] = None,
+        timing_function: Callable[[], float] = time.perf_counter,
+    ):
         """
         Initialize performance profiler.
 
         Args:
             process_id: Optional process identifier, defaults to PID
+            timing_function: Optional function to use for timing, defaults to time.perf_counter
         """
+
         self.process_id = process_id or f"cutout_process_{os.getpid()}"
-        self.runtime_per_element: Dict[str, List[float]] = {
-            "fits_loading": [],
-            "cutout_extraction": [],
-            "image_processing": [],
-            "output_writing": [],
-        }
+        self.runtime_per_element: Dict[str, List[float]] = {}
         self._start_times: Dict[str, float] = {}
         self._total_sources = 0
-        self._profile_start_time = time.time()
+        self._timing_function = timing_function
+        self._profile_start_time = self._timing_function()
 
         logger.debug(f"Performance profiler initialized for {self.process_id}")
 
@@ -57,7 +62,7 @@ class PerformanceProfiler:
         Args:
             step: Name of the processing step to time
         """
-        self._start_times[step] = time.time()
+        self._start_times[step] = self._timing_function()
         logger.debug(f"{self.process_id}: Started timing {step}")
 
     def end_timing(self, step: str) -> float:
@@ -76,7 +81,7 @@ class PerformanceProfiler:
         if step not in self._start_times:
             raise ValueError(f"start_timing() was not called for step '{step}'")
 
-        duration = time.time() - self._start_times[step]
+        duration = self._timing_function() - self._start_times[step]
 
         # Initialize step list if it doesn't exist
         if step not in self.runtime_per_element:
@@ -102,20 +107,24 @@ class PerformanceProfiler:
         stats = {
             "process_id": self.process_id,
             "total_sources": self._total_sources,
-            "total_runtime": time.time() - self._profile_start_time,
-            "steps": {},
-        }
-
-        for step, times in self.runtime_per_element.items():
-            if times and len(times) > 0:  # Only include steps that were actually timed
-                stats["steps"][step] = {
+            "total_runtime": self._timing_function() - self._profile_start_time,
+            "steps": {
+                f"{step}": {
                     "count": len(times),
                     "total_time": sum(times),
-                    "mean_time": sum(times) / len(times),
+                    "mean_time": np.mean(times).item(),
+                    "std_dev": np.std(times).item(),
                     "min_time": min(times),
+                    "perc_25": np.percentile(times, 25).item(),
+                    "median_time": np.percentile(times, 50).item(),
+                    "perc_75": np.percentile(times, 75).item(),
+                    "perc_95": np.percentile(times, 95).item(),
                     "max_time": max(times),
                     "time_per_source": sum(times) / max(self._total_sources, 1),
                 }
+                for step, times in self.runtime_per_element.items()
+            },
+        }
 
         return stats
 
@@ -125,31 +134,35 @@ class PerformanceProfiler:
         total_time = stats["total_runtime"]
         total_sources = stats["total_sources"]
 
-        logger.info(f"Performance Summary for {self.process_id}:")
-        logger.info(f"  Total runtime: {total_time:.2f} seconds")
-        logger.info(f"  Sources processed: {total_sources}")
+        log_parts = []
+        log_parts.append(f"Performance Summary for {self.process_id}:")
+        log_parts.append(f"  Total runtime: {total_time:.2f} seconds")
+        log_parts.append(f"  Sources processed: {total_sources}")
         if total_time > 0:
-            logger.info(f"  Sources per second: {total_sources/total_time:.2f}")
+            log_parts.append(f"  Sources per second: {total_sources / total_time:.2f}")
         else:
-            logger.info("  Sources per second: N/A (zero runtime)")
+            log_parts.append("  Sources per second: N/A (zero runtime)")
 
         for step, step_stats in stats["steps"].items():
-            logger.info(f"  {step}:")
+            log_parts.append(f"  {step}:")
             if total_time > 0:
-                logger.info(
-                    f"Total time: {step_stats['total_time']:.2f}s ({step_stats['total_time']/total_time*100:.1f}% of total)"
+                log_parts.append(
+                    f"    Total time: {step_stats['total_time']:.2f}s"
+                    f" ({step_stats['total_time'] / total_time * 100:.1f}% of total)"
                 )
             else:
-                logger.info(f"    Total time: {step_stats['total_time']:.2f}s (N/A% of total)")
-            logger.info(f"    Mean time per operation: {step_stats['mean_time']*1000:.1f}ms")
-            logger.info(f"    Operations: {step_stats['count']}")
+                log_parts.append(f"    Total time: {step_stats['total_time']:.2f}s (N/A% of total)")
+
+            log_parts.append(f"    Mean time per operation: {step_stats['mean_time'] * 1000:.1f}ms")
+            log_parts.append(f"    Operations: {step_stats['count']}")
             if total_sources > 0:
-                logger.info(f"    Time per source: {step_stats['time_per_source']*1000:.1f}ms")
+                log_parts.append(
+                    f"    Time per source: {step_stats['time_per_source'] * 1000:.1f}ms"
+                )
+
+        logger.info("\n".join(log_parts))
 
         # Write structured performance data to stderr for benchmark parsing
-        import json
-        import sys
-
         structured_stats = {
             "type": "performance_summary",
             "process_id": self.process_id,
@@ -173,16 +186,17 @@ class PerformanceProfiler:
         """
         stats = self.get_statistics()
         total_time = stats["total_runtime"]
+
+        # Only way this could probably happen is if a non-monotonic timing function is used
+        if total_time <= 0:
+            return []
+
         bottlenecks = []
 
         for step, step_stats in stats["steps"].items():
-            if total_time > 0:
-                step_percentage = (step_stats["total_time"] / total_time) * 100
-                if step_percentage >= threshold_percent:
-                    bottlenecks.append(f"{step} ({step_percentage:.1f}% of total time)")
-            else:
-                # If total_time is 0, skip percentage calculation
-                continue
+            step_percentage = (step_stats["total_time"] / total_time) * 100
+            if step_percentage >= threshold_percent:
+                bottlenecks.append(f"{step} ({step_percentage:.1f}% of total time)")
 
         return bottlenecks
 

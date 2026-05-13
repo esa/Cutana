@@ -17,6 +17,7 @@ This module handles:
 import socket
 import threading
 import time
+import traceback
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -193,7 +194,7 @@ class SystemMonitor:
 
             memory = psutil.virtual_memory()
             logger.debug(
-                f"SystemMonitor: Raw psutil data - CPU: {cpu_percent}%, Memory: {memory.total/(1024**3):.1f}GB total, {memory.available/(1024**3):.1f}GB available, {memory.percent}% used"
+                f"SystemMonitor: Raw psutil data - CPU: {cpu_percent}%, Memory: {memory.total / (1024**3):.1f}GB total, {memory.available / (1024**3):.1f}GB available, {memory.percent}% used"
             )
 
             # Use current working directory for disk usage (cross-platform)
@@ -272,14 +273,12 @@ class SystemMonitor:
             }
 
             logger.debug(
-                f"SystemMonitor: Returning resource data - CPU: {cpu_percent}%, Memory: {memory_total/(1024**3):.1f}GB total, {memory_available/(1024**3):.1f}GB available, {memory_percent}% used, Source: {resource_source}"
+                f"SystemMonitor: Returning resource data - CPU: {cpu_percent}%, Memory: {memory_total / (1024**3):.1f}GB total, {memory_available / (1024**3):.1f}GB available, {memory_percent}% used, Source: {resource_source}"
             )
             return result
 
         except Exception as e:
             logger.error(f"SystemMonitor: Error getting system resources: {e}")
-            import traceback
-
             logger.error(f"SystemMonitor: Full traceback: {traceback.format_exc()}")
 
             fallback_result = {
@@ -454,8 +453,6 @@ class SystemMonitor:
             return 0.0
         except Exception as e:
             logger.error(f"Failed to get memory usage: {e}")
-            import traceback
-
             logger.error(f"Full traceback: {traceback.format_exc()}")
             return 0.0
 
@@ -546,7 +543,5 @@ class SystemMonitor:
 
         except Exception as e:
             logger.error(f"Unexpected error in memory reporting for {process_name}: {e}")
-            import traceback
-
             logger.error(f"Full traceback: {traceback.format_exc()}")
             return False

@@ -10,6 +10,7 @@ import ipywidgets as widgets
 from IPython.display import display
 from loguru import logger
 
+from . import styles
 from .main_screen import MainScreen
 from .start_screen import StartScreen
 from .styles import BACKGROUND_DARK
@@ -64,8 +65,6 @@ class CutanaApp:
 
     def _update_styles_scale(self, ui_scale):
         """Update the styles module with the new UI scale."""
-        from . import styles
-
         styles.set_ui_scale(ui_scale)
 
 

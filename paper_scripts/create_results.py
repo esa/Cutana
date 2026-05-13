@@ -45,9 +45,9 @@ def run_script(script_name: str, script_path: Path, extra_args: list = None) -> 
     Returns:
         True if successful, False otherwise
     """
-    logger.info(f"\n{'='*80}")
+    logger.info(f"\n{'=' * 80}")
     logger.info(f"Running: {script_name}")
-    logger.info(f"{'='*80}\n")
+    logger.info(f"{'=' * 80}\n")
 
     start_time = time.time()
 

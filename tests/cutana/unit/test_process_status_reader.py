@@ -434,8 +434,6 @@ class TestProcessStatusReader:
         reader2 = ProcessStatusReader(str(temp_dir), session_id="session_2")
 
         # Create progress files for both sessions
-        import time
-
         data1 = {
             "process_id": "proc_001",
             "completed_sources": 10,

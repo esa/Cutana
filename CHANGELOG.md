@@ -7,6 +7,59 @@
 
 # Changelog
 
+## [v0.3.0] – 2026-05-12
+
+### Added
+- **Direct cutout API** (`create_cutouts_direct()`) for fast in-process cutout generation without the orchestrator/worker overhead (#293)
+- **Parallel `StreamingOrchestrator`** with adaptive multi-worker support and per-worker SHM pools — measured 2.81x speedup with 4 workers (#306)
+- **Browser test infrastructure** with Playwright + Voila, including a session-scoped Voila server, video-on-failure recording, and `scripts/validate_browser_testing.py` for interactive MCP-driven testing (#297)
+- **Per-source pixelscale and tile metadata** written into cutout outputs to make downstream WCS/registration trivial (#321, closes #219, #206)
+- **`skip_catalogue_validation`** configuration flag to bypass catalogue validation for trusted/pre-validated inputs (#285)
+- **`min_workers`** parameter on `StreamingOrchestrator` to set a floor for the adaptive worker scheduler (#308)
+- **Show Config button** in the UI header with JSON highlighting and clipboard copy (#322)
+- **`PerformanceProfiler` enhancements**: configurable timing functions, additional statistics, simplified logging output (#305)
+- **`PLC0415` ruff rule** to flag imports outside top level (#302)
+
+### Changed
+- **Linter/formatter migrated from flake8 + black to ruff** (`ruff check` + `ruff format`, line-length 100) (#294)
+- **Build/CI migrated from conda/micromamba to uv** for dependency management and faster installs (#296)
+- **SourceID deduplication** now reformats colliding IDs as `sourceid_ra_dec` instead of silently dropping rows; uniqueness asserted per-tile across 1–4 bands (#283, #285)
+- **FITS metadata schema stabilized** with observability hooks (#321)
+- **Test suite parametrized** (67 fewer test functions, 78% coverage vs. 71%) and parallelized with pytest-xdist (#300)
+- **Silent exception fallbacks removed** from cutana — broken invariants now raise instead of returning placeholder values (#316/#318/#319)
+- **`getattr` config fallbacks removed**; missing config keys now error loudly (#317/#318)
+- **`fitsbolt` pinned to `==0.2.0`**; output dtype is propagated end-to-end through the fitsbolt config (#289)
+- **FITS writer** no longer hard-fails on `tile=None`; degraded path is supported (#321)
+- **Streaming SHM pool protocol** simplified and pool mode enforced in the orchestrator
+- **Show Config / UI panel** refactored to separate start-screen vs. main-screen tests and improve JSON rendering (#322)
+
+### Fixed
+- **macOS shared memory** names truncated to fit the platform limit (#292)
+- **SHM resource tracker warnings** fixed by unregistering before unlinking (#276)
+- **Silent duplicate SourceID** now reformatted rather than dropped; covered by per-tile and multi-band tests (#283)
+- **Cutana `data_type`** propagated to fitsbolt with validation enforcement (#289, #291)
+- **Silent normalisation fallback** replaced with `RuntimeError` (#275)
+- **Silent extension drop** in channel-order/extension validator (#324, closes #315)
+- **Windows worker stdout** read via dedicated threads to prevent IPC blocking
+- **Windows 1-worker path** avoids the threading fallback that triggered platform-specific bugs
+- **`combine_channels`** preserves input dtype when calling fitsbolt
+- **pandas 2.x compatibility**: switch to `is_string_dtype` in test helpers
+
+### Performance
+- **Band-selective FITS loading** — only the FITS files for requested bands are opened (#280)
+- **Parallel `StreamingOrchestrator`** — 2.81x speedup with 4 workers (#306)
+- **Subprocess IPC bottleneck** eliminated; coverage instrumentation no longer fights the worker hot path
+- **E2E tests** reduced in resolution and gated behind `slow` marker; unit-test parallelism via xdist
+
+### Removed
+- **94 low-value tests** that exercised stdlib rather than cutana behavior
+- **15 redundant E2E padding tests** (folded into unit tests)
+- **`convert_data_type`** function and its tests (dead code)
+- **flake8 + black** configuration and tooling (replaced by ruff)
+- **conda/micromamba** dev-environment files (replaced by uv)
+
+---
+
 ## [v0.2.1] – 2025-01-21
 
 ### Changed

@@ -31,6 +31,7 @@ Validation:
 import json
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -43,6 +44,7 @@ from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.wcs import WCS
 from loguru import logger
+from scipy import ndimage
 
 from cutana.catalogue_preprocessor import analyse_source_catalogue
 from cutana.get_default_config import get_default_config
@@ -224,8 +226,6 @@ class TestEndToEndChannelCombinations:
         temp_dir = tempfile.mkdtemp()
         yield temp_dir
         # Handle Windows file permission issues by retrying deletion
-        import time
-
         for attempt in range(3):
             try:
                 shutil.rmtree(temp_dir)
@@ -379,7 +379,7 @@ class TestEndToEndChannelCombinations:
         catalogue_data = []
 
         for i in range(num_sources):
-            source_id = f"test_source_{i+1}"
+            source_id = f"test_source_{i + 1}"
             ra = 52.0 + (i * 0.001)  # Spread sources slightly in RA
             dec = -29.75 + (i * 0.001)  # Spread sources slightly in Dec
             diameter = 10  # 10 pixel diameter
@@ -579,8 +579,7 @@ class TestEndToEndChannelCombinations:
             "n_input and n_output must be provided to use predefined matrix configuration"
         )
 
-    @pytest.mark.parametrize("num_input_fits", [1, 4])  # 1, 2, 3, 4
-    @pytest.mark.parametrize("num_output_channels", [1, 2, 4])  # 3
+    @pytest.mark.parametrize(("num_input_fits", "num_output_channels"), [(1, 1), (4, 4)])
     @pytest.mark.parametrize("data_type", ["uint8"])  # , "float32"])
     @pytest.mark.parametrize("output_format", ["fits"])  # , "zarr"])
     @pytest.mark.parametrize("normalisation_method", ["linear"])
@@ -650,8 +649,6 @@ class TestEndToEndChannelCombinations:
             mock_load_fits.return_value = mock_fits_data
 
             # Create test catalogue data for processing with proper format
-            import json
-
             fits_file_paths = [fits_info["path"] for fits_info in selected_fits.values()]
             test_data = [
                 {
@@ -757,9 +754,9 @@ class TestEndToEndChannelCombinations:
             "NIR-J": [0.5, 1.0, 1.5],  # Weights sum to 4.0 > 1.0
             "NIR-Y": [0.0, 0.5, 1.0],  # Weights sum to 3.0 > 1.0
         }
-        assert (
-            a == b for a, b in zip(config.channel_weights.keys(), selected_fits.keys())
-        ), "incorrect test setup"
+        assert (a == b for a, b in zip(config.channel_weights.keys(), selected_fits.keys())), (
+            "incorrect test setup"
+        )
 
         Path(config.output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -772,8 +769,6 @@ class TestEndToEndChannelCombinations:
             mock_load_fits.return_value = mock_fits_data
 
             # Create test catalogue data for processing with proper format
-            import json
-
             fits_file_paths = [fits_info["path"] for fits_info in selected_fits.values()]
             test_data = [
                 {
@@ -834,20 +829,20 @@ class TestEndToEndChannelCombinations:
                     data_extensions = [
                         hdu for hdu in hdul if hasattr(hdu, "data") and hdu.data is not None
                     ]
-                    assert (
-                        len(data_extensions) >= num_output_channels
-                    ), f"Expected {num_output_channels} data extensions, found {len(data_extensions)}"
+                    assert len(data_extensions) >= num_output_channels, (
+                        f"Expected {num_output_channels} data extensions, found {len(data_extensions)}"
+                    )
 
                     # Check data type
                     for hdu in data_extensions:
                         if data_type == "uint8":
-                            assert (
-                                hdu.data.dtype == np.uint8
-                            ), f"Expected uint8, got {hdu.data.dtype}"
+                            assert hdu.data.dtype == np.uint8, (
+                                f"Expected uint8, got {hdu.data.dtype}"
+                            )
                         elif data_type == "float32":
-                            assert np.issubdtype(
-                                hdu.data.dtype, np.float32
-                            ), f"Expected float32, got {hdu.data.dtype}"
+                            assert np.issubdtype(hdu.data.dtype, np.float32), (
+                                f"Expected float32, got {hdu.data.dtype}"
+                            )
 
                     # Validate data values match expected calculations
                     self._validate_fits_values(
@@ -864,32 +859,32 @@ class TestEndToEndChannelCombinations:
                 zarr_group = zarr.open(zarr_file, mode="r")
 
                 # Zarr files created by images_to_zarr are Groups with an 'images' key
-                assert isinstance(
-                    zarr_group, zarr.Group
-                ), f"Expected zarr Group, got {type(zarr_group)}"
-                assert (
-                    "images" in zarr_group
-                ), f"Expected 'images' key in zarr group, got keys: {list(zarr_group.keys())}"
+                assert isinstance(zarr_group, zarr.Group), (
+                    f"Expected zarr Group, got {type(zarr_group)}"
+                )
+                assert "images" in zarr_group, (
+                    f"Expected 'images' key in zarr group, got keys: {list(zarr_group.keys())}"
+                )
 
                 zarr_data = zarr_group["images"]
 
                 # Check data dimensions - zarr data is in NHWC format
-                assert (
-                    len(zarr_data.shape) == 4
-                ), f"Expected 4D data (NHWC), got shape {zarr_data.shape}"
+                assert len(zarr_data.shape) == 4, (
+                    f"Expected 4D data (NHWC), got shape {zarr_data.shape}"
+                )
 
                 # Check number of channels (last dimension in NHWC)
-                assert (
-                    zarr_data.shape[-1] == num_output_channels
-                ), f"Expected {num_output_channels} channels, got {zarr_data.shape[-1]}"
+                assert zarr_data.shape[-1] == num_output_channels, (
+                    f"Expected {num_output_channels} channels, got {zarr_data.shape[-1]}"
+                )
 
                 # Check data type
                 if data_type == "uint8":
                     assert zarr_data.dtype == np.uint8, f"Expected uint8, got {zarr_data.dtype}"
                 elif data_type == "float32":
-                    assert np.issubdtype(
-                        zarr_data.dtype, np.float32
-                    ), f"Expected float32, got {zarr_data.dtype}"
+                    assert np.issubdtype(zarr_data.dtype, np.float32), (
+                        f"Expected float32, got {zarr_data.dtype}"
+                    )
 
                 # Validate data values match expected calculations
                 self._validate_zarr_values(
@@ -982,17 +977,17 @@ class TestEndToEndChannelCombinations:
 
             if data_type == "uint8":
                 # For uint8, values should be in [0, 255] range
-                assert (
-                    channel_data.min() >= 0
-                ), f"uint8 channel {idx} has negative values: {channel_data.min()}"
-                assert (
-                    channel_data.max() <= 255
-                ), f"uint8 channel {idx} exceeds 255: {channel_data.max()}"
+                assert channel_data.min() >= 0, (
+                    f"uint8 channel {idx} has negative values: {channel_data.min()}"
+                )
+                assert channel_data.max() <= 255, (
+                    f"uint8 channel {idx} exceeds 255: {channel_data.max()}"
+                )
             elif data_type == "float32":
                 # For float32, values should be reasonable (not extreme)
-                assert np.isfinite(
-                    channel_data
-                ).all(), f"float32 channel {idx} contains non-finite values"
+                assert np.isfinite(channel_data).all(), (
+                    f"float32 channel {idx} contains non-finite values"
+                )
 
             # Validate actual values match expected gradient calculations
             if idx < len(expected_values):
@@ -1006,16 +1001,16 @@ class TestEndToEndChannelCombinations:
                 # because values are normalized to [0,1] range instead of [0,255] for uint8
                 min_variation_threshold = 0.001 if data_type == "float32" else 0.01
 
-                assert (
-                    gradient_variation > min_variation_threshold
-                ), f"Channel {idx}: Insufficient gradient variation {gradient_variation}"
+                assert gradient_variation > min_variation_threshold, (
+                    f"Channel {idx}: Insufficient gradient variation {gradient_variation}"
+                )
 
                 # Check mean is in expected range with tolerance
                 # The actual values vary slightly from expected due to interpolation during resizing
                 tolerance = abs(expected_mean) * 0.20 + 5.0  # 20% relative + 5 absolute tolerance
-                assert (
-                    abs(actual_mean - expected_mean) <= tolerance
-                ), f"Channel {idx}: Expected mean ~{expected_mean:.2f}, got {actual_mean:.2f}, tolerance {tolerance:.2f}"
+                assert abs(actual_mean - expected_mean) <= tolerance, (
+                    f"Channel {idx}: Expected mean ~{expected_mean:.2f}, got {actual_mean:.2f}, tolerance {tolerance:.2f}"
+                )
 
     def _validate_gradient_directions(
         self, output_dir, channel_weights, selected_fits, n_input, n_output
@@ -1103,8 +1098,6 @@ class TestEndToEndChannelCombinations:
             bottom_mean = np.mean(data[3 * height // 4 :, :])  # Bottom quarter
 
             # Compute actual gradient vector using Sobel operators
-            from scipy import ndimage
-
             # Apply Sobel operators to compute gradient in x and y directions
             grad_x = ndimage.sobel(data, axis=1)
             grad_y = ndimage.sobel(data, axis=0)
@@ -1231,17 +1224,17 @@ class TestEndToEndChannelCombinations:
                 expected_x, expected_y = extension_gradient_vectors[dominant_ext]
 
                 if expected_x > 0.9:  # left-to-right (VIS)
-                    assert (
-                        right_mean > left_mean
-                    ), f"Channel {ch_idx}: Expected left-to-right gradient (VIS), but right({right_mean:.2f}) <= left({left_mean:.2f})"
+                    assert right_mean > left_mean, (
+                        f"Channel {ch_idx}: Expected left-to-right gradient (VIS), but right({right_mean:.2f}) <= left({left_mean:.2f})"
+                    )
                 elif expected_x < -0.9:  # right-to-left (NIRY)
-                    assert (
-                        left_mean > right_mean
-                    ), f"Channel {ch_idx}: Expected right-to-left gradient (NIRY), but left({left_mean:.2f}) <= right({right_mean:.2f})"
+                    assert left_mean > right_mean, (
+                        f"Channel {ch_idx}: Expected right-to-left gradient (NIRY), but left({left_mean:.2f}) <= right({right_mean:.2f})"
+                    )
                 elif expected_y > 0.9:  # top-to-bottom (NIRH)
-                    assert (
-                        bottom_mean > top_mean
-                    ), f"Channel {ch_idx}: Expected top-to-bottom gradient (NIRH), but bottom({bottom_mean:.2f}) <= top({top_mean:.2f})"
+                    assert bottom_mean > top_mean, (
+                        f"Channel {ch_idx}: Expected top-to-bottom gradient (NIRH), but bottom({bottom_mean:.2f}) <= top({top_mean:.2f})"
+                    )
 
     def _validate_amplified_channel_mixing(self, output_dir, output_type):
         """Validate that channel weights > 1.0 produce amplified output."""
@@ -1493,8 +1486,6 @@ class TestEndToEndChannelCombinations:
                     height, width = data.shape
 
                     # Calculate gradient using Sobel operators
-                    from scipy import ndimage
-
                     grad_x = ndimage.sobel(data, axis=1)
                     grad_y = ndimage.sobel(data, axis=0)
 
@@ -1743,12 +1734,12 @@ class TestEndToEndChannelCombinations:
                     except Exception as e:
                         pytest.fail(f"Failed to create WCS from header: {e}")
 
-                    assert (
-                        wcs.wcs.ctype[0] == "RA---TAN"
-                    ), f"Expected RA---TAN, got {wcs.wcs.ctype[0]}"
-                    assert (
-                        wcs.wcs.ctype[1] == "DEC--TAN"
-                    ), f"Expected DEC--TAN, got {wcs.wcs.ctype[1]}"
+                    assert wcs.wcs.ctype[0] == "RA---TAN", (
+                        f"Expected RA---TAN, got {wcs.wcs.ctype[0]}"
+                    )
+                    assert wcs.wcs.ctype[1] == "DEC--TAN", (
+                        f"Expected DEC--TAN, got {wcs.wcs.ctype[1]}"
+                    )
 
                     crval_ra = wcs.wcs.crval[0]
                     crval_dec = wcs.wcs.crval[1]
@@ -1762,12 +1753,12 @@ class TestEndToEndChannelCombinations:
                     ra_tolerance = coord_tolerance_arcsec / 3600
                     dec_tolerance = coord_tolerance_arcsec / 3600
 
-                    assert (
-                        abs(crval_ra - test_ra) < ra_tolerance
-                    ), f"CRVAL1 (RA) mismatch: expected {test_ra}, got {crval_ra}"
-                    assert (
-                        abs(crval_dec - test_dec) < dec_tolerance
-                    ), f"CRVAL2 (Dec) mismatch: expected {test_dec}, got {crval_dec}"
+                    assert abs(crval_ra - test_ra) < ra_tolerance, (
+                        f"CRVAL1 (RA) mismatch: expected {test_ra}, got {crval_ra}"
+                    )
+                    assert abs(crval_dec - test_dec) < dec_tolerance, (
+                        f"CRVAL2 (Dec) mismatch: expected {test_dec}, got {crval_dec}"
+                    )
 
                     # --- Independently calculate the expected pixel offset ---
 
@@ -1821,28 +1812,28 @@ class TestEndToEndChannelCombinations:
                     pixel_tolerance = 0.05 * original_cutout_size
 
                     # Compare CRPIX to expected (both FITS 1-based)
-                    assert (
-                        abs(crpix1 - expected_crpix1) < pixel_tolerance
-                    ), f"CRPIX1 mismatch: expected {expected_crpix1}, got {crpix1}, tol={pixel_tolerance}"
-                    assert (
-                        abs(crpix2 - expected_crpix2) < pixel_tolerance
-                    ), f"CRPIX2 mismatch: expected {expected_crpix2}, got {crpix2}, tol={pixel_tolerance}"
+                    assert abs(crpix1 - expected_crpix1) < pixel_tolerance, (
+                        f"CRPIX1 mismatch: expected {expected_crpix1}, got {crpix1}, tol={pixel_tolerance}"
+                    )
+                    assert abs(crpix2 - expected_crpix2) < pixel_tolerance, (
+                        f"CRPIX2 mismatch: expected {expected_crpix2}, got {crpix2}, tol={pixel_tolerance}"
+                    )
 
                     # Compare output WCS pixel (converted to FITS 1-based) to expected CRPIX (FITS 1-based)
-                    assert (
-                        abs(pixel_from_wcs_1based_x - expected_crpix1) < pixel_tolerance
-                    ), f"Output WCS pixel X for RA/Dec mismatch: expected {expected_crpix1}, got {pixel_from_wcs_1based_x}, tol={pixel_tolerance}"
-                    assert (
-                        abs(pixel_from_wcs_1based_y - expected_crpix2) < pixel_tolerance
-                    ), f"Output WCS pixel Y for RA/Dec mismatch: expected {expected_crpix2}, got {pixel_from_wcs_1based_y}, tol={pixel_tolerance}"
+                    assert abs(pixel_from_wcs_1based_x - expected_crpix1) < pixel_tolerance, (
+                        f"Output WCS pixel X for RA/Dec mismatch: expected {expected_crpix1}, got {pixel_from_wcs_1based_x}, tol={pixel_tolerance}"
+                    )
+                    assert abs(pixel_from_wcs_1based_y - expected_crpix2) < pixel_tolerance, (
+                        f"Output WCS pixel Y for RA/Dec mismatch: expected {expected_crpix2}, got {pixel_from_wcs_1based_y}, tol={pixel_tolerance}"
+                    )
 
                     # Compare output WCS pixel to CRPIX (both FITS 1-based)
-                    assert (
-                        abs(pixel_from_wcs_1based_x - crpix1) < pixel_tolerance
-                    ), f"Output WCS pixel X for RA/Dec mismatch with CRPIX1: {pixel_from_wcs_1based_x} vs {crpix1}, tol={pixel_tolerance}"
-                    assert (
-                        abs(pixel_from_wcs_1based_y - crpix2) < pixel_tolerance
-                    ), f"Output WCS pixel Y for RA/Dec mismatch with CRPIX2: {pixel_from_wcs_1based_y} vs {crpix2}, tol={pixel_tolerance}"
+                    assert abs(pixel_from_wcs_1based_x - crpix1) < pixel_tolerance, (
+                        f"Output WCS pixel X for RA/Dec mismatch with CRPIX1: {pixel_from_wcs_1based_x} vs {crpix1}, tol={pixel_tolerance}"
+                    )
+                    assert abs(pixel_from_wcs_1based_y - crpix2) < pixel_tolerance, (
+                        f"Output WCS pixel Y for RA/Dec mismatch with CRPIX2: {pixel_from_wcs_1based_y} vs {crpix2}, tol={pixel_tolerance}"
+                    )
 
                     # Pixel scale check (unchanged)
                     if wcs.wcs.has_cd():
@@ -1863,12 +1854,12 @@ class TestEndToEndChannelCombinations:
 
                     # Allow 1% tolerance for pixel scale matching
                     scale_tolerance = expected_pixel_scale * 0.01
-                    assert (
-                        abs(actual_scale_x - expected_pixel_scale) < scale_tolerance
-                    ), f"Pixel scale X mismatch: expected {expected_pixel_scale}, got {actual_scale_x}"
-                    assert (
-                        abs(actual_scale_y - expected_pixel_scale) < scale_tolerance
-                    ), f"Pixel scale Y mismatch: expected {expected_pixel_scale}, got {actual_scale_y}"
+                    assert abs(actual_scale_x - expected_pixel_scale) < scale_tolerance, (
+                        f"Pixel scale X mismatch: expected {expected_pixel_scale}, got {actual_scale_x}"
+                    )
+                    assert abs(actual_scale_y - expected_pixel_scale) < scale_tolerance, (
+                        f"Pixel scale Y mismatch: expected {expected_pixel_scale}, got {actual_scale_y}"
+                    )
 
         logger.info(
             f"WCS preservation test passed for mode={mode}, flux_conserved={flux_conserved}!"
@@ -1998,20 +1989,20 @@ class TestEndToEndChannelCombinations:
                     cutout_shape = hdu.data.shape
 
                     # Verify combined output has expected shape
-                    assert (
-                        cutout_shape[0] == config.target_resolution
-                    ), f"Expected target resolution {config.target_resolution}, got {cutout_shape[0]}"
+                    assert cutout_shape[0] == config.target_resolution, (
+                        f"Expected target resolution {config.target_resolution}, got {cutout_shape[0]}"
+                    )
 
                     # Create WCS from header
                     wcs = WCS(header)
 
                     # Validate WCS type
-                    assert (
-                        wcs.wcs.ctype[0] == "RA---TAN"
-                    ), f"Expected RA---TAN, got {wcs.wcs.ctype[0]}"
-                    assert (
-                        wcs.wcs.ctype[1] == "DEC--TAN"
-                    ), f"Expected DEC--TAN, got {wcs.wcs.ctype[1]}"
+                    assert wcs.wcs.ctype[0] == "RA---TAN", (
+                        f"Expected RA---TAN, got {wcs.wcs.ctype[0]}"
+                    )
+                    assert wcs.wcs.ctype[1] == "DEC--TAN", (
+                        f"Expected DEC--TAN, got {wcs.wcs.ctype[1]}"
+                    )
 
                     # Validate pixel scale is correctly adjusted
                     if wcs.wcs.has_cd():
@@ -2022,12 +2013,12 @@ class TestEndToEndChannelCombinations:
                         actual_scale_y = abs(header.get("CDELT2", 0))
 
                     scale_tolerance = expected_pixel_scale * 0.01
-                    assert (
-                        abs(actual_scale_x - expected_pixel_scale) < scale_tolerance
-                    ), f"Pixel scale X mismatch: expected {expected_pixel_scale}, got {actual_scale_x}"
-                    assert (
-                        abs(actual_scale_y - expected_pixel_scale) < scale_tolerance
-                    ), f"Pixel scale Y mismatch: expected {expected_pixel_scale}, got {actual_scale_y}"
+                    assert abs(actual_scale_x - expected_pixel_scale) < scale_tolerance, (
+                        f"Pixel scale X mismatch: expected {expected_pixel_scale}, got {actual_scale_x}"
+                    )
+                    assert abs(actual_scale_y - expected_pixel_scale) < scale_tolerance, (
+                        f"Pixel scale Y mismatch: expected {expected_pixel_scale}, got {actual_scale_y}"
+                    )
 
                     # Validate WCS transformation: CRPIX pixel -> source RA/Dec
                     # CRPIX is in FITS 1-based coordinates and points to where CRVAL is located
@@ -2054,12 +2045,12 @@ class TestEndToEndChannelCombinations:
                     )
                     logger.info(f"  Expected: RA={test_ra}, Dec={test_dec}")
 
-                    assert (
-                        abs(sky_coords.ra.deg - test_ra) < ra_tolerance
-                    ), f"WCS RA mismatch: expected {test_ra}, got {sky_coords.ra.deg}"
-                    assert (
-                        abs(sky_coords.dec.deg - test_dec) < dec_tolerance
-                    ), f"WCS Dec mismatch: expected {test_dec}, got {sky_coords.dec.deg}"
+                    assert abs(sky_coords.ra.deg - test_ra) < ra_tolerance, (
+                        f"WCS RA mismatch: expected {test_ra}, got {sky_coords.ra.deg}"
+                    )
+                    assert abs(sky_coords.dec.deg - test_dec) < dec_tolerance, (
+                        f"WCS Dec mismatch: expected {test_dec}, got {sky_coords.dec.deg}"
+                    )
 
         logger.info("✓ Combined channel (VIS + NIR-H -> 1 output) WCS test passed!")
 

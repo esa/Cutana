@@ -21,6 +21,7 @@ from typing import Any, Dict, List
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import psutil
 from astropy.io import fits
 from loguru import logger
 from memory_profiler import memory_usage
@@ -123,8 +124,6 @@ def run_benchmark_with_monitoring(
     Returns:
         Benchmark results dictionary
     """
-    import psutil
-
     hostname = socket.gethostname()
     logger.info(f"Starting {benchmark_name} with {config['max_workers']} workers on {hostname}")
 
@@ -322,9 +321,9 @@ def collect_performance_statistics(output_dir: Path) -> Dict[str, Any]:
                                                 aggregate_stats["steps"][step_name]["times"].append(
                                                     total_time
                                                 )
-                                                aggregate_stats["steps"][step_name][
-                                                    "count"
-                                                ] += count
+                                                aggregate_stats["steps"][step_name]["count"] += (
+                                                    count
+                                                )
 
                                     aggregate_stats["total_sources_processed"] += perf_data.get(
                                         "total_sources", 0

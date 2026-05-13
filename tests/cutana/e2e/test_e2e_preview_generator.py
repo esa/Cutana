@@ -7,7 +7,9 @@
 """End-to-end tests for PreviewGenerator functionality."""
 
 import asyncio
+import shutil
 import tempfile
+import time
 from pathlib import Path
 
 import numpy as np
@@ -45,8 +47,6 @@ class TestE2EPreviewGenerator:
     def teardown_method(self):
         """Clean up test environment."""
         clear_preview_cache()  # Clear cache between tests
-        import shutil
-
         if Path(self.temp_dir).exists():
             shutil.rmtree(self.temp_dir, ignore_errors=True)
 
@@ -194,9 +194,9 @@ class TestE2EPreviewGenerator:
                 # 3+ channels should return 3D RGB array
                 expected_shape = (128, 128, 3)
 
-            assert (
-                cutout_array.shape == expected_shape
-            ), f"Expected {expected_shape}, got {cutout_array.shape}"
+            assert cutout_array.shape == expected_shape, (
+                f"Expected {expected_shape}, got {cutout_array.shape}"
+            )
             assert cutout_array.dtype == np.uint8, f"Expected uint8, got {cutout_array.dtype}"
             # Verify normalization applied (values should be 0-255)
             assert cutout_array.min() >= 0 and cutout_array.max() <= 255
@@ -223,22 +223,22 @@ class TestE2EPreviewGenerator:
         previews = await generate_previews(num_samples=3, size=64, config=self.config)
 
         # Verify basic properties - accept any number of valid cutouts (at least 1)
-        assert (
-            len(previews) >= 1
-        ), f"Expected at least 1 preview for {norm_method}, got {len(previews)}"
-        assert (
-            len(previews) <= 3
-        ), f"Expected at most 3 previews for {norm_method}, got {len(previews)}"
+        assert len(previews) >= 1, (
+            f"Expected at least 1 preview for {norm_method}, got {len(previews)}"
+        )
+        assert len(previews) <= 3, (
+            f"Expected at most 3 previews for {norm_method}, got {len(previews)}"
+        )
 
         for i, (ra, dec, cutout_array) in enumerate(previews):
             # Single channel test should return 3D array
             expected_shape = (64, 64, 3)
-            assert (
-                cutout_array.shape == expected_shape
-            ), f"Wrong shape for {norm_method}: {cutout_array.shape}"
-            assert (
-                cutout_array.dtype == np.uint8
-            ), f"Wrong dtype for {norm_method}: {cutout_array.dtype}"
+            assert cutout_array.shape == expected_shape, (
+                f"Wrong shape for {norm_method}: {cutout_array.shape}"
+            )
+            assert cutout_array.dtype == np.uint8, (
+                f"Wrong dtype for {norm_method}: {cutout_array.dtype}"
+            )
 
             # Verify normalization was applied based on method
             if norm_method == "none":
@@ -250,9 +250,9 @@ class TestE2EPreviewGenerator:
 
                 # Check that we have some variation in the image (not all zeros)
                 if norm_method != "none":
-                    assert (
-                        cutout_array.max() > cutout_array.min()
-                    ), f"No variation in {norm_method} normalized image"
+                    assert cutout_array.max() > cutout_array.min(), (
+                        f"No variation in {norm_method} normalized image"
+                    )
 
     @pytest.mark.asyncio
     async def test_preview_generator_caching_behavior(self):
@@ -267,8 +267,6 @@ class TestE2EPreviewGenerator:
         catalogue.to_csv(catalogue_path, index=False)
 
         # Load sources for caching
-        import time
-
         start_time = time.time()
         cache_info = await load_sources_for_previews(str(catalogue_path), self.config)
         cache_load_time = time.time() - start_time
@@ -335,19 +333,19 @@ class TestE2EPreviewGenerator:
                 else:
                     raise
 
-            assert (
-                len(previews) >= 1
-            ), f"Expected at least 1 preview for size {size}, got {len(previews)}"
-            assert (
-                len(previews) <= 2
-            ), f"Expected at most 2 previews for size {size}, got {len(previews)}"
+            assert len(previews) >= 1, (
+                f"Expected at least 1 preview for size {size}, got {len(previews)}"
+            )
+            assert len(previews) <= 2, (
+                f"Expected at most 2 previews for size {size}, got {len(previews)}"
+            )
 
             for ra, dec, cutout_array in previews:
                 # Single channel test should return 3D array
                 expected_shape = (size, size, 3)
-                assert (
-                    cutout_array.shape == expected_shape
-                ), f"Expected ({size}, {size}, 3), got {cutout_array.shape}"
+                assert cutout_array.shape == expected_shape, (
+                    f"Expected ({size}, {size}, 3), got {cutout_array.shape}"
+                )
 
     @pytest.mark.asyncio
     async def test_preview_generator_error_handling(self):

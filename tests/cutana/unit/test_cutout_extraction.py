@@ -22,6 +22,7 @@ from astropy.io import fits
 from astropy.wcs import WCS
 
 from cutana.cutout_extraction import (
+    arcsec_to_pixels,
     extract_cutouts_vectorized_from_extension,
 )
 
@@ -90,9 +91,9 @@ class TestCutoutExtraction:
             ), f"Expected shape ({size}, {size}), got {cutout.shape}"
 
             # All values should be 1.0 (no zeros from padding) if extracted from center
-            assert np.all(
-                cutout == 1.0
-            ), f"Found non-one values in cutout of size {size}: min={cutout.min()}, max={cutout.max()}"
+            assert np.all(cutout == 1.0), (
+                f"Found non-one values in cutout of size {size}: min={cutout.min()}, max={cutout.max()}"
+            )
 
     def test_even_size_extraction_no_padding(self, mock_hdu_ones, mock_wcs):
         """Test that even-sized cutouts extract correct amount of data without unwanted padding."""
@@ -123,9 +124,9 @@ class TestCutoutExtraction:
             ), f"Expected shape ({size}, {size}), got {cutout.shape}"
 
             # All values should be 1.0 (no zeros from padding) if extracted from center
-            assert np.all(
-                cutout == 1.0
-            ), f"Found non-one values in cutout of size {size}: min={cutout.min()}, max={cutout.max()}"
+            assert np.all(cutout == 1.0), (
+                f"Found non-one values in cutout of size {size}: min={cutout.min()}, max={cutout.max()}"
+            )
 
     def test_edge_extraction_with_padding(self, mock_hdu_ones, mock_wcs):
         """Test extraction near edges correctly pads with zeros."""
@@ -254,7 +255,9 @@ class TestCutoutExtraction:
         assert cutout.shape == (
             expected_extraction_size,
             expected_extraction_size,
-        ), f"Expected shape ({expected_extraction_size}, {expected_extraction_size}), got {cutout.shape}"
+        ), (
+            f"Expected shape ({expected_extraction_size}, {expected_extraction_size}), got {cutout.shape}"
+        )
 
     def test_padding_factor_zoom_out(self, mock_hdu_gradient, mock_wcs):
         """Test that padding_factor > 1.0 correctly zooms out."""
@@ -279,7 +282,9 @@ class TestCutoutExtraction:
         assert cutout.shape == (
             expected_extraction_size,
             expected_extraction_size,
-        ), f"Expected shape ({expected_extraction_size}, {expected_extraction_size}), got {cutout.shape}"
+        ), (
+            f"Expected shape ({expected_extraction_size}, {expected_extraction_size}), got {cutout.shape}"
+        )
 
     def test_gradient_preservation(self, mock_hdu_gradient, mock_wcs):
         """Test that gradient data is preserved correctly during extraction."""
@@ -309,9 +314,9 @@ class TestCutoutExtraction:
             # y: 38-43 (40 - 2 to 40 + 2 for size 5)
             # So cutout[0, 0] should be gradient[38, 28] = 38 + 28 = 66
             expected_top_left = 38 + 28
-            assert (
-                cutout[0, 0] == expected_top_left
-            ), f"Expected top-left to be {expected_top_left}, got {cutout[0, 0]}"
+            assert cutout[0, 0] == expected_top_left, (
+                f"Expected top-left to be {expected_top_left}, got {cutout[0, 0]}"
+            )
 
     def test_batch_extraction_consistency(self, mock_hdu_ones, mock_wcs):
         """Test that batch extraction gives same results as individual extraction."""
@@ -342,17 +347,17 @@ class TestCutoutExtraction:
                     np.array([ra_array[i]]),
                     np.array([dec_array[i]]),
                     np.array([size]),
-                    source_ids=[f"source{i+1}"],
+                    source_ids=[f"source{i + 1}"],
                     padding_factor=1.0,
                     config=None,
                 )
             )
 
-            assert batch_success[i] == single_success[0], f"Success mismatch for source {i+1}"
+            assert batch_success[i] == single_success[0], f"Success mismatch for source {i + 1}"
             if batch_success[i]:
-                assert np.array_equal(
-                    batch_cutouts[i], single_cutouts[0]
-                ), f"Cutout mismatch for source {i+1}"
+                assert np.array_equal(batch_cutouts[i], single_cutouts[0]), (
+                    f"Cutout mismatch for source {i + 1}"
+                )
 
     def test_flux_conversion_bug_regression(self, mock_hdu_ones, mock_wcs):
         """Regression test for flux conversion bug where it wasn't applied in edge padding cases."""
@@ -385,14 +390,14 @@ class TestCutoutExtraction:
                 assert cutout.shape == (size, size), f"Wrong shape for size {size}"
 
                 # All actual data should be 2.0 (flux converted), no 1.0 should remain
-                assert np.all(
-                    cutout == 2.0
-                ), f"Flux conversion not applied correctly for size {size}: got values {np.unique(cutout)}"
+                assert np.all(cutout == 2.0), (
+                    f"Flux conversion not applied correctly for size {size}: got values {np.unique(cutout)}"
+                )
 
             # Verify flux conversion was called for each size
-            assert mock_flux_conv.call_count == len(
-                test_sizes
-            ), f"Flux conversion not called expected number of times"
+            assert mock_flux_conv.call_count == len(test_sizes), (
+                f"Flux conversion not called expected number of times"
+            )
 
 
 class TestPixelOffsetAccuracy:
@@ -445,12 +450,12 @@ class TestPixelOffsetAccuracy:
         expected_x = self.compute_expected_offset(actual_px, cutout_size)
         expected_y = self.compute_expected_offset(actual_py, cutout_size)
 
-        assert (
-            abs(offset_x[0] - expected_x) < 1e-10
-        ), f"offset_x: got {offset_x[0]}, expected {expected_x}"
-        assert (
-            abs(offset_y[0] - expected_y) < 1e-10
-        ), f"offset_y: got {offset_y[0]}, expected {expected_y}"
+        assert abs(offset_x[0] - expected_x) < 1e-10, (
+            f"offset_x: got {offset_x[0]}, expected {expected_x}"
+        )
+        assert abs(offset_y[0] - expected_y) < 1e-10, (
+            f"offset_y: got {offset_y[0]}, expected {expected_y}"
+        )
 
         return cutouts, offset_x[0], offset_y[0]
 
@@ -526,12 +531,10 @@ class TestPixelOffsetAccuracy:
         self, mock_hdu, mock_wcs_precise, diameter_arcsec, expected_pixels
     ):
         """Test with diameter_arcsec that doesn't equal exact pixel multiple."""
-        from cutana.cutout_extraction import arcsec_to_pixels
-
         actual_pixels = arcsec_to_pixels(diameter_arcsec, mock_wcs_precise)
-        assert (
-            actual_pixels == expected_pixels
-        ), f"Expected {expected_pixels} pixels, got {actual_pixels}"
+        assert actual_pixels == expected_pixels, (
+            f"Expected {expected_pixels} pixels, got {actual_pixels}"
+        )
 
         self._extract_and_verify_offset(mock_hdu, mock_wcs_precise, 50.3, 50.7, expected_pixels)
 
@@ -570,3 +573,167 @@ class TestPixelOffsetAccuracy:
     def test_offset_consistency_across_sizes(self, mock_hdu, mock_wcs_precise, size):
         """Test that pixel offsets match expected values for various cutout sizes."""
         self._extract_and_verify_offset(mock_hdu, mock_wcs_precise, 50.37, 50.63, size)
+
+
+class TestPaddingEdgeCases:
+    """Test edge cases for padding_factor: extreme zoom, out-of-bounds, small sizes."""
+
+    @staticmethod
+    def _make_mock_hdu_wcs(image_size, pixel_x, pixel_y):
+        """Create a mock HDU and WCS that places sources at given pixel coords."""
+        wcs_obj = Mock(spec=WCS)
+        wcs_obj.world_to_pixel = Mock(
+            side_effect=lambda coords: (np.array([pixel_x]), np.array([pixel_y]))
+        )
+        data = np.ones((image_size, image_size), dtype=np.float32)
+        hdu = Mock()
+        hdu.data = data
+        return hdu, wcs_obj
+
+    def test_extreme_zoom_out_requires_zero_padding(self):
+        """Test padding_factor=10.0 on a small target produces zero-padded edges."""
+        image_size = 512
+        hdu, wcs_obj = self._make_mock_hdu_wcs(image_size, 256.0, 256.0)
+        hdu.data[206:306, 206:306] = 3.0
+
+        target_size = 64
+        padding_factor = 10.0
+        expected_size = int(target_size * padding_factor)  # 640
+
+        cutouts, success_mask, _, _ = extract_cutouts_vectorized_from_extension(
+            hdu=hdu,
+            wcs_obj=wcs_obj,
+            ra_array=np.array([180.0]),
+            dec_array=np.array([0.0]),
+            size_pixels_array=np.array([target_size]),
+            source_ids=["zoom_out_10x"],
+            padding_factor=padding_factor,
+        )
+
+        assert success_mask[0], "Extraction should succeed"
+        assert cutouts[0].shape == (expected_size, expected_size)
+        assert np.any(cutouts[0] == 0.0), "Edges must be zero-padded"
+
+    def test_large_zoom_out_edge_padding(self):
+        """Test padding_factor=5.0 produces zero-padded edges when cutout exceeds image."""
+        image_size = 512
+        hdu, wcs_obj = self._make_mock_hdu_wcs(image_size, 256.0, 256.0)
+        # Gradient pattern
+        y, x = np.meshgrid(np.arange(image_size), np.arange(image_size), indexing="ij")
+        hdu.data = ((x + y) / (2 * image_size)).astype(np.float32)
+        hdu.data[206:306, 206:306] = 1.0
+
+        target_size = 128
+        padding_factor = 5.0
+        expected_size = int(target_size * padding_factor)  # 640
+
+        cutouts, success_mask, _, _ = extract_cutouts_vectorized_from_extension(
+            hdu=hdu,
+            wcs_obj=wcs_obj,
+            ra_array=np.array([180.0]),
+            dec_array=np.array([0.0]),
+            size_pixels_array=np.array([target_size]),
+            source_ids=["zoom_out_5x"],
+            padding_factor=padding_factor,
+        )
+
+        assert success_mask[0], "Extraction should succeed"
+        assert cutouts[0].shape == (expected_size, expected_size)
+        edge_sum = (
+            np.sum(cutouts[0][0, :])
+            + np.sum(cutouts[0][-1, :])
+            + np.sum(cutouts[0][:, 0])
+            + np.sum(cutouts[0][:, -1])
+        )
+        assert edge_sum < 100, "Edges should have zero padding for large zoom-out"
+
+    def test_source_outside_image_bounds(self):
+        """Test source completely outside image fails gracefully."""
+        hdu, wcs_obj = self._make_mock_hdu_wcs(512, 1000.0, 1000.0)
+
+        cutouts, success_mask, _, _ = extract_cutouts_vectorized_from_extension(
+            hdu=hdu,
+            wcs_obj=wcs_obj,
+            ra_array=np.array([180.0]),
+            dec_array=np.array([0.0]),
+            size_pixels_array=np.array([128]),
+            source_ids=["outside"],
+            padding_factor=1.0,
+        )
+
+        assert not success_mask[0], "Should fail for out-of-bounds source"
+        assert cutouts[0] is None, "Cutout should be None for failed extraction"
+
+    @pytest.mark.parametrize("target_size", [2, 4, 8, 16])
+    def test_very_small_cutout_sizes(self, target_size):
+        """Test extraction with very small target sizes."""
+        hdu, wcs_obj = self._make_mock_hdu_wcs(512, 256.0, 256.0)
+        hdu.data = np.random.default_rng(42).random((512, 512)).astype(np.float32)
+
+        cutouts, success_mask, _, _ = extract_cutouts_vectorized_from_extension(
+            hdu=hdu,
+            wcs_obj=wcs_obj,
+            ra_array=np.array([180.0]),
+            dec_array=np.array([0.0]),
+            size_pixels_array=np.array([target_size]),
+            source_ids=[f"size_{target_size}"],
+            padding_factor=1.0,
+        )
+
+        assert success_mask[0], f"Extraction should succeed for size {target_size}"
+        assert cutouts[0].shape == (target_size, target_size)
+        assert not np.any(np.isnan(cutouts[0])), "Should not contain NaN values"
+
+    def test_fractional_pixel_coordinates(self):
+        """Test extraction with fractional pixel coordinates preserves data patterns."""
+        image_size = 512
+        hdu, wcs_obj = self._make_mock_hdu_wcs(image_size, 256.7, 255.3)
+        # Create checkerboard pattern
+        data = np.zeros((image_size, image_size), dtype=np.float32)
+        for i in range(0, image_size, 20):
+            for j in range(0, image_size, 20):
+                if (i // 20 + j // 20) % 2 == 0:
+                    data[i : i + 20, j : j + 20] = 1.0
+        hdu.data = data
+
+        target_size = 100
+        cutouts, success_mask, _, _ = extract_cutouts_vectorized_from_extension(
+            hdu=hdu,
+            wcs_obj=wcs_obj,
+            ra_array=np.array([180.0]),
+            dec_array=np.array([0.0]),
+            size_pixels_array=np.array([target_size]),
+            source_ids=["fractional"],
+            padding_factor=1.0,
+        )
+
+        assert success_mask[0], "Extraction should succeed"
+        assert cutouts[0].shape == (target_size, target_size)
+        assert np.any(cutouts[0] > 0.5) and np.any(cutouts[0] < 0.5), (
+            "Checkerboard pattern should be preserved"
+        )
+
+    def test_edge_zoom_out_has_zero_padding(self):
+        """Test that zoom-out at image edge produces zero padding."""
+        image_size = 256
+        hdu, wcs_obj = self._make_mock_hdu_wcs(image_size, 15.0, 15.0)
+        hdu.data[0:30, 0:30] = 2.0
+
+        target_size = 64
+        padding_factor = 2.0
+        expected_size = int(target_size * padding_factor)  # 128
+
+        cutouts, success_mask, _, _ = extract_cutouts_vectorized_from_extension(
+            hdu=hdu,
+            wcs_obj=wcs_obj,
+            ra_array=np.array([180.0]),
+            dec_array=np.array([0.0]),
+            size_pixels_array=np.array([target_size]),
+            source_ids=["edge_zoom_out"],
+            padding_factor=padding_factor,
+        )
+
+        assert success_mask[0], "Extraction should succeed"
+        assert cutouts[0].shape == (expected_size, expected_size)
+        assert np.sum(cutouts[0] > 1.5) > 0, "Should capture bright corner"
+        assert np.sum(cutouts[0] == 0.0) > 0, "Zoom-out at edge should have zero padding"

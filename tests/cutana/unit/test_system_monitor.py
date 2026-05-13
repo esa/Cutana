@@ -13,8 +13,13 @@ Tests cover:
 - Memory usage calculations
 - Kubernetes environment detection
 - Resource limit calculations
+- Resource history trimming
+- Cgroup v1/v2 file parsing for K8s limits
 """
 
+import builtins
+from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -167,3 +172,194 @@ class TestSystemMonitor:
             assert len(history) == 3
             assert all("cpu_percent" in snapshot for snapshot in history)
             assert all("memory_percent" in snapshot for snapshot in history)
+
+
+# ────────────────────────────────────────────────────────────────────
+# Resource history trimming (line 364-365)
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestResourceHistoryTrimming:
+    """Tests for history trimming when >1000 entries."""
+
+    def test_history_trimmed_at_threshold(self):
+        monitor = SystemMonitor()
+        dummy = {"cpu_percent": 1.0, "memory_percent": 2.0, "timestamp": 0}
+
+        with patch.object(monitor, "get_system_resources", return_value=dummy):
+            # Record 1001 snapshots to exceed the 1000-entry threshold
+            for _ in range(1001):
+                monitor.record_resource_snapshot()
+
+        history = monitor.get_resource_history()
+        # After exceeding 1000, history should be trimmed to the last 500
+        assert len(history) == 500
+
+    def test_history_not_trimmed_below_threshold(self):
+        monitor = SystemMonitor()
+        dummy = {"cpu_percent": 1.0, "memory_percent": 2.0, "timestamp": 0}
+
+        with patch.object(monitor, "get_system_resources", return_value=dummy):
+            for _ in range(999):
+                monitor.record_resource_snapshot()
+
+        history = monitor.get_resource_history()
+        assert len(history) == 999
+
+
+# ────────────────────────────────────────────────────────────────────
+# Cgroup v1 memory limit parsing (lines 100-113)
+# ────────────────────────────────────────────────────────────────────
+
+
+def _is_cgroup_path(s):
+    """Check if a path string refers to a cgroup file, regardless of OS separators."""
+    normalized = s.replace("\\", "/")
+    return normalized.startswith("/sys/fs/cgroup/") or normalized.lstrip("/").startswith(
+        "sys/fs/cgroup/"
+    )
+
+
+def _cgroup_to_relative(s):
+    """Convert a cgroup path to a relative path for tmp_path lookup."""
+    return s.replace("\\", "/").lstrip("/")
+
+
+def _make_cgroup_patcher(tmp_path):
+    """Create a context manager that redirects cgroup paths to tmp_path.
+
+    Patches Path.exists() and builtins.open() so hardcoded /sys/fs/cgroup/*
+    paths read from files under tmp_path instead.
+    """
+    real_open = builtins.open
+    real_exists = Path.exists
+
+    def fake_exists(self):
+        s = str(self)
+        if _is_cgroup_path(s):
+            return (tmp_path / _cgroup_to_relative(s)).exists()
+        return real_exists(self)
+
+    def fake_open(file, *args, **kwargs):
+        s = str(file)
+        if _is_cgroup_path(s):
+            return real_open(str(tmp_path / _cgroup_to_relative(s)), *args, **kwargs)
+        return real_open(file, *args, **kwargs)
+
+    @contextmanager
+    def patcher():
+        with patch.object(Path, "exists", fake_exists), patch("builtins.open", fake_open):
+            yield
+
+    return patcher()
+
+
+class TestCgroupMemoryParsing:
+    """Tests for _get_kubernetes_pod_limits memory cgroup file parsing."""
+
+    def test_cgroup_v1_memory_limit(self, tmp_path):
+        """Real method reads cgroup v1 memory.limit_in_bytes."""
+        limit_bytes = 8 * 1024**3  # 8GB
+        cgroup_dir = tmp_path / "sys" / "fs" / "cgroup" / "memory"
+        cgroup_dir.mkdir(parents=True)
+        (cgroup_dir / "memory.limit_in_bytes").write_text(str(limit_bytes))
+
+        monitor = SystemMonitor()
+        monitor._k8s_limits_cache = None
+        monitor._k8s_limits_logged = False
+
+        with _make_cgroup_patcher(tmp_path):
+            mem_limit, _cpu_limit = monitor._get_kubernetes_pod_limits()
+
+        assert mem_limit == limit_bytes
+
+    def test_cgroup_v2_memory_max_unlimited(self, tmp_path):
+        """Real method skips 'max' value in cgroup v2 memory.max."""
+        cgroup_dir = tmp_path / "sys" / "fs" / "cgroup"
+        cgroup_dir.mkdir(parents=True)
+        (cgroup_dir / "memory.max").write_text("max\n")
+
+        monitor = SystemMonitor()
+        monitor._k8s_limits_cache = None
+        monitor._k8s_limits_logged = False
+
+        with _make_cgroup_patcher(tmp_path):
+            mem_limit, _cpu_limit = monitor._get_kubernetes_pod_limits()
+
+        assert mem_limit is None
+
+    def test_cgroup_v2_memory_numeric(self, tmp_path):
+        """Real method reads numeric cgroup v2 memory.max."""
+        limit_bytes = 4 * 1024**3
+        cgroup_dir = tmp_path / "sys" / "fs" / "cgroup"
+        cgroup_dir.mkdir(parents=True)
+        (cgroup_dir / "memory.max").write_text(f"{limit_bytes}\n")
+
+        monitor = SystemMonitor()
+        monitor._k8s_limits_cache = None
+        monitor._k8s_limits_logged = False
+
+        with _make_cgroup_patcher(tmp_path):
+            mem_limit, _cpu_limit = monitor._get_kubernetes_pod_limits()
+
+        assert mem_limit == limit_bytes
+
+
+class TestCgroupCpuParsing:
+    """Tests for CPU cgroup file parsing logic."""
+
+    def test_cgroup_v1_cpu_quota_period(self, tmp_path):
+        """Real method reads cgroup v1 cpu quota and period files."""
+        cgroup_dir = tmp_path / "sys" / "fs" / "cgroup" / "cpu"
+        cgroup_dir.mkdir(parents=True)
+        (cgroup_dir / "cpu.cfs_quota_us").write_text("200000\n")
+        (cgroup_dir / "cpu.cfs_period_us").write_text("100000\n")
+
+        monitor = SystemMonitor()
+        monitor._k8s_limits_cache = None
+        monitor._k8s_limits_logged = False
+
+        with _make_cgroup_patcher(tmp_path):
+            _mem_limit, cpu_limit = monitor._get_kubernetes_pod_limits()
+
+        assert cpu_limit == 2000  # 2 cores in millicores
+
+    def test_cgroup_v2_cpu_max(self, tmp_path):
+        """Real method reads cgroup v2 cpu.max with 'quota period' format."""
+        cgroup_dir = tmp_path / "sys" / "fs" / "cgroup"
+        cgroup_dir.mkdir(parents=True)
+        (cgroup_dir / "cpu.max").write_text("400000 100000\n")
+
+        monitor = SystemMonitor()
+        monitor._k8s_limits_cache = None
+        monitor._k8s_limits_logged = False
+
+        with _make_cgroup_patcher(tmp_path):
+            _mem_limit, cpu_limit = monitor._get_kubernetes_pod_limits()
+
+        assert cpu_limit == 4000  # 4 cores in millicores
+
+    def test_cgroup_v2_cpu_max_unlimited(self, tmp_path):
+        """Real method handles 'max period' in cgroup v2 cpu.max gracefully."""
+        cgroup_dir = tmp_path / "sys" / "fs" / "cgroup"
+        cgroup_dir.mkdir(parents=True)
+        (cgroup_dir / "cpu.max").write_text("max 100000\n")
+
+        monitor = SystemMonitor()
+        monitor._k8s_limits_cache = None
+        monitor._k8s_limits_logged = False
+
+        with _make_cgroup_patcher(tmp_path):
+            _mem_limit, cpu_limit = monitor._get_kubernetes_pod_limits()
+
+        # "max" can't be parsed as int, exception is caught, cpu_limit stays None
+        assert cpu_limit is None
+
+    def test_k8s_limits_cache(self):
+        """_get_kubernetes_pod_limits returns cached results on second call."""
+        monitor = SystemMonitor()
+        monitor._k8s_limits_cache = (1024, 2000)
+        mem, cpu = monitor._get_kubernetes_pod_limits()
+        assert mem == 1024
+        assert cpu == 2000
+        assert cpu == 2000

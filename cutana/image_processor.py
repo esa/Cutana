@@ -22,7 +22,7 @@ import numpy as np
 from astropy.wcs import WCS
 from dotmap import DotMap
 from loguru import logger
-from skimage import transform, util
+from skimage import transform
 
 from .normalisation_parameters import (
     build_fitsbolt_params_from_external_cfg,
@@ -229,43 +229,6 @@ def resize_flux_conserved(
     return resized_image
 
 
-def convert_data_type(images: np.ndarray, target_dtype: str) -> np.ndarray:
-    """
-    Convert images to target data type using skimage utilities.
-    Handles both single images and batches of images.
-
-    Args:
-        images: Input images in shape (H, W), (N, H, W) or (N, H, W, C)
-        target_dtype: Target data type ('float32', 'float64', 'uint8', 'uint16', 'int16')
-
-    Returns:
-        Images with target data type (same shape as input)
-    """
-    try:
-        if target_dtype == "float32":
-            return util.img_as_float32(images)
-        elif target_dtype == "float64":
-            return util.img_as_float64(images)
-        elif target_dtype == "uint8":
-            return util.img_as_ubyte(images)
-        elif target_dtype == "uint16":
-            return util.img_as_uint(images)
-        elif target_dtype == "int16":
-            # Convert to int16 manually since skimage doesn't have img_as_int16
-            # First normalize to [0, 1] range, then scale to int16 range
-            int16_info = np.iinfo(np.int16)
-            normalized = util.img_as_float64(images)
-            scale = int16_info.max - int16_info.min
-            return ((normalized * scale) + int16_info.min).astype(np.int16)
-        else:
-            logger.warning(f"Unknown data type {target_dtype}, keeping original")
-            return images
-
-    except Exception as e:
-        logger.error(f"Data type conversion failed: {e}")
-        return images
-
-
 def apply_normalisation(images: np.ndarray, config: DotMap) -> np.ndarray:
     """
     Apply normalization/stretch to a batch of images using fitsbolt batch processing.
@@ -293,9 +256,11 @@ def apply_normalisation(images: np.ndarray, config: DotMap) -> np.ndarray:
     # A valid external config must have 'normalisation_method' key
     external_cfg = config.external_fitsbolt_cfg
     if external_cfg is not None and "normalisation_method" in external_cfg:
-        # Sync cutana config's crop settings from external fitsbolt config
-        crop_value = getattr(external_cfg.normalisation, "crop_for_maximum_value", None)
-        if crop_value is not None:
+        # `crop_for_maximum_value` is an optional fitsbolt parameter on the
+        # externally-provided config; its presence is checked explicitly
+        # rather than via a getattr fallback.
+        if "crop_for_maximum_value" in external_cfg.normalisation:
+            crop_value = external_cfg.normalisation.crop_for_maximum_value
             config.normalisation.crop_enable = True
             config.normalisation.crop_height = crop_value[0]
             config.normalisation.crop_width = crop_value[1]
@@ -311,19 +276,10 @@ def apply_normalisation(images: np.ndarray, config: DotMap) -> np.ndarray:
 
     # Add images array to parameters (done here to avoid unnecessary copying)
     fitsbolt_params["images"] = images_array
-    # TODO(hotfix): Use config.data_type to determine output dtype for fitsbolt normalization
-    if config.data_type == "uint8":
-        fitsbolt_params["output_dtype"] = np.uint8
-    elif config.data_type == "float32":
-        fitsbolt_params["output_dtype"] = np.float32
-    elif config.data_type == "float64":
-        fitsbolt_params["output_dtype"] = np.float64
-    else:  # default to float32 if unknown
-        fitsbolt_params["output_dtype"] = np.float32
 
     try:
         # Apply fitsbolt batch normalization with parameters
-        normalized_images = fitsbolt.normalise_images(**fitsbolt_params)
+        normalized_images = np.asarray(fitsbolt.normalise_images(**fitsbolt_params))
 
         # Return in original shape format
         if len(images.shape) == 3:
@@ -332,17 +288,14 @@ def apply_normalisation(images: np.ndarray, config: DotMap) -> np.ndarray:
             return normalized_images
 
     except Exception as e:
-        logger.error(f"Fitsbolt batch normalization failed: {e}, using fallback")
-        # Fallback batch normalization
-        normalized_batch = []
-        for img in images:
-            img_min, img_max = img.min(), img.max()
-            if img_max > img_min:
-                normalized = (img - img_min) / (img_max - img_min)
-            else:
-                normalized = np.zeros_like(img)
-            normalized_batch.append(normalized)
-        return np.array(normalized_batch)
+        raise RuntimeError(
+            f"Fitsbolt normalisation failed: {e}. "
+            f"This may indicate a mismatch between the external_fitsbolt_cfg "
+            f"(e.g. per-channel ASINH params sized for {num_channels} channels) "
+            f"and the actual image data shape {images_array.shape}. "
+            f"Ensure that channel_weights expands the data to the expected "
+            f"number of output channels before normalisation."
+        ) from e
 
 
 def combine_channels(
@@ -373,15 +326,15 @@ def combine_channels(
         assert isinstance(channel, str), f"Channel key {channel} must be a string"
         assert isinstance(weights, list), f"Weights for {channel} must be a list"
         assert len(weights) > 0, f"Weights for {channel} cannot be empty"
-        assert all(
-            isinstance(w, (int, float)) for w in weights
-        ), f"All weights for {channel} must be numeric"
+        assert all(isinstance(w, (int, float)) for w in weights), (
+            f"All weights for {channel} must be numeric"
+        )
         weight_lengths.add(len(weights))
 
     # All weight arrays must have the same length (same number of output channels)
-    assert (
-        len(weight_lengths) == 1
-    ), f"All weight arrays must have the same length, got: {weight_lengths}"
+    assert len(weight_lengths) == 1, (
+        f"All weight arrays must have the same length, got: {weight_lengths}"
+    )
 
     # Convert channel_weights dict to numpy array for fitsbolt
     channel_names = list(channel_weights.keys())
@@ -401,9 +354,12 @@ def combine_channels(
                 channel_combination[output_idx, ext_idx] = weights[output_idx]
 
     # Apply fitsbolt batch channel combination
-    combined_batch = fitsbolt.channel_mixing.batch_channel_combination(
-        images=batch_cutouts,
-        channel_combination=channel_combination,
+    combined_batch = np.asarray(
+        fitsbolt.channel_mixing.batch_channel_combination(
+            images=batch_cutouts,
+            channel_combination=channel_combination,
+        ),
+        dtype=batch_cutouts.dtype,
     )
 
     return combined_batch

@@ -7,10 +7,12 @@
 """Unified start screen combining file selection, analysis, and configuration."""
 
 import asyncio
+import traceback
 
 import ipywidgets as widgets
 from loguru import logger
 
+from cutana.__init__ import __version__ as cutana_version
 from cutana.get_default_config import get_default_config
 
 from ..styles import (
@@ -44,22 +46,19 @@ class StartScreen(widgets.VBox):
         self.style_html = widgets.HTML(value=COMMON_STYLES)
 
         # Get Cutana version
-        try:
-            from cutana.__init__ import __version__ as cutana_version
-
-            version_text = f"v{cutana_version}"
-        except ImportError:
-            logger.warning("Could not import cutana version")
-            version_text = "version unknown"
+        version_text = f"v{cutana_version}"
 
         # Create header container with version, log level dropdown, and help button
-        self.header_container, self.help_button, self.log_level_dropdown = create_header_container(
-            version_text=version_text,
-            container_width=CONTAINER_WIDTH,
-            help_button_callback=self._toggle_help,
-            log_level_callback=set_console_log_level,
-            logo_title="CUTANA Cutout Generator Configuration",
-            initial_log_level=get_console_log_level(),
+        self.header_container, self.help_button, _, self.log_level_dropdown = (
+            create_header_container(
+                version_text=version_text,
+                container_width=CONTAINER_WIDTH,
+                help_button_callback=self._toggle_help,
+                config_button_callback=None,
+                log_level_callback=set_console_log_level,
+                logo_title="CUTANA Cutout Generator Configuration",
+                initial_log_level=get_console_log_level(),
+            )
         )
 
         # Create help panel
@@ -286,8 +285,6 @@ class StartScreen(widgets.VBox):
 
         except Exception as e:
             logger.error(f"❌ Analysis error: {e}")
-            import traceback
-
             logger.error(f"Full traceback: {traceback.format_exc()}")
 
             # Show generic error message

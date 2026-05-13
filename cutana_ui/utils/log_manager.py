@@ -7,6 +7,7 @@
 """UI logging manager for Cutana UI."""
 
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
@@ -91,8 +92,6 @@ class UILogManager:
 
             # Create timestamp for UI log files
             if session_timestamp is None:
-                from datetime import datetime
-
                 session_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
 
             # Add UI-specific log file

@@ -6,6 +6,9 @@
 #   the terms contained in the file 'LICENCE.txt'.
 """File selection component for start screen."""
 
+import threading
+import time
+import traceback
 from pathlib import Path
 
 import ipywidgets as widgets
@@ -128,8 +131,6 @@ class FileSelectionComponent(widgets.VBox):
                                 logger.info("✅ File selection callback completed successfully")
                             except Exception as e:
                                 logger.error(f"❌ Error in file selection callback: {e}")
-                                import traceback
-
                                 logger.error(traceback.format_exc())
                     else:
                         logger.warning(f"Non-catalogue file selected: {file_path}")
@@ -141,8 +142,6 @@ class FileSelectionComponent(widgets.VBox):
 
             except Exception as e:
                 logger.error(f"❌ Error in file selection handler: {e}")
-                import traceback
-
                 logger.error(traceback.format_exc())
 
         # Use the correct ipyfilechooser callback registration method
@@ -180,11 +179,8 @@ class FileSelectionComponent(widgets.VBox):
                 def on_select_click(button):
                     logger.debug("Select button clicked")
                     # Small delay then check for changes
-                    import threading
 
                     def delayed_check():
-                        import time
-
                         time.sleep(0.5)
                         on_file_change(self.file_chooser.file_chooser)
 

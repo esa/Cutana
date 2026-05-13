@@ -89,8 +89,7 @@ class SharedConfigurationWidget(widgets.VBox):
                 border_radius="5px",
                 margin="0",  # No margin
                 width="100%",  # Make matrix container span full width
-                max_height="150px" if compact else "180px",  # Reduced max height
-                overflow="auto",  # Enable scrolling when content exceeds container
+                overflow="visible",  # Remove internal scrolling - all content should be visible
                 align_content="flex-start",
             )
         )
@@ -126,22 +125,20 @@ class SharedConfigurationWidget(widgets.VBox):
             value=self.config.target_resolution,
             min=16,
             max=2048,  # Set appropriate max value to prevent clamping
-            layout=widgets.Layout(
-                width="140px", height="28px"
-            ),  # Further increased width to prevent scroll
+            layout=widgets.Layout(width="140px"),  # Further increased width to prevent scroll
         )
         self.resolution_input.add_class("config-grid-item")
 
         self.padding_label = widgets.HTML(
-            value=f'<div style="color: {TEXT_COLOR_LIGHT}; font-weight: 500; font-size: 11px; display: flex; align-items: center; height: 100%;">Zoom-out:</div>',
-            layout=widgets.Layout(height="28px", width="100%"),
+            value=f'<div style="color: {TEXT_COLOR_LIGHT}; font-weight: 500; font-size: 11px; display: flex; align-items: center; white-space: nowrap;">Zoom-out:</div>',
+            layout=widgets.Layout(width="100%"),
         )
         self.padding_slider = widgets.FloatSlider(
             value=self.config.padding_factor if hasattr(self.config, "padding_factor") else 1.0,
             min=0.25,
             max=10.0,
             step=0.25,
-            layout=widgets.Layout(width="140px", height="28px"),
+            layout=widgets.Layout(width="140px", margin="0 5px 0 0"),
             readout_format=".2f",
             tooltip="Set a factor to change the cutout size.",
             style={"handle_color": ESA_BLUE_ACCENT, "description_width": "initial"},
@@ -173,6 +170,8 @@ class SharedConfigurationWidget(widgets.VBox):
         label_width = "80px" if compact else "90px"  # Increased label width
         input_width = "160px"  # Further increased input width
 
+        # Calculate a height that cleanly holds the components without overflow
+        # (e.g. 5 rows * (~28px height + 5px gap))
         self.config_grid = widgets.GridBox(
             children=[
                 self.format_label,
@@ -188,7 +187,7 @@ class SharedConfigurationWidget(widgets.VBox):
             ],
             layout=widgets.Layout(
                 grid_template_columns=f"{label_width} {input_width}",  # Fixed widths for perfect alignment
-                grid_gap="5px 10px",  # Better gaps for proper spacing
+                grid_gap="8px 10px",  # Expanded vertical gap a bit to allow breathing room
                 margin="3px 0",  # Small margin for breathing room
                 min_width=grid_min_width,
                 width="100%",
@@ -249,7 +248,8 @@ class SharedConfigurationWidget(widgets.VBox):
         super().__init__(
             children=children,
             layout=widgets.Layout(
-                width="100%", overflow="visible"  # Ensure content is not clipped
+                width="100%",
+                overflow="visible",  # Ensure content is not clipped
             ),
         )
 
@@ -471,7 +471,7 @@ font-size: 8px; font-weight: bold; white-space: nowrap; overflow: hidden; text-o
             # Channel label with consistent width
             row_widgets = [
                 widgets.HTML(
-                    value=f'<div style="color: {TEXT_COLOR_LIGHT}; font-size: 8px; text-align: center;">{i+1}</div>',
+                    value=f'<div style="color: {TEXT_COLOR_LIGHT}; font-size: 8px; text-align: center;">{i + 1}</div>',
                     layout=widgets.Layout(width="25px", flex="0 0 auto", overflow="hidden"),
                 )
             ]

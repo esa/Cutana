@@ -11,6 +11,7 @@ This test creates synthetic FITS files with known patterns and validates that
 the generated zarr files contain the exact expected values and patterns.
 """
 
+import json
 import tempfile
 from pathlib import Path
 
@@ -184,7 +185,7 @@ class TestE2EZarrValidationEnhanced:
         config.output_dir = str(temp_output_dir)
         config.output_format = "zarr"
         config.data_type = "float32"
-        config.target_resolution = 64
+        config.target_resolution = 32
         config.normalisation_method = "linear"
         config.max_workers = 1
         config.normalisation_method = "linear"
@@ -253,9 +254,9 @@ class TestE2EZarrValidationEnhanced:
 
         # Center should be much brighter than edges (gaussian effect)
         contrast_ratio = center_value / edge_value
-        assert (
-            contrast_ratio > 2.0
-        ), f"Expected gaussian peak, got center={center_value}, edge={edge_value}, ratio={contrast_ratio}"
+        assert contrast_ratio > 2.0, (
+            f"Expected gaussian peak, got center={center_value}, edge={edge_value}, ratio={contrast_ratio}"
+        )
 
         # Check gaussian-like radial symmetry
         y_center, x_center = cutout.shape[0] // 2, cutout.shape[1] // 2
@@ -285,9 +286,9 @@ class TestE2EZarrValidationEnhanced:
             )
             total_comparisons = len(radial_values) - 1
             decreasing_fraction = decreasing_count / total_comparisons
-            assert (
-                decreasing_fraction >= 0.5
-            ), f"Expected gaussian profile, got radial values: {radial_values}"
+            assert decreasing_fraction >= 0.5, (
+                f"Expected gaussian profile, got radial values: {radial_values}"
+            )
 
     def test_linear_gradient_preservation(self, temp_data_dir, temp_output_dir):
         """Test that linear gradients are preserved in cutouts."""
@@ -323,7 +324,7 @@ class TestE2EZarrValidationEnhanced:
         config.output_dir = str(temp_output_dir)
         config.output_format = "zarr"
         config.data_type = "float32"
-        config.target_resolution = 128
+        config.target_resolution = 32
         config.normalisation_method = "linear"
         config.max_workers = 1
         config.normalisation_method = "linear"
@@ -360,9 +361,9 @@ class TestE2EZarrValidationEnhanced:
 
         # Should have significant difference between left and right
         gradient_strength = abs(right_side - left_side)
-        assert (
-            gradient_strength > 0.1
-        ), f"Expected horizontal gradient, got left={left_side}, right={right_side}"
+        assert gradient_strength > 0.1, (
+            f"Expected horizontal gradient, got left={left_side}, right={right_side}"
+        )
 
         # Check that the gradient is approximately linear across the cutout
         # Sample values at different x positions
@@ -420,7 +421,7 @@ class TestE2EZarrValidationEnhanced:
         config.output_dir = str(temp_output_dir)
         config.output_format = "zarr"
         config.data_type = "float32"
-        config.target_resolution = 64
+        config.target_resolution = 32
         config.normalisation_method = "linear"
         config.max_workers = 1
         config.normalisation_method = "linear"
@@ -499,7 +500,7 @@ class TestE2EZarrValidationEnhanced:
         config.output_dir = str(temp_output_dir)
         config.output_format = "zarr"
         config.data_type = data_type
-        config.target_resolution = 64
+        config.target_resolution = 32
         config.normalisation_method = "linear"
         config.max_workers = 1
         config.normalisation_method = "linear"
@@ -545,14 +546,14 @@ class TestE2EZarrValidationEnhanced:
 
         if data_type == "uint8":
             # For uint8, expect significant difference in appropriate range
-            assert (
-                gradient_strength > 10
-            ), f"Expected gradient in uint8 range, got difference={gradient_strength}"
+            assert gradient_strength > 10, (
+                f"Expected gradient in uint8 range, got difference={gradient_strength}"
+            )
         else:
             # For float32, expect difference in 0-1 range
-            assert (
-                gradient_strength > 0.1
-            ), f"Expected gradient in float32 range, got difference={gradient_strength}"
+            assert gradient_strength > 0.1, (
+                f"Expected gradient in float32 range, got difference={gradient_strength}"
+            )
 
     def test_three_extensions_two_channels_combination(self, temp_data_dir, temp_output_dir):
         """
@@ -566,10 +567,11 @@ class TestE2EZarrValidationEnhanced:
         Strategy: Create gradient patterns that will result in different min/max ranges
         after channel combination, so normalization preserves the relative structure.
         """
-        # Create synthetic FITS files with distinct gradient patterns
-        fits_vis = temp_data_dir / "test_vis.fits"
-        fits_nirh = temp_data_dir / "test_nirh.fits"
-        fits_niry = temp_data_dir / "test_niry.fits"
+        # Create synthetic FITS files with Euclid-style names so band-selective
+        # loading can identify filters via extract_filter_name()
+        fits_vis = temp_data_dir / "EUC_VIS_test.fits"
+        fits_nirh = temp_data_dir / "EUC_NIR-H_test.fits"
+        fits_niry = temp_data_dir / "EUC_NIR-Y_test.fits"
 
         # Create distinct patterns in each channel
         # VIS: horizontal gradient 0-10
@@ -609,7 +611,7 @@ class TestE2EZarrValidationEnhanced:
         config.output_format = "zarr"
         config.output_dir = str(temp_output_dir)
         config.data_type = "float32"
-        config.target_resolution = 64
+        config.target_resolution = 64  # Needs higher resolution for gradient validation
         config.normalisation_method = "linear"
 
         # Remove the nested normalisation object to avoid validation warnings
@@ -626,20 +628,19 @@ class TestE2EZarrValidationEnhanced:
         config.source_catalogue = str(catalogue_path)
 
         # Configure channel combination for test scenario
-        # Channel names are based on FITS file basenames
-        # Design weights so channels have different patterns after combination
+        # Channel names must match Euclid filter names so band-selective loading works
         # Channel weights must match the actual processing order (alphabetical by filename)
-        # Actual order from debug logs: test_vis, test_nirh, test_niry (alphabetical)
+        # Actual order: EUC_NIR-H, EUC_NIR-Y, EUC_VIS (alphabetical)
         config.channel_weights = {
-            "test_vis": [1.0, 0.0],  # VIS only contributes to ch1 (horizontal gradient)
-            "test_nirh": [0.0, 1.0],  # NIRH only contributes to ch2 (vertical gradient)
-            "test_niry": [0.5, 0.5],  # NIRY contributes equally to both (uniform)
+            "VIS": [1.0, 0.0],  # VIS only contributes to ch1 (horizontal gradient)
+            "NIR-H": [0.0, 1.0],  # NIRH only contributes to ch2 (vertical gradient)
+            "NIR-Y": [0.5, 0.5],  # NIRY contributes equally to both (uniform)
         }
 
         config.selected_extensions = [
-            {"name": "test_vis", "ext": "PRIMARY"},
-            {"name": "test_nirh", "ext": "PRIMARY"},
-            {"name": "test_niry", "ext": "PRIMARY"},
+            {"name": "VIS", "ext": "PRIMARY"},
+            {"name": "NIR-H", "ext": "PRIMARY"},
+            {"name": "NIR-Y", "ext": "PRIMARY"},
         ]
 
         # Run orchestrator
@@ -667,9 +668,9 @@ class TestE2EZarrValidationEnhanced:
 
         # Test the channel combinations with pattern-based validation
         # Expected combinations (deterministic due to alphabetical FITS file ordering):
-        # Extension order: test_nirh, test_niry, test_vis (alphabetical by filename)
-        # ch1 = 0.0*test_nirh + 0.5*test_niry + 1.0*test_vis = horizontal_gradient + 0.5*uniform
-        # ch2 = 1.0*test_nirh + 0.5*test_niry + 0.0*test_vis = vertical_gradient + 0.5*uniform
+        # Extension order: NIR-H, NIR-Y, VIS (alphabetical by filename: EUC_NIR-H, EUC_NIR-Y, EUC_VIS)
+        # ch1 = 0.0*NIR-H + 0.5*NIR-Y + 1.0*VIS = horizontal_gradient + 0.5*uniform
+        # ch2 = 1.0*NIR-H + 0.5*NIR-Y + 0.0*VIS = vertical_gradient + 0.5*uniform
 
         # After normalization, each channel should preserve its distinctive pattern
 
@@ -708,27 +709,27 @@ class TestE2EZarrValidationEnhanced:
             # 3. At least one channel has significant vertical variation
 
             # Channels should be meaningfully different
-            assert not np.allclose(
-                cutout_ch1, cutout_ch2, rtol=0.05
-            ), f"Source {source_idx}: Channels should not be identical"
+            assert not np.allclose(cutout_ch1, cutout_ch2, rtol=0.05), (
+                f"Source {source_idx}: Channels should not be identical"
+            )
 
-            # Key validation: Channel 1 should have significant horizontal variation (from test_vis)
-            assert (
-                horizontal_diff_ch1 > 0.02
-            ), f"Source {source_idx}: Ch1 should have horizontal variation (test_vis weight=1.0), got {horizontal_diff_ch1:.4f}"
+            # Key validation: Channel 1 should have significant horizontal variation (from VIS)
+            assert horizontal_diff_ch1 > 0.02, (
+                f"Source {source_idx}: Ch1 should have horizontal variation (VIS weight=1.0), got {horizontal_diff_ch1:.4f}"
+            )
 
-            # Key validation: Channel 2 should have significant vertical variation (from test_nirh)
-            assert (
-                vertical_diff_ch2 > 0.02
-            ), f"Source {source_idx}: Ch2 should have vertical variation (test_nirh weight=1.0), got {vertical_diff_ch2:.4f}"
+            # Key validation: Channel 2 should have significant vertical variation (from NIR-H)
+            assert vertical_diff_ch2 > 0.02, (
+                f"Source {source_idx}: Ch2 should have vertical variation (NIR-H weight=1.0), got {vertical_diff_ch2:.4f}"
+            )
 
             # At least one channel should show some variation (indicating patterns are preserved)
             max_variation = max(
                 horizontal_diff_ch1, vertical_diff_ch1, horizontal_diff_ch2, vertical_diff_ch2
             )
-            assert (
-                max_variation > 0.01
-            ), f"Source {source_idx}: Expected some pattern variation, got max {max_variation:.4f}"
+            assert max_variation > 0.01, (
+                f"Source {source_idx}: Expected some pattern variation, got max {max_variation:.4f}"
+            )
 
             # The channels should have different overall statistics (proving combination worked)
             ch1_mean = np.mean(cutout_ch1)
@@ -854,15 +855,13 @@ class TestE2EZarrValidationEnhanced:
         # Verify metadata file also has all sources (if metadata exists)
         metadata_files = list(temp_output_dir.glob("**/metadata.json"))
         if metadata_files:
-            import json
-
             with open(metadata_files[0], "r") as f:
                 metadata = json.load(f)
 
             if "sources" in metadata:
-                assert (
-                    len(metadata["sources"]) == total_sources
-                ), f"Expected {total_sources} sources in metadata, got {len(metadata['sources'])}."
+                assert len(metadata["sources"]) == total_sources, (
+                    f"Expected {total_sources} sources in metadata, got {len(metadata['sources'])}."
+                )
 
                 # Verify all expected source IDs are present
                 expected_source_ids = {f"BATCH_TEST_{i:03d}" for i in range(total_sources)}
@@ -897,6 +896,6 @@ class TestE2EZarrValidationEnhanced:
 
             # Also verify there's actual variation in the data (not uniform)
             cutout_std = np.std(cutout)
-            assert (
-                cutout_std > 0.01
-            ), f"Source {i} cutout has insufficient variation (std={cutout_std:.4f})"
+            assert cutout_std > 0.01, (
+                f"Source {i} cutout has insufficient variation (std={cutout_std:.4f})"
+            )

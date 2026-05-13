@@ -21,13 +21,12 @@ Usage:
 
 import json
 import os
+import signal
 import sys
 import tempfile
-from multiprocessing import shared_memory
 from pathlib import Path
 from typing import Any, Dict, List
 
-import numpy as np
 from dotmap import DotMap
 from loguru import logger
 
@@ -47,6 +46,13 @@ from .get_default_config import load_config_toml
 from .job_tracker import JobTracker
 from .logging_config import setup_logging
 from .performance_profiler import ContextProfiler, PerformanceProfiler
+from .shm_pool import (
+    ShmPoolConfig,
+    attach_pool,
+    detach_pool,
+    mark_slots_ready,
+    write_cutouts_to_pool,
+)
 from .system_monitor import SystemMonitor
 
 
@@ -273,11 +279,16 @@ def create_cutouts_batch(
 
     except Exception as e:
         logger.error(f"Fatal error in {process_name}: {e}")
-        # Still log performance summary on error
+        # Still log performance summary on error (best-effort diagnostic; a
+        # secondary failure here must not mask the original fatal error, but
+        # we surface it via warning so it's not silently lost).
         try:
             profiler.log_performance_summary()
-        except Exception:
-            pass
+        except Exception as summary_error:
+            logger.warning(
+                f"{process_name}: failed to log performance summary after fatal error: "
+                f"{summary_error}"
+            )
         return [{"metadata": []}]
 
 
@@ -387,13 +398,7 @@ def create_cutouts_main():
         if not write_to_disk:
             _report_stage(process_id, "Streaming cutouts via shared memory", job_tracker)
             try:
-                # Use N_batch_cutout_process as chunk size (already calculated by LoadBalancer)
-                # This is passed via config and respects available memory
-                chunk_size = config.N_batch_cutout_process
-                logger.info(
-                    f"{process_id}: Using chunk size {chunk_size} for shared memory streaming"
-                )
-                stream_cutouts_via_shm(results, process_id, chunk_size=chunk_size)
+                stream_cutouts_via_shm_pool(results, process_id, config)
             except Exception as e:
                 logger.error(f"Failed to stream cutouts via shared memory: {e}")
 
@@ -434,31 +439,28 @@ def create_cutouts_main():
         sys.exit(1)
 
 
-def stream_cutouts_via_shm(
+def stream_cutouts_via_shm_pool(
     batch_results: List[Dict[str, Any]],
     process_id: str,
-    chunk_size: int,
+    config: "DotMap",
 ) -> None:
     """
-    Stream cutouts to parent orchestrator via shared memory to keep them in memory (no disk I/O).
+    Stream cutouts to parent via a pre-allocated shared memory pool.
 
-    This function enables in-memory streaming mode where cutouts are kept in memory
-    from the worker process to the orchestrator without writing to disk. This is critical
-    for streaming workflows where cutouts should remain in memory for immediate processing.
-
-    Uses multiprocessing.shared_memory for OS-independent shared memory access.
-    Writes cutouts to shared memory and sends metadata via stdout.
-    Waits for ACK from parent before proceeding to next chunk and cleaning up.
+    The pool is created by the orchestrator and this worker attaches to it.
+    Cutouts are written into pool slots, then signaled as ready via stdout.
+    The worker waits for an ACK before reusing slots for the next chunk.
 
     Args:
-        batch_results: List of batch result dictionaries with 'cutouts' and 'metadata'
-        process_id: Unique process ID for naming shared memory blocks
-        chunk_size: Number of cutouts per chunk (from config.N_batch_cutout_process or calculated)
+        batch_results: List of batch result dicts with 'cutouts' and 'metadata'
+        process_id: Unique process identifier
+        config: Config with shm_pool_name, shm_control_name, shm_pool_config
     """
+    pool_config = ShmPoolConfig.from_dict(config.shm_pool_config)
+
     # Extract all cutouts and metadata
     all_cutouts = []
     all_metadata = []
-
     for batch_result in batch_results:
         if "cutouts" in batch_result:
             all_cutouts.extend(batch_result["cutouts"])
@@ -466,106 +468,77 @@ def stream_cutouts_via_shm(
             all_metadata.extend(batch_result["metadata"])
 
     if not all_cutouts:
-        logger.warning(f"{process_id}: No cutouts to stream")
+        logger.warning(f"{process_id}: No cutouts to stream via pool")
+        sys.stdout.write(json.dumps({"type": "complete", "total_cutouts": 0}) + "\n")
+        sys.stdout.flush()
         return
 
-    logger.info(f"{process_id}: Streaming {len(all_cutouts)} cutouts in chunks of {chunk_size}")
+    logger.info(
+        f"{process_id}: Streaming {len(all_cutouts)} cutouts via SHM pool "
+        f"(slots={pool_config.slots_per_worker})"
+    )
 
-    # Use process_id (includes UUID) for unique shared memory naming
-    # This avoids PID reuse collisions
+    data_shm, control_shm = attach_pool(config.shm_pool_name, config.shm_control_name, pool_config)
 
-    # Process in chunks
-    for chunk_idx in range(0, len(all_cutouts), chunk_size):
-        chunk_cutouts = all_cutouts[chunk_idx : chunk_idx + chunk_size]
-        chunk_metadata = all_metadata[chunk_idx : chunk_idx + chunk_size]
+    try:
+        chunk_size = pool_config.slots_per_worker
 
-        # Stack cutouts into array
-        chunk_array = np.stack(chunk_cutouts)
+        for chunk_start in range(0, len(all_cutouts), chunk_size):
+            chunk_end = min(chunk_start + chunk_size, len(all_cutouts))
+            chunk_count = chunk_end - chunk_start
 
-        # Create unique name for this chunk using process_id (includes UUID)
-        # Format: cutana_processid_chunkidx to avoid PID reuse collisions
-        shm_name = f"cutana_{process_id}_{chunk_idx}".replace("-", "_")
+            write_cutouts_to_pool(data_shm, pool_config, all_cutouts[chunk_start:chunk_end])
 
-        shm = None
-        try:
-            # Create shared memory block
-            nbytes = chunk_array.nbytes
-            shm = shared_memory.SharedMemory(create=True, size=nbytes, name=shm_name)
+            mark_slots_ready(control_shm, pool_config, chunk_count)
 
-            # Create numpy array backed by shared memory
-            shm_array = np.ndarray(chunk_array.shape, dtype=chunk_array.dtype, buffer=shm.buf)
-
-            # Copy data to shared memory
-            shm_array[:] = chunk_array[:]
-
-            # Send chunk metadata to parent via stdout
-            metadata_msg = {
-                "type": "chunk",
-                "shm_name": shm_name,
-                "shape": list(chunk_array.shape),
-                "dtype": str(chunk_array.dtype),
-                "chunk_idx": chunk_idx,
-                "chunk_size": len(chunk_cutouts),
-                "nbytes": nbytes,
-                "metadata": chunk_metadata,
+            # Signal parent that slots are ready
+            msg = {
+                "type": "chunk_ready",
+                "slot_count": chunk_count,
+                "metadata": all_metadata[chunk_start:chunk_end],
             }
-
-            sys.stdout.write(json.dumps(metadata_msg) + "\n")
+            sys.stdout.write(json.dumps(msg) + "\n")
             sys.stdout.flush()
 
             logger.debug(
-                f"{process_id}: Sent chunk {chunk_idx // chunk_size + 1} "
-                f"({len(chunk_cutouts)} cutouts, {nbytes / 1024 / 1024:.1f}MB) via shm:{shm_name}"
+                f"{process_id}: Sent chunk ({chunk_count} cutouts) via pool, waiting for ACK"
             )
 
-            # Wait for ACK from parent with timeout to prevent hanging
-            ack_timeout = 60  # seconds
-            ack = None
+            # Wait for ACK from parent with timeout to prevent hanging.
+            # We use stdin/stdout pipes (not multiprocessing.Queue) because
+            # workers are subprocess.Popen for full memory isolation.
+            # signal.SIGALRM provides readline timeout on Unix; on Windows
+            # the parent's subprocess timeout handles hung workers.
+            ack_timeout = 60
             try:
-                import signal
-
-                def timeout_handler(_signum, _frame):
-                    raise TimeoutError("Timeout waiting for ACK from parent")
-
-                # Use signal alarm for timeout (Unix-like systems)
                 if hasattr(signal, "SIGALRM"):
+
+                    def timeout_handler(_signum, _frame):
+                        raise TimeoutError("Timeout waiting for ACK from parent")
+
                     old_handler = signal.signal(signal.SIGALRM, timeout_handler)
                     signal.alarm(ack_timeout)
                     try:
                         ack = sys.stdin.readline().strip()
                     finally:
-                        signal.alarm(0)  # Cancel alarm
+                        signal.alarm(0)
                         signal.signal(signal.SIGALRM, old_handler)
                 else:
-                    # Windows - no SIGALRM, just do blocking read with warning
-                    # The overall subprocess timeout will handle hung processes
                     ack = sys.stdin.readline().strip()
-
             except TimeoutError:
-                logger.error(
-                    f"{process_id}: Timeout waiting for ACK from parent after {ack_timeout}s"
-                )
-                return  # Exit streaming, parent likely crashed
+                logger.error(f"{process_id}: Timeout waiting for ACK after {ack_timeout}s")
+                return
 
             if ack != "ACK":
                 logger.error(f"{process_id}: Expected ACK, got: {ack}")
 
-        finally:
-            # Clean up shared memory chunk after parent acknowledges
-            if shm is not None:
-                try:
-                    shm.close()
-                    shm.unlink()  # Delete the shared memory block
-                    logger.debug(f"{process_id}: Cleaned up shm:{shm_name}")
-                except Exception as e:
-                    logger.error(f"{process_id}: Failed to cleanup shm:{shm_name}: {e}")
+        # Send completion
+        sys.stdout.write(json.dumps({"type": "complete", "total_cutouts": len(all_cutouts)}) + "\n")
+        sys.stdout.flush()
+        logger.info(f"{process_id}: Finished streaming {len(all_cutouts)} cutouts via SHM pool")
 
-    # Send completion message
-    completion_msg = {"type": "complete", "total_cutouts": len(all_cutouts)}
-    sys.stdout.write(json.dumps(completion_msg) + "\n")
-    sys.stdout.flush()
-
-    logger.info(f"{process_id}: Finished streaming {len(all_cutouts)} cutouts via shared memory")
+    finally:
+        detach_pool(data_shm, control_shm)
 
 
 if __name__ == "__main__":

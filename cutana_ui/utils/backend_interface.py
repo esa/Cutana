@@ -7,6 +7,7 @@
 """Interface to cutana backend module."""
 
 import asyncio
+import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -66,8 +67,6 @@ class BackendInterface:
             raise ValueError(f"Catalogue validation failed: {e}") from e
         except Exception as e:
             logger.error(f"Error during catalogue analysis: {e}")
-            import traceback
-
             logger.error(f"Full traceback: {traceback.format_exc()}")
             raise
 

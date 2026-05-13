@@ -20,7 +20,12 @@ import pytest
 from dotmap import DotMap
 
 from cutana.image_processor import apply_normalisation
-from cutana.normalisation_parameters import convert_cfg_to_fitsbolt_cfg
+from cutana.normalisation_parameters import (
+    NormalisationDefaults,
+    NormalisationRanges,
+    convert_cfg_to_fitsbolt_cfg,
+    get_default_normalisation_config,
+)
 
 
 class TestNormalisationCrop:
@@ -142,8 +147,6 @@ class TestNormalisationCrop:
 
     def test_crop_parameter_validation_ranges(self):
         """Test that crop parameter ranges are correctly defined."""
-        from cutana.normalisation_parameters import NormalisationDefaults, NormalisationRanges
-
         # Test that defaults are within ranges
         assert (
             NormalisationRanges.CROP_HEIGHT_MIN
@@ -164,8 +167,6 @@ class TestNormalisationCrop:
 
     def test_default_normalisation_config_includes_crop(self):
         """Test that default normalisation config includes crop parameters."""
-        from cutana.normalisation_parameters import get_default_normalisation_config
-
         config = get_default_normalisation_config()
 
         assert hasattr(config, "crop_enable")

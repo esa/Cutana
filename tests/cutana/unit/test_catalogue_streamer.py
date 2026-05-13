@@ -379,9 +379,9 @@ class TestIntegration:
 
             # Verify no duplicate sources across batches
             batch_ids = set(batch_df["SourceID"].tolist())
-            assert (
-                len(batch_ids.intersection(all_source_ids)) == 0
-            ), "Duplicate sources across batches!"
+            assert len(batch_ids.intersection(all_source_ids)) == 0, (
+                "Duplicate sources across batches!"
+            )
             all_source_ids.update(batch_ids)
 
         # Verify all sources were covered

@@ -19,7 +19,7 @@ from astropy.wcs import WCS
 from dotmap import DotMap
 from loguru import logger
 
-from .catalogue_preprocessor import extract_fits_sets, parse_fits_file_paths
+from .catalogue_preprocessor import extract_filter_name, extract_fits_sets, parse_fits_file_paths
 from .fits_reader import load_fits_file
 from .performance_profiler import ContextProfiler, PerformanceProfiler
 
@@ -226,22 +226,62 @@ class FITSDataset:
 
         return needed_fits_sets
 
+    def _get_selected_band_names(self) -> Optional[Set[str]]:
+        """Get the set of band names from selected_extensions config.
+
+        Returns None if all bands should be loaded (no filtering), or a set of
+        band names (e.g. {"VIS"}) when only specific bands are needed.
+        """
+        selected = self.config.selected_extensions
+        if not selected:
+            return None
+        band_names = set()
+        for ext in selected:
+            if isinstance(ext, dict) and "name" in ext:
+                band_names.add(ext["name"])
+            elif isinstance(ext, str):
+                band_names.add(ext)
+        # "PRIMARY" as a band name means "use all files" (no band filtering)
+        if not band_names or band_names == {"PRIMARY"}:
+            return None
+        return band_names
+
+    def _fits_path_matches_bands(self, fits_path: str, band_names: Set[str]) -> bool:
+        """Check if a FITS file path matches any of the requested band names."""
+        filter_name = extract_filter_name(fits_path)
+        return filter_name in band_names
+
     def _load_missing_fits_files(self, fits_sets: List[tuple]) -> None:
-        """Load FITS files that are not yet in the cache."""
+        """Load FITS files that are not yet in the cache.
+
+        When selected_extensions specifies specific bands (e.g. ["VIS"]),
+        only FITS files matching those bands are loaded, skipping unneeded ones.
+        """
+        band_names = self._get_selected_band_names()
+        skipped = 0
         files_to_load = []
         for fits_set in fits_sets:
             for fits_path in fits_set:
-                if fits_path not in self.fits_cache:
-                    files_to_load.append(fits_path)
+                if fits_path in self.fits_cache:
+                    continue
+                if band_names and not self._fits_path_matches_bands(fits_path, band_names):
+                    skipped += 1
+                    continue
+                files_to_load.append(fits_path)
 
         if not files_to_load:
             return
 
+        if skipped > 0:
+            logger.info(
+                f"Band filter active ({band_names}): loading {len(files_to_load)} files, "
+                f"skipped {skipped} files for unneeded bands"
+            )
         logger.info(f"Loading {len(files_to_load)} new FITS files into cache")
 
         # Report loading stage if tracker available
         if self.job_tracker and self.process_name:
-            from .cutout_process import _report_stage
+            from .cutout_process import _report_stage  # noqa: PLC0415, I001  # lazy: avoid circular import (cutout_process imports fits_dataset)
 
             _report_stage(
                 self.process_name, f"Loading {len(files_to_load)} FITS files", self.job_tracker
@@ -257,11 +297,11 @@ class FITSDataset:
                         and self.process_name
                         and idx % 5 == 0
                     ):
-                        from .cutout_process import _report_stage
+                        from .cutout_process import _report_stage  # noqa: PLC0415, I001  # lazy: avoid circular import (cutout_process imports fits_dataset)
 
                         _report_stage(
                             self.process_name,
-                            f"Loading FITS file {idx+1}/{len(files_to_load)}",
+                            f"Loading FITS file {idx + 1}/{len(files_to_load)}",
                             self.job_tracker,
                         )
 
@@ -280,7 +320,11 @@ class FITSDataset:
     def _get_fits_data_for_sets(
         self, fits_sets: List[tuple]
     ) -> Dict[str, Tuple[fits.HDUList, Dict[str, WCS]]]:
-        """Extract cached FITS data for specific FITS sets."""
+        """Extract cached FITS data for specific FITS sets.
+
+        Only returns files that are in the cache (files filtered out by band
+        selection during loading will not be present).
+        """
         result = {}
         for fits_set in fits_sets:
             for fits_path in fits_set:

@@ -14,23 +14,26 @@ Tests cover:
 - Workflow resumption capability
 """
 
+import subprocess
 import time
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pandas as pd
 import pytest
+from loguru import logger
 
+from cutana import get_default_config
+from cutana.job_tracker import JobTracker
 from cutana.orchestrator import Orchestrator
 
 
 class TestOrchestrator:
     """Test suite for Orchestrator class."""
 
-    @pytest.fixture
+    @pytest.fixture(scope="class")
     def mock_catalogue_data(self):
         """Create mock catalogue data for testing using real test files."""
-        from pathlib import Path
-
         test_data_dir = Path(__file__).parent.parent.parent / "test_data"
         # Find the FITS file dynamically (timestamps may change)
         fits_files = list(test_data_dir.glob("EUC_MER_BGSUB-MOSAIC-VIS_TILE102018211-*.fits"))
@@ -56,14 +59,12 @@ class TestOrchestrator:
         ]
         return pd.DataFrame(data)
 
-    @pytest.fixture
-    def config(self):
+    @pytest.fixture(scope="class")
+    def config(self, tmp_path_factory):
         """Create configuration for testing using new config system."""
-        from cutana import get_default_config
-
         config = get_default_config()
         config.source_catalogue = "/tmp/test_catalogue.csv"  # Required field
-        config.output_dir = "/tmp/cutouts"
+        config.output_dir = str(tmp_path_factory.mktemp("orchestrator_output"))
         config.output_format = "zarr"
         config.target_resolution = 256
         config.data_type = "float32"
@@ -77,35 +78,46 @@ class TestOrchestrator:
         config.max_workers = 4
         return config
 
-    @pytest.fixture
+    @pytest.fixture(scope="class")
     def orchestrator(self, config):
-        """Create Orchestrator instance for testing with proper cleanup."""
-        # Use a unique temp directory for each orchestrator to prevent conflicts
-        import tempfile
+        """Create Orchestrator instance for testing (class-scoped to reduce setup overhead)."""
+        orchestrator = Orchestrator(config)
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # Override output_dir to use isolated temp directory
-            config.output_dir = temp_dir
-            orchestrator = Orchestrator(config)
+        yield orchestrator
 
-            yield orchestrator
+        # Cleanup: Stop any active processes
+        try:
+            orchestrator.stop_processing()
+        except Exception:
+            pass  # Ignore errors during cleanup
 
-            # Cleanup: Stop any active processes
-            try:
-                orchestrator.stop_processing()
-            except Exception:
-                pass  # Ignore errors during cleanup
+        # Close all logging handlers to release file locks
+        try:
+            # Get list of current handler IDs and remove them
+            handler_ids = list(logger._core.handlers.keys())
+            for handler_id in handler_ids:
+                logger.remove(handler_id)
+        except Exception:
+            pass  # Ignore errors during logging cleanup
 
-            # Close all logging handlers to release file locks
-            try:
-                from loguru import logger
-
-                # Get list of current handler IDs and remove them
-                handler_ids = list(logger._core.handlers.keys())
-                for handler_id in handler_ids:
-                    logger.remove(handler_id)
-            except Exception:
-                pass  # Ignore errors during logging cleanup
+    @pytest.fixture(autouse=True)
+    def _reset_orchestrator_state(self, request):
+        """Reset mutable orchestrator state between tests to prevent cross-test contamination."""
+        yield
+        # Only reset if the orchestrator fixture was actually used by this test
+        orchestrator = request.node.funcargs.get("orchestrator")
+        if orchestrator is None:
+            return
+        orchestrator.active_processes = {}
+        orchestrator.job_tracker.active_processes = {}
+        # Restore get_process_details if it was replaced with a Mock
+        if not callable(getattr(orchestrator.job_tracker.get_process_details, "__func__", None)):
+            orchestrator.job_tracker.get_process_details = JobTracker.get_process_details.__get__(
+                orchestrator.job_tracker, JobTracker
+            )
+        # Clean up any source_to_batch_mapping set by tests
+        if hasattr(orchestrator, "source_to_batch_mapping"):
+            del orchestrator.source_to_batch_mapping
 
     def test_orchestrator_initialization(self, config):
         """Test Orchestrator initializes correctly with configuration."""
@@ -125,7 +137,6 @@ class TestOrchestrator:
             patch("psutil.cpu_count", return_value=8),
             patch("psutil.virtual_memory") as mock_memory,
         ):
-
             mock_memory.return_value.total = 16 * 1024**3  # 16GB
             mock_memory.return_value.available = 12 * 1024**3  # 12GB available
 
@@ -225,10 +236,6 @@ class TestOrchestrator:
 
     def test_start_processing(self, tmp_path):
         """Test main processing loop with real data."""
-        from pathlib import Path
-
-        from cutana import get_default_config
-
         # Get real test data - find dynamically (timestamps may change)
         test_data_dir = Path(__file__).parent.parent.parent / "test_data"
         fits_files = list(test_data_dir.glob("EUC_MER_BGSUB-MOSAIC-VIS_TILE102018211-*.fits"))
@@ -296,29 +303,29 @@ class TestOrchestrator:
 
     def test_progress_reporting(self, orchestrator):
         """Test progress reporting functionality."""
-        orchestrator.job_tracker = Mock()
-        orchestrator.job_tracker.get_status.return_value = {
-            "completed_sources": 45,
-            "total_sources": 100,
-            "progress_percent": 45.0,
-            "active_processes": 3,
-            "memory_usage": 2 * 1024**3,  # 2GB
-            "errors": [],
-        }
+        original_job_tracker = orchestrator.job_tracker
+        try:
+            orchestrator.job_tracker = Mock()
+            orchestrator.job_tracker.get_status.return_value = {
+                "completed_sources": 45,
+                "total_sources": 100,
+                "progress_percent": 45.0,
+                "active_processes": 3,
+                "memory_usage": 2 * 1024**3,  # 2GB
+                "errors": [],
+            }
 
-        status = orchestrator.get_progress()
+            status = orchestrator.get_progress()
 
-        assert status["completed_sources"] == 45
-        assert status["progress_percent"] == 45.0
-        assert status["active_processes"] == 3
-        assert "memory_usage" in status
+            assert status["completed_sources"] == 45
+            assert status["progress_percent"] == 45.0
+            assert status["active_processes"] == 3
+            assert "memory_usage" in status
+        finally:
+            orchestrator.job_tracker = original_job_tracker
 
     def test_source_to_zarr_mapping_parquet_creation(self, tmp_path):
         """Test that source to zarr mapping Parquet is created correctly."""
-        from pathlib import Path
-
-        from cutana import get_default_config
-
         # Get real test data - find dynamically (timestamps may change)
         test_data_dir = Path(__file__).parent.parent.parent / "test_data"
         fits_files = list(test_data_dir.glob("EUC_MER_BGSUB-MOSAIC-VIS_TILE102018211-*.fits"))
@@ -420,8 +427,6 @@ class TestOrchestrator:
 
     def test_stop_processing_with_timeout(self, orchestrator):
         """Test stopping processes that don't terminate gracefully."""
-        import subprocess
-
         mock_proc = Mock()
         mock_proc.terminate.return_value = None
         mock_proc.wait.side_effect = subprocess.TimeoutExpired(None, 5)
@@ -558,8 +563,6 @@ class TestOrchestrator:
         parquet_path = tmp_path / "source_to_zarr_mapping.parquet"
         assert parquet_path.exists()
         # Verify Parquet contents
-        import pandas as pd
-
         df = pd.read_parquet(parquet_path)
         assert len(df) == 2
         assert set(df.columns) == {"SourceID", "zarr_file", "batch_index"}

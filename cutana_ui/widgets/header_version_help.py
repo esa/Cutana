@@ -100,17 +100,19 @@ def create_header_container(
     version_text,
     container_width,
     help_button_callback,
+    config_button_callback=None,
     log_level_callback=None,
     logo_title=None,
     initial_log_level=None,
 ):
     """
-    Create a header container with ESA logo, version display, log level selector, and help button.
+    Create a header container with ESA logo, version display, log level selector, and help/config buttons.
 
     Args:
         version_text (str): The version text to display
         container_width (int): The width of the container in pixels
         help_button_callback (callable): Function to call when help button is clicked
+        config_button_callback (callable): Function to call when config button is clicked
         log_level_callback (callable, optional): Function to call when log level is changed.
             Receives the new log level string as argument.
         logo_title (str, optional): Title text for the logo. If provided, logo will be displayed.
@@ -118,13 +120,14 @@ def create_header_container(
             If None, uses DEFAULT_LOG_LEVEL.
 
     Returns:
-        tuple: (header_container, help_button, log_level_dropdown)
+        tuple: (header_container, help_button, config_button, log_level_dropdown)
     """
     # Version display (left side) - fixed width
     version_display = widgets.HTML(
         value=f'<span style="color: #aaaaaa; font-size: 12px; padding: {scale_px(5)}px;">{version_text}</span>',
         layout=widgets.Layout(
-            width=f"{scale_px(120)}px", justify_content="flex-start"  # Fixed width for version
+            width=f"{scale_px(120)}px",
+            justify_content="flex-start",  # Fixed width for version
         ),
     )
 
@@ -176,9 +179,22 @@ def create_header_container(
     )
     help_button.on_click(help_button_callback)
 
-    # Right side container with log level label, dropdown, and help button
+    config_button = widgets.Button(
+        description="Config",
+        button_style="info",
+        layout=widgets.Layout(
+            width=f"{scale_px(HELP_BUTTON_WIDTH)}px",
+            height=f"{scale_px(HELP_BUTTON_HEIGHT)}px",
+        ),
+    )
+    if config_button_callback:
+        config_button.on_click(config_button_callback)
+    else:
+        config_button.layout.display = "none"
+
+    # Right side container with log level label, dropdown, config, and help buttons
     right_container = widgets.HBox(
-        children=[log_level_label, log_level_dropdown, help_button],
+        children=[log_level_label, log_level_dropdown, config_button, help_button],
         layout=widgets.Layout(
             justify_content="flex-end",
             align_items="center",
@@ -207,7 +223,7 @@ def create_header_container(
         ),
     )
 
-    return header_container, help_button, log_level_dropdown
+    return header_container, help_button, config_button, log_level_dropdown
 
 
 class HelpPopup(widgets.VBox):

@@ -46,15 +46,16 @@ class TestChannelOrderValidation:
         assert "Channel mapping incomplete." in str(exc_info.value)
 
     def test_missing_channels_in_weights_fails(self):
-        """Test that missing channels in weights still pass validation."""
+        """Tensor extensions absent from channel_weights are rejected (#315):
+        ``combine_channels`` would zero them out positionally."""
         tensor_channel_names = ["channel_a", "channel_b", "channel_c"]
         channel_weights = {
             "channel_a": [1.0, 0.0],
             "channel_b": [0.0, 1.0],
             # Missing channel_c
         }
-        validate_channel_order_consistency(tensor_channel_names, channel_weights)
-        assert True, "Issue with missing channels in weights"  # No exception means passed
+        with pytest.raises(AssertionError, match="silently drop tensor extensions"):
+            validate_channel_order_consistency(tensor_channel_names, channel_weights)
 
     def test_extra_channels_in_weights_fails(self):
         """Test that extra channels in weights fail validation."""
@@ -124,6 +125,21 @@ class TestChannelOrderValidation:
 
         error_message = str(exc_info.value)
         assert "Channel order mismatch!" in error_message
+
+    def test_extra_tensor_channels_silent_drop_fails(self):
+        """Regression test for issue #315 (scenario B).
+
+        ``combine_channels`` applies ``channel_weights`` positionally to tensor
+        extensions. With one weight and a multi-channel tensor whose first
+        extension is unrelated to the weight key, the weight binds to extension
+        0 and the named extension's data is dropped — silent corruption. The
+        validator must reject this configuration.
+        """
+        tensor_channel_names = ["tile_VIS", "tile_NIR-H"]
+        channel_weights = {"NIR-H": [1.0]}
+
+        with pytest.raises(AssertionError):
+            validate_channel_order_consistency(tensor_channel_names, channel_weights)
 
     def test_corrected_alphabetical_order_passes(self):
         """Test that corrected alphabetical order passes."""

@@ -13,32 +13,24 @@ jobs:
     name: Vulture (100% confidence - blocking)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.11"
-      - name: Install vulture
-        run: pip install vulture>=2.10
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
       - name: Run vulture (100% confidence)
         run: |
           echo "Running vulture dead code detection (100% confidence - blocking)..."
-          vulture cutana/ cutana_ui/ .vulture_whitelist.py --min-confidence 100
+          uvx vulture cutana/ cutana_ui/ .vulture_whitelist.py --min-confidence 100
 
   vulture-warnings:
     name: Vulture (60% confidence - not required)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.11"
-      - name: Install vulture
-        run: pip install vulture>=2.10
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
       - name: Run vulture (60% confidence)
         run: |
           echo "Running vulture dead code detection (60% confidence)..."
           echo "This check fails if potential dead code is found, but is not required to pass."
           echo ""
-          vulture cutana/ cutana_ui/ .vulture_whitelist.py --min-confidence 60
+          uvx vulture cutana/ cutana_ui/ .vulture_whitelist.py --min-confidence 60

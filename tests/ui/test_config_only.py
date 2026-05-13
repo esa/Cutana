@@ -9,6 +9,8 @@
 import tempfile
 from pathlib import Path
 
+from dotmap import DotMap
+
 # Test backend configuration functions which don't depend on ipywidgets
 from cutana.get_default_config import get_default_config, save_config_with_timestamp
 
@@ -21,8 +23,6 @@ class TestConfigBackendStandalone:
         config = get_default_config()
 
         # Check that it returns a DotMap
-        from dotmap import DotMap
-
         assert isinstance(config, DotMap)
 
         # Check that it has required attributes
