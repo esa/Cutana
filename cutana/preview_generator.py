@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+import pandas as pd
 from dotmap import DotMap
 from loguru import logger
 
@@ -24,9 +25,7 @@ from .catalogue_preprocessor import (
     load_catalogue,
     parse_fits_file_paths,
 )
-from .cutout_process_utils import (
-    _process_sources_batch_vectorized_with_fits_set,
-)
+from .direct_cutout import create_cutouts_direct
 from .fits_dataset import load_fits_sets, prepare_fits_sets_and_sources
 
 
@@ -175,17 +174,23 @@ async def load_sources_for_previews(
 
     fits_set_counts = {}
     parse_errors = 0
+    first_parse_error: Optional[Exception] = None
     for _, row in catalogue_df.iterrows():
         try:
             fits_paths = parse_fits_file_paths(row["fits_file_paths"])
             fits_set = tuple(fits_paths)
             fits_set_counts[fits_set] = fits_set_counts.get(fits_set, 0) + 1
-        except Exception:
+        except Exception as e:
             parse_errors += 1
+            if first_parse_error is None:
+                first_parse_error = e
             continue
 
     if parse_errors > 0:
-        logger.warning(f"Failed to parse FITS paths for {parse_errors} sources")
+        logger.warning(
+            f"Failed to parse FITS paths for {parse_errors} sources; "
+            f"first error: {first_parse_error!r}"
+        )
 
     logger.info(f"Found {len(fits_set_counts)} unique FITS file sets")
 
@@ -198,6 +203,7 @@ async def load_sources_for_previews(
     matching_sources = []
     process_errors = 0
 
+    first_process_error: Optional[Exception] = None
     for _, row in catalogue_df.iterrows():
         try:
             fits_paths = parse_fits_file_paths(row["fits_file_paths"])
@@ -214,12 +220,16 @@ async def load_sources_for_previews(
                 }
                 matching_sources.append(source_data)
 
-        except Exception:
+        except Exception as e:
             process_errors += 1
+            if first_process_error is None:
+                first_process_error = e
             continue
 
     if process_errors > 0:
-        logger.warning(f"Failed to process {process_errors} sources")
+        logger.warning(
+            f"Failed to process {process_errors} sources; first error: {first_process_error!r}"
+        )
 
     logger.info(f"Found {len(matching_sources)} sources using selected FITS file sets")
 
@@ -379,8 +389,6 @@ async def generate_previews(
     if progress_callback:
         progress_callback(f"Processing {len(preview_sources)} preview cutouts [2/2]...")
 
-    # Group selected sources by FITS sets using the refactored function
-    fits_set_to_sources = prepare_fits_sets_and_sources(preview_sources)
     selected_extensions = _get_selected_extensions(config)
 
     # Use provided config directly - override only size for preview
@@ -388,7 +396,7 @@ async def generate_previews(
     preview_config.process_id = "cutana_preview"
     preview_config.target_resolution = size
     preview_config.fits_extensions = selected_extensions
-    preview_config.log_level = "WARNING"  # Enable debug logging for preview
+    preview_config.log_level = "WARNING"
     preview_config.max_workers = 1  # Single worker for preview
 
     # For Previews never use none normalisation, instead use linear
@@ -416,35 +424,11 @@ async def generate_previews(
             f"Preview: Updated to normalisation_method={preview_config.normalisation_method}, flux_conserved_resizing={preview_config.flux_conserved_resizing}"
         )
 
-    # Process cutouts using cached FITS data and the refactored processing function
-    all_results = []
+    # Convert preview sources to DataFrame for create_cutouts_direct
+    preview_df = pd.DataFrame(preview_sources)
 
-    for fits_set, sources_for_set in fits_set_to_sources.items():
-        try:
-            # Get cached FITS data for this set
-            loaded_fits_data = {}
-            for fits_path in fits_set:
-                if fits_path in cached_fits_data:
-                    loaded_fits_data[fits_path] = cached_fits_data[fits_path]
-                else:
-                    logger.warning(f"FITS file {fits_path} not found in cache")
-
-            if not loaded_fits_data:
-                logger.error(f"No cached FITS data available for set: {fits_set}")
-                continue
-
-            # Use the refactored processing function with cached FITS data
-            batch_results = _process_sources_batch_vectorized_with_fits_set(
-                sources_for_set, loaded_fits_data, preview_config, profiler=None
-            )
-            all_results.extend(batch_results)
-
-        except Exception as e:
-            logger.error(f"Error processing FITS set {fits_set}: {e}")
-            continue
-
-    if not all_results:
-        raise RuntimeError("No valid cutouts were generated from cache")
+    # Use create_cutouts_direct for fast in-process processing
+    all_results = create_cutouts_direct(preview_df, preview_config)
 
     logger.debug(f"Processing {len(all_results)} batch results for cutout extraction")
 

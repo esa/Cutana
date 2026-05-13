@@ -6,6 +6,8 @@
 #   the terms contained in the file 'LICENCE.txt'.
 """Root conftest.py for Cutana project."""
 
+import os
+
 import pytest
 
 
@@ -22,8 +24,6 @@ def browser_context_args(browser_context_args):
 @pytest.fixture(scope="session")
 def browser_type_launch_args(browser_type_launch_args, pytestconfig):
     """Configure browser launch arguments."""
-    import os
-
     # Check if --headed was passed
     headed = pytestconfig.getoption("--headed", False)
     if headed:

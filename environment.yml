@@ -4,39 +4,45 @@
 #   is part of this source code package. No part of the package, including
 #   this file, may be copied, modified, propagated, or distributed except according to
 #   the terms contained in the file 'LICENCE.txt'.
+#
+# NOTE: This file is kept as a compatibility shim for the Euclid Datalab, which
+# provisions environments via conda/mamba. The authoritative dependency list is
+# `pyproject.toml`; this file mirrors those pins. Prefer `uv sync --all-extras`
+# for local development. To be removed once Euclid Datalab adopts uv/pyproject.
 name: cutana
 channels:
   - conda-forge
 dependencies:
-  - astropy                  # FITS + WCS
-  - black                    # Code formatting
-  - dotmap                   # Dot-accessible dictionaries
-  - flake8                   # Linting
-  - vulture                  # Dead code detection
-  - fsspec                   # Filesystem abstraction for partial FITS loading
-  - ipykernel>=6.29,<7      # Jupyter kernel (pinned <7, see issue #265)
-  - ipywidgets               # Jupyter widgets
-  - loguru                   # Structured logging
-  - numpy                    # Array operations
-  - matplotlib               # For preview rendering
-  - scikit-image             # Image transformations and utilities
-  - pandas                   # DataFrame operations
+  - python=3.11
+  - astropy>=5.0             # FITS + WCS
+  - dotmap>=1.3              # Dot-accessible dictionaries
+  - fsspec>=2023.1.0         # Filesystem abstraction for partial FITS loading
+  - ipykernel>=6.29,<7       # Jupyter kernel (pinned <7, see issue #265)
+  - ipywidgets>=8.0          # Jupyter widgets
+  - loguru>=0.6              # Structured logging
+  - matplotlib>=3.5          # Preview rendering
+  - numpy>=1.20              # Array operations
+  - pandas>=1.3              # DataFrame operations
   - pip                      # Package installer
   - portalocker>=2.0         # Cross-platform file locking
-  - psutil                   # System resource monitoring
-  - pytest                   # Testing
-  - pytest-cov               # Coverage testing
-  - python=3.11
-  - toml                     # TOML configuration file support
-  - tqdm                     # nice progress bar
+  - psutil>=5.8              # System resource monitoring
+  - pyarrow>=14.0.0          # Parquet I/O
+  - pytest>=7.0              # Testing
+  - pytest-cov>=4.0          # Coverage testing
+  - ruff>=0.4                # Linting + formatting (replaces flake8 + black)
+  - scikit-image>=0.21       # Image transformations and utilities
+  - toml>=0.10               # TOML configuration file support
+  - tqdm>=4.60               # Progress bars
   - voila                    # Notebook to web app conversion
+  - vulture>=2.10            # Dead code detection
   - pip:
       - drizzle>=2.0.1         # Image resampling with drizzle algorithm
-      - fitsbolt>=0.1.6        # FITS file loading and normalisation
+      - fitsbolt==0.2.0        # FITS file loading and normalisation
       - images-to-zarr>=0.3.5  # Image to Zarr conversion
-      - ipyfilechooser         # File/folder selection widget
-      - memory-profiler        # Memory usage profiling
+      - ipyfilechooser>=0.6    # File/folder selection widget
+      - memory-profiler>=0.60  # Memory usage profiling
       - playwright>=1.40       # Browser automation for E2E testing
-      - pytest-mock            # Mocking for tests
-      - pytest-asyncio         # Async testing support
-      - pytest-playwright>=0.4 # Playwright integration with pytest
+      - pytest-mock>=3.0       # Mocking for tests
+      - pytest-asyncio>=0.21   # Async testing support
+      - pytest-timeout>=2.0    # Per-test timeouts
+      - pytest-xdist>=3.0      # Parallel test execution

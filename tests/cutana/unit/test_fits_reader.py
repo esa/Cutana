@@ -66,44 +66,30 @@ class TestFitsReader:
         """Test that load_fits_file works correctly."""
         fits_extensions = ["PRIMARY", "VIS"]
 
-        # This test may fail if fitsbolt doesn't work with our test files
-        # In that case, it should gracefully fall back to astropy
-        try:
-            hdul, wcs_dict = load_fits_file(mock_fits_file, fits_extensions)
+        hdul, wcs_dict = load_fits_file(mock_fits_file, fits_extensions)
 
-            assert hdul is not None
-            assert isinstance(wcs_dict, dict)
-            assert "PRIMARY" in wcs_dict
-            assert isinstance(wcs_dict["PRIMARY"], WCS)
+        assert hdul is not None
+        assert isinstance(wcs_dict, dict)
+        assert "PRIMARY" in wcs_dict
+        assert isinstance(wcs_dict["PRIMARY"], WCS)
 
-            if "VIS" in wcs_dict:
-                assert isinstance(wcs_dict["VIS"], WCS)
+        if "VIS" in wcs_dict:
+            assert isinstance(wcs_dict["VIS"], WCS)
 
-            hdul.close()
-
-        except Exception as e:
-            # This is acceptable if fitsbolt has compatibility issues
-            # The function should fall back to astropy
-            assert "fitsbolt failed" in str(e) or "Invalid FITS file" in str(e)
-            pytest.skip(f"fitsbolt compatibility issue: {e}")
+        hdul.close()
 
     def test_load_fits_file_primary_only(self, mock_fits_file):
         """Test loading only PRIMARY extension."""
         fits_extensions = ["PRIMARY"]
 
-        try:
-            hdul, wcs_dict = load_fits_file(mock_fits_file, fits_extensions)
+        hdul, wcs_dict = load_fits_file(mock_fits_file, fits_extensions)
 
-            assert hdul is not None
-            assert isinstance(wcs_dict, dict)
-            assert "PRIMARY" in wcs_dict
-            assert isinstance(wcs_dict["PRIMARY"], WCS)
+        assert hdul is not None
+        assert isinstance(wcs_dict, dict)
+        assert "PRIMARY" in wcs_dict
+        assert isinstance(wcs_dict["PRIMARY"], WCS)
 
-            hdul.close()
-
-        except Exception as e:
-            # Acceptable if fitsbolt has issues
-            pytest.skip(f"fitsbolt compatibility issue: {e}")
+        hdul.close()
 
     def test_load_fits_file_missing_file(self):
         """Test error handling when FITS file is missing."""

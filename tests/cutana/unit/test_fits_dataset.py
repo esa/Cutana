@@ -284,8 +284,8 @@ class TestFITSDataset:
                 wcs_mock = {"PRIMARY": Mock(spec=WCS)}
                 return (hdul_mock, wcs_mock)
 
-            mock_load_fits.side_effect = (
-                lambda path, exts, n_sources=0, is_preview=False: create_mock_fits(path)
+            mock_load_fits.side_effect = lambda path, exts, n_sources=0, is_preview=False: (
+                create_mock_fits(path)
             )
 
             dataset = FITSDataset(mock_config)

@@ -43,31 +43,30 @@ def get_default_config():
     # === Input/Output Configuration ===
     cfg.source_catalogue = None  # Path to source catalogue CSV file (required)
 
-    # Set default output directory with timestamp (same logic as UI)
-
-    try:
-        system_monitor = SystemMonitor()
-        if system_monitor._is_datalabs_environment():
-            # Use datalabs-specific workspace directory with timestamp
-            cfg.output_dir = f"/media/home/my_workspace/example_notebook_outputs/cutana_output/{cfg.session_timestamp}"
-        else:
-            # Default to cutana_output in current working directory
-            cfg.output_dir = str(Path.cwd() / "cutana_output")
-    except Exception:
-        # Fallback if system detection fails
-        cfg.output_dir = "cutana_output"
+    # Set default output directory with timestamp (same logic as UI).
+    # Fail hard: if environment detection fails we must not silently substitute
+    # a hardcoded placeholder path — let the caller see the real failure.
+    system_monitor = SystemMonitor()
+    if system_monitor._is_datalabs_environment():
+        # Use datalabs-specific workspace directory with timestamp
+        cfg.output_dir = f"/media/home/my_workspace/example_notebook_outputs/cutana_output/{cfg.session_timestamp}"
+    else:
+        # Default to cutana_output in current working directory
+        cfg.output_dir = str(Path.cwd() / "cutana_output")
 
     cfg.output_format = "zarr"  # Output format: "zarr" or "fits"
     cfg.data_type = "float32"  # Output data type: "float32", "float64", "int32", etc.
     cfg.write_to_disk = True  # Write outputs to disk (False for in-memory streaming mode)
 
+    # === Preprocessing Configuration ===
+    cfg.skip_catalogue_validation = False
+
     # === Processing Configuration ===
-    # Default max_workers to available CPU count (will be capped to N-1 by LoadBalancer)
-    try:
-        _monitor = SystemMonitor()
-        cfg.max_workers = _monitor.get_cpu_count()
-    except Exception:
-        cfg.max_workers = 16  # Fallback if CPU detection fails
+    # Default max_workers to available CPU count (will be capped to N-1 by LoadBalancer).
+    # Fail hard: if CPU detection fails we must not silently substitute a hardcoded
+    # worker count — let the caller see the real failure.
+    _monitor = SystemMonitor()
+    cfg.max_workers = _monitor.get_cpu_count()
     cfg.N_batch_cutout_process = 1000  # Batch size within each process
     cfg.max_workflow_time_seconds = 1354571  # Maximum total workflow time (default ~2 weeks)
     cfg.process_threads = (

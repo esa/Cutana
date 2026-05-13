@@ -336,7 +336,7 @@ def process_catalogue_astropy(
     logger.info(f"  Successful: {len(cutouts)}, Errors: {len(errors)}")
     logger.info(f"  Timing breakdown:")
     for step, step_time in timing.items():
-        logger.info(f"    {step}: {step_time:.2f}s ({step_time/total_time*100:.1f}%)")
+        logger.info(f"    {step}: {step_time:.2f}s ({step_time / total_time * 100:.1f}%)")
 
     return results
 

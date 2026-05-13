@@ -5,9 +5,9 @@
 #   this file, may be copied, modified, propagated, or distributed except according to
 #   the terms contained in the file 'LICENCE.txt'.
 """
-End-to-end tests for StreamingOrchestrator with async batch preparation.
+End-to-end tests for StreamingOrchestrator with pool-based parallel worker support.
 
-Tests both synchronous and asynchronous streaming modes, including edge cases.
+Tests core streaming behaviour, edge cases, multi-worker speedup, and resource cleanup.
 """
 
 import tempfile
@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from cutana import StreamingOrchestrator, get_default_config
@@ -25,11 +26,12 @@ def streaming_config(tmp_path):
     """Create a test configuration for streaming mode."""
     config = get_default_config()
     config.output_format = "zarr"
-    config.target_resolution = 128
+    config.target_resolution = 32
     config.selected_extensions = ["VIS"]
     config.channel_weights = {"VIS": [1.0]}
     config.console_log_level = "INFO"
     config.skip_memory_calibration_wait = True
+    config.max_workers = 1
     config.max_workflow_time_seconds = 600
 
     # Set dummy source_catalogue (will be overwritten in tests)
@@ -40,22 +42,31 @@ def streaming_config(tmp_path):
     return config
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def test_data_dir():
     """Get path to test data directory with real FITS files."""
     return Path(__file__).resolve().parent.parent.parent / "test_data"
 
 
-@pytest.fixture
-def test_small_catalogue(test_data_dir):
-    """Get path to small real test catalogue."""
-    catalogue_path = test_data_dir / "euclid_cutana_catalogue_small.csv"
-    if not catalogue_path.exists():
+@pytest.fixture(scope="session")
+def test_small_catalogue(test_data_dir, tmp_path_factory):
+    """Create a tiny 3-source catalogue for fast streaming tests.
+
+    Uses only 3 sources (1 batch at batch_size=3) to minimize subprocess
+    spawns. The full 25-source catalogue is tested via other e2e tests.
+    """
+    full_catalogue = test_data_dir / "euclid_cutana_catalogue_small.csv"
+    if not full_catalogue.exists():
         pytest.skip("Test catalogue not available - run generate_test_data.py")
-    return catalogue_path
+
+    df = pd.read_csv(full_catalogue)
+    tiny_df = df.head(3)
+    tiny_path = tmp_path_factory.mktemp("catalogues") / "tiny_catalogue.csv"
+    tiny_df.to_csv(tiny_path, index=False)
+    return tiny_path
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def test_large_catalogue(test_data_dir):
     """Get path to large real test catalogue."""
     catalogue_path = test_data_dir / "euclid_cutana_catalogue_large.csv"
@@ -64,11 +75,11 @@ def test_large_catalogue(test_data_dir):
     return catalogue_path
 
 
-class TestStreamingOrchestratorSync:
-    """Tests for synchronous streaming mode."""
+class TestStreamingOrchestratorBasic:
+    """Core streaming behaviour tests."""
 
-    def test_sync_streaming_in_memory(self, streaming_config, test_small_catalogue):
-        """Test synchronous streaming with in-memory cutouts."""
+    def test_streaming_in_memory(self, streaming_config, test_small_catalogue):
+        """Test in-memory streaming via SHM pool."""
         with tempfile.TemporaryDirectory() as output_dir:
             streaming_config.output_dir = output_dir
             streaming_config.source_catalogue = str(test_small_catalogue)
@@ -76,11 +87,9 @@ class TestStreamingOrchestratorSync:
             orchestrator = StreamingOrchestrator(streaming_config)
 
             try:
-                # Initialize in sync mode (default)
                 orchestrator.init_streaming(
-                    batch_size=5,
+                    batch_size=3,
                     write_to_disk=False,
-                    synchronised_loading=True,
                 )
 
                 num_batches = orchestrator.get_batch_count()
@@ -91,23 +100,24 @@ class TestStreamingOrchestratorSync:
                     result = orchestrator.next_batch()
                     results.append(result)
 
-                    # Verify result structure
                     assert result["batch_number"] == i + 1
                     assert "cutouts" in result
-                    assert isinstance(result["cutouts"], np.ndarray)
-                    assert result["cutouts"].ndim == 4  # (N, H, W, C)
+                    assert isinstance(result["cutouts"], list)
+                    if result["cutouts"]:
+                        assert isinstance(result["cutouts"][0], np.ndarray)
+                        assert result["cutouts"][0].ndim == 3  # (H, W, C)
                     assert "metadata" in result
                     assert len(result["cutouts"]) == len(result["metadata"])
 
-                # Verify all sources processed
                 total_cutouts = sum(len(r["cutouts"]) for r in results)
                 assert total_cutouts > 0
 
             finally:
                 orchestrator.cleanup()
 
-    def test_sync_streaming_to_disk(self, streaming_config, test_small_catalogue):
-        """Test synchronous streaming with disk output."""
+    @pytest.mark.slow
+    def test_streaming_to_disk(self, streaming_config, test_small_catalogue):
+        """Test streaming with disk output."""
         # Note: Disk mode zarr writing has a known issue - zarr files may not be created
         # in streaming mode. This test verifies the API behavior even if files aren't written.
         with tempfile.TemporaryDirectory() as output_dir:
@@ -118,9 +128,8 @@ class TestStreamingOrchestratorSync:
 
             try:
                 orchestrator.init_streaming(
-                    batch_size=5,
+                    batch_size=3,
                     write_to_disk=True,
-                    synchronised_loading=True,
                 )
 
                 num_batches = orchestrator.get_batch_count()
@@ -131,106 +140,54 @@ class TestStreamingOrchestratorSync:
 
                     assert result["batch_number"] == i + 1
                     assert "zarr_path" in result
-                    # Note: zarr file may not exist due to known streaming disk mode issue
-                    # assert Path(result["zarr_path"]).exists()
                     assert "cutouts" not in result
 
             finally:
                 orchestrator.cleanup()
 
-
-class TestStreamingOrchestratorAsync:
-    """Tests for asynchronous streaming mode."""
-
-    def test_async_streaming_in_memory(self, streaming_config, test_small_catalogue):
-        """Test asynchronous streaming with in-memory cutouts."""
-        with tempfile.TemporaryDirectory() as output_dir:
-            streaming_config.output_dir = output_dir
-            streaming_config.source_catalogue = str(test_small_catalogue)
-
-            orchestrator = StreamingOrchestrator(streaming_config)
-
-            try:
-                # Initialize in async mode
-                orchestrator.init_streaming(
-                    batch_size=5,
-                    write_to_disk=False,
-                    synchronised_loading=False,  # Async mode!
-                )
-
-                num_batches = orchestrator.get_batch_count()
-                assert num_batches > 0
-
-                results = []
-                for i in range(num_batches):
-                    result = orchestrator.next_batch()
-                    results.append(result)
-
-                    # Verify result structure
-                    assert result["batch_number"] == i + 1
-                    assert "cutouts" in result
-                    assert isinstance(result["cutouts"], np.ndarray)
-
-                # Verify all sources processed
-                total_cutouts = sum(len(r["cutouts"]) for r in results)
-                assert total_cutouts > 0
-
-            finally:
-                orchestrator.cleanup()
-
-    def test_async_prefetch_provides_speedup(self, streaming_config, test_large_catalogue):
-        """Test that async mode provides speedup when there's processing delay."""
+    @pytest.mark.slow
+    def test_multi_worker_provides_speedup(self, streaming_config, test_large_catalogue):
+        """Test that multiple workers provide speedup over a single worker."""
         with tempfile.TemporaryDirectory() as output_dir:
             streaming_config.output_dir = output_dir
             streaming_config.source_catalogue = str(test_large_catalogue)
             streaming_config.console_log_level = "WARNING"
 
-            # Run sync mode
-            orchestrator_sync = StreamingOrchestrator(streaming_config)
+            num_batches = 3
+
+            # Single worker
+            streaming_config.max_workers = 1
+            orchestrator_1w = StreamingOrchestrator(streaming_config)
             try:
-                orchestrator_sync.init_streaming(
-                    batch_size=50,
-                    write_to_disk=False,
-                    synchronised_loading=True,
-                )
-
-                num_batches = min(3, orchestrator_sync.get_batch_count())
-                sync_start = time.time()
-
-                for i in range(num_batches):
-                    result = orchestrator_sync.next_batch()
-                    time.sleep(0.5)  # Simulate processing
+                orchestrator_1w.init_streaming(batch_size=50, write_to_disk=False)
+                n = min(num_batches, orchestrator_1w.get_batch_count())
+                start = time.time()
+                for _ in range(n):
+                    result = orchestrator_1w.next_batch()
+                    time.sleep(0.5)  # Simulate downstream processing
                     del result
-
-                sync_time = time.time() - sync_start
+                time_1w = time.time() - start
             finally:
-                orchestrator_sync.cleanup()
+                orchestrator_1w.cleanup()
 
-            # Run async mode
-            orchestrator_async = StreamingOrchestrator(streaming_config)
+            # Four workers
+            streaming_config.max_workers = 4
+            orchestrator_4w = StreamingOrchestrator(streaming_config)
             try:
-                orchestrator_async.init_streaming(
-                    batch_size=50,
-                    write_to_disk=False,
-                    synchronised_loading=False,
-                )
-
-                async_start = time.time()
-
-                for i in range(num_batches):
-                    result = orchestrator_async.next_batch()
-                    time.sleep(0.5)  # Simulate processing
+                orchestrator_4w.init_streaming(batch_size=50, write_to_disk=False)
+                start = time.time()
+                for _ in range(n):
+                    result = orchestrator_4w.next_batch()
+                    time.sleep(0.5)  # Simulate downstream processing
                     del result
-
-                async_time = time.time() - async_start
+                time_4w = time.time() - start
             finally:
-                orchestrator_async.cleanup()
+                orchestrator_4w.cleanup()
 
-            # Async should be faster (or at least not slower) due to prefetching
-            # Allow some tolerance for timing variations
-            assert async_time <= sync_time * 1.1, (
-                f"Async mode ({async_time:.2f}s) should not be significantly slower "
-                f"than sync mode ({sync_time:.2f}s)"
+            # 4 workers should be faster due to prefetching overlap with processing delay
+            assert time_4w <= time_1w * 1.1, (
+                f"4-worker mode ({time_4w:.2f}s) should not be significantly slower "
+                f"than 1-worker mode ({time_1w:.2f}s)"
             )
 
 
@@ -246,18 +203,14 @@ class TestStreamingOrchestratorEdgeCases:
             orchestrator = StreamingOrchestrator(streaming_config)
 
             try:
-                # Use very large batch size
                 orchestrator.init_streaming(
                     batch_size=100000,  # Much larger than test catalogue
                     write_to_disk=False,
-                    synchronised_loading=True,
                 )
 
-                # Should still work, just with fewer batches
                 num_batches = orchestrator.get_batch_count()
                 assert num_batches >= 1
 
-                # Process all batches
                 for i in range(num_batches):
                     result = orchestrator.next_batch()
                     assert "cutouts" in result
@@ -285,78 +238,17 @@ class TestStreamingOrchestratorEdgeCases:
 
             try:
                 orchestrator.init_streaming(
-                    batch_size=5,
+                    batch_size=3,
                     write_to_disk=False,
-                    synchronised_loading=True,
                 )
 
                 num_batches = orchestrator.get_batch_count()
 
-                # Process all batches
                 for _ in range(num_batches):
                     orchestrator.next_batch()
 
-                # Try to get one more
                 with pytest.raises(RuntimeError, match="No more batches"):
                     orchestrator.next_batch()
-
-            finally:
-                orchestrator.cleanup()
-
-    def test_random_access_with_get_batch(self, streaming_config, test_small_catalogue):
-        """Test random access using get_batch()."""
-        with tempfile.TemporaryDirectory() as output_dir:
-            streaming_config.output_dir = output_dir
-            streaming_config.source_catalogue = str(test_small_catalogue)
-
-            orchestrator = StreamingOrchestrator(streaming_config)
-
-            try:
-                orchestrator.init_streaming(
-                    batch_size=3,
-                    write_to_disk=False,
-                    synchronised_loading=True,
-                )
-
-                num_batches = orchestrator.get_batch_count()
-                if num_batches < 2:
-                    pytest.skip("Need at least 2 batches for random access test")
-
-                # Access last batch first
-                last_result = orchestrator.get_batch(num_batches - 1)
-                assert last_result["batch_number"] == num_batches
-                assert "cutouts" in last_result
-
-                # Access first batch
-                first_result = orchestrator.get_batch(0)
-                assert first_result["batch_number"] == 1
-                assert "cutouts" in first_result
-
-            finally:
-                orchestrator.cleanup()
-
-    def test_get_batch_out_of_range(self, streaming_config, test_small_catalogue):
-        """Test error when accessing batch out of range."""
-        with tempfile.TemporaryDirectory() as output_dir:
-            streaming_config.output_dir = output_dir
-            streaming_config.source_catalogue = str(test_small_catalogue)
-
-            orchestrator = StreamingOrchestrator(streaming_config)
-
-            try:
-                orchestrator.init_streaming(
-                    batch_size=5,
-                    write_to_disk=False,
-                    synchronised_loading=True,
-                )
-
-                num_batches = orchestrator.get_batch_count()
-
-                with pytest.raises(IndexError):
-                    orchestrator.get_batch(num_batches + 10)
-
-                with pytest.raises(IndexError):
-                    orchestrator.get_batch(-1)
 
             finally:
                 orchestrator.cleanup()
@@ -374,11 +266,9 @@ class TestStreamingOrchestratorCleanup:
             orchestrator = StreamingOrchestrator(streaming_config)
 
             try:
-                # Initialize async mode (starts preparing first batch)
                 orchestrator.init_streaming(
-                    batch_size=5,
+                    batch_size=3,
                     write_to_disk=False,
-                    synchronised_loading=False,
                 )
 
                 # Don't call next_batch, just cleanup

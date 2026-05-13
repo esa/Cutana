@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from cutana.get_default_config import get_default_config
 from cutana.loadbalancer import LoadBalancer
 
 
@@ -62,8 +63,6 @@ class TestLoadBalancerMemoryMonitoring:
 
     def test_config_update_with_custom_settings(self):
         """Test configuration update with custom LoadBalancer settings."""
-        from cutana.get_default_config import get_default_config
-
         config = get_default_config()
         config.loadbalancer.memory_safety_margin = 0.15
         config.loadbalancer.memory_poll_interval = 5

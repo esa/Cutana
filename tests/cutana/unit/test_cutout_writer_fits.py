@@ -25,6 +25,7 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from dotmap import DotMap
 
+from cutana import cutout_writer_fits
 from cutana.cutout_writer_fits import (
     create_wcs_header,
     ensure_output_directory,
@@ -82,6 +83,7 @@ class TestCutoutWriterFitsFunctions:
                 "channels": ["VIS", "NIR-Y", "NIR-H"],
                 "processing_timestamp": 1642678800.0,
                 "original_tile": "euclid_tile_001.fits",
+                "tile": "euclid_tile_001.fits",
             },
         }
 
@@ -181,6 +183,7 @@ class TestCutoutWriterFitsFunctions:
                     "source_id": f"BatchSource_{i:03d}",
                     "ra": 150.0 + i * 0.01,
                     "dec": 2.0 + i * 0.01,
+                    "tile": "euclid_tile_001.fits",
                 }
             )
 
@@ -214,6 +217,7 @@ class TestCutoutWriterFitsFunctions:
                 "source_id": "ABC123_source",
                 "ra": 150.0,
                 "dec": 2.0,
+                "tile": "euclid_tile_001.fits",
             }
         ]
 
@@ -309,8 +313,6 @@ class TestCutoutWriterFitsFunctions:
 
     def test_ensure_output_directory_error_handling(self):
         """Test ensure_output_directory with various error conditions."""
-        from cutana.cutout_writer_fits import ensure_output_directory
-
         # Test with invalid permissions path
         with patch("pathlib.Path.mkdir", side_effect=PermissionError("Permission denied")):
             with pytest.raises(PermissionError):
@@ -318,8 +320,6 @@ class TestCutoutWriterFitsFunctions:
 
     def test_generate_fits_filename_comprehensive(self):
         """Test comprehensive filename generation scenarios."""
-        from cutana.cutout_writer_fits import generate_fits_filename
-
         # Test basic functionality with required parameters
         filename = generate_fits_filename(
             "test_source", "{source_id}_cutout.fits", "", {"ra": 150.0, "dec": 2.0}
@@ -364,10 +364,6 @@ class TestCutoutWriterFitsFunctions:
 
     def test_create_wcs_header_comprehensive(self):
         """Test comprehensive WCS header creation scenarios."""
-        from astropy.wcs import WCS
-
-        from cutana.cutout_writer_fits import create_wcs_header
-
         # Test with original WCS
         original_wcs = WCS(naxis=2)
         original_wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
@@ -396,8 +392,6 @@ class TestCutoutWriterFitsFunctions:
         assert header["CRPIX2"] == 64.5  # 128/2 + 0.5 (FITS 1-based center)
 
         # Test with error condition - use a new WCS object that hasn't been cached
-        from cutana import cutout_writer_fits
-
         cutout_writer_fits._wcs_header_cache.clear()  # Clear cache so the mock will be invoked
         new_wcs = WCS(naxis=2)
         new_wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
@@ -408,8 +402,6 @@ class TestCutoutWriterFitsFunctions:
 
     def test_write_fits_batch_edge_cases(self, temp_output_dir):
         """Test write_fits_batch with edge cases."""
-        from cutana.cutout_writer_fits import write_fits_batch
-
         # Test empty batch
         written_files = write_fits_batch(
             [], str(temp_output_dir), config=DotMap({"do_only_cutout_extraction": False})
@@ -436,7 +428,14 @@ class TestCutoutWriterFitsFunctions:
         valid_batch = [
             {
                 "cutouts": valid_cutouts,
-                "metadata": [{"source_id": "BatchSource_001", "ra": 150.0, "dec": 2.0}],
+                "metadata": [
+                    {
+                        "source_id": "BatchSource_001",
+                        "ra": 150.0,
+                        "dec": 2.0,
+                        "tile": "euclid_tile_001.fits",
+                    }
+                ],
             }
         ]
 
@@ -451,8 +450,6 @@ class TestCutoutWriterFitsFunctions:
 
     def test_error_handling_comprehensive(self, temp_output_dir):
         """Test comprehensive error handling scenarios."""
-        from cutana.cutout_writer_fits import write_single_fits_cutout
-
         mock_data = {
             "source_id": "ErrorTest",
             "processed_cutouts": {"TEST": np.random.random((16, 16))},

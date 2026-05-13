@@ -20,6 +20,7 @@ The parameters are organized by normalization method and include:
 from typing import Any, Dict, Tuple
 
 import fitsbolt
+import numpy as np
 from dotmap import DotMap
 from loguru import logger
 
@@ -234,12 +235,12 @@ def build_fitsbolt_params_from_external_cfg(
 
     elif method == fitsbolt.NormalisationMethod.LOG:
         fitsbolt_params["norm_log_scale_a"] = norm_cfg.log_scale_a
-        max_val = getattr(norm_cfg, "maximum_value", None)
-        min_val = getattr(norm_cfg, "minimum_value", None)
-        if max_val is not None:
-            fitsbolt_params["norm_maximum_value"] = max_val
-        if min_val is not None:
-            fitsbolt_params["norm_minimum_value"] = min_val
+        # `maximum_value` / `minimum_value` are optional fitsbolt parameters
+        # on the externally-provided config; forward them only when present.
+        if "maximum_value" in norm_cfg:
+            fitsbolt_params["norm_maximum_value"] = norm_cfg.maximum_value
+        if "minimum_value" in norm_cfg:
+            fitsbolt_params["norm_minimum_value"] = norm_cfg.minimum_value
 
     elif method == fitsbolt.NormalisationMethod.ZSCALE:
         fitsbolt_params["norm_zscale_n_samples"] = norm_cfg.zscale.n_samples
@@ -262,11 +263,19 @@ def build_fitsbolt_params_from_external_cfg(
             "Supported methods: CONVERSION_ONLY, LOG, ZSCALE, ASINH."
         )
 
-    # Handle crop for maximum value if configured
-    # Use getattr to safely check if the key exists (may be missing after TOML serialization)
-    crop_for_max = getattr(norm_cfg, "crop_for_maximum_value", None)
-    if crop_for_max is not None:
-        fitsbolt_params["norm_crop_for_maximum_value"] = crop_for_max
+    # `crop_for_maximum_value` is optional on the externally-provided fitsbolt
+    # config (may be absent after TOML serialization), so check explicitly
+    # instead of using a getattr fallback.
+    if "crop_for_maximum_value" in norm_cfg:
+        fitsbolt_params["norm_crop_for_maximum_value"] = norm_cfg.crop_for_maximum_value
+
+    # Set fitsbolt's output_dtype from cutana's external config
+    # Note:
+    #  In the validation step we make sure that this parameter
+    #  is always present (if external_cfg is not None) and equal
+    #  to cutana's data_type parameter in order to avoid
+    #  inconsistencies.
+    fitsbolt_params["output_dtype"] = external_cfg.output_dtype
 
     logger.debug(f"Built fitsbolt params from external config: method={method}")
 
@@ -345,4 +354,10 @@ def convert_cfg_to_fitsbolt_cfg(config: DotMap, num_channels: int = 1) -> Dict[s
             f"ASINH normalization: a={a}, percentile={percentile}, channels={num_channels}"
         )
     fitsbolt_params["num_workers"] = 1  # Single-threaded processing; parallelism handled externally
+
+    # Set fitsbolt's output_dtype from cutana's config
+    # See this link below for reference about possible data types supported by fitsbolt:
+    #  https://github.com/Lasloruhberg/fitsbolt/blob/04e6adc221543143a6f1209cd95b6cab86f2e9ed/fitsbolt/normalisation/normalisation.py#L61-L73
+    fitsbolt_params["output_dtype"] = np.uint8 if config.data_type == "uint8" else np.float32
+
     return fitsbolt_params

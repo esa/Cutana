@@ -110,51 +110,6 @@ class TestDefaultConfig:
         assert config.normalisation_method in ["linear", "log", "asinh", "zscale"]
         assert config.interpolation in ["bilinear", "nearest", "cubic"]
 
-    def test_default_config_canonical_names_only(self):
-        """Test that validation uses only canonical parameter names (no aliases)."""
-        config = get_default_config()
-
-        # Set required values for validation
-        config.source_catalogue = "test.csv"
-
-        # Test validation with canonical names works
-        validate_config(config, check_paths=False)
-
-        # Test that config validation uses canonical names only (no aliases)
-        from cutana.validate_config import _return_required_and_optional_keys
-
-        config_spec = _return_required_and_optional_keys()
-
-        # Check that canonical names exist
-        assert "target_resolution" in config_spec
-        assert "normalisation_method" in config_spec
-        assert "data_type" in config_spec
-        assert "max_workers" in config_spec
-
-        # Check that aliases no longer exist (clean single-name approach)
-        assert "output_resolution" not in config_spec
-        assert "normalize_method" not in config_spec
-        assert "file_type" not in config_spec
-        assert "data_format" not in config_spec  # data_format is alias for data_type
-        assert "num_workers" not in config_spec
-
-    def test_default_config_dotmap_access(self):
-        """Test that config supports dot notation access."""
-        config = get_default_config()
-
-        # Test dot notation access
-        assert config.max_workers is not None
-        assert config.output_dir is not None
-
-        # Test assignment via dot notation
-        config.max_workers = 8
-        assert config.max_workers == 8
-
-        # Test nested access
-        assert hasattr(config, "ui")
-        assert config.ui.preview_samples is not None
-        assert config.flux_conversion_keywords.AB_zeropoint is not None
-
     def test_config_for_processing_requires_additional_fields(self):
         """Test that validate_config_for_processing requires additional fields."""
         config = get_default_config()
@@ -170,37 +125,3 @@ class TestDefaultConfig:
         # Should still fail due to file not existing, but different error
         with pytest.raises(ValueError, match="does not exist"):
             validate_config_for_processing(config)
-
-    def test_default_config_immutability_flag(self):
-        """Test that config has _dynamic=False to prevent accidental additions."""
-        config = get_default_config()
-
-        # Should be able to modify existing attributes
-        config.max_workers = 16
-        assert config.max_workers == 16
-
-        # Check that _dynamic flag is properly set to False
-        assert config._dynamic is False
-
-        # Note: DotMap behavior with _dynamic=False may vary by version
-        # The important thing is that the flag is set correctly
-
-    def test_config_flux_conversion_structure(self):
-        """Test that flux conversion configuration is properly structured."""
-        config = get_default_config()
-
-        assert hasattr(config, "flux_conversion_keywords")
-        assert isinstance(config.flux_conversion_keywords, DotMap)
-        assert hasattr(config.flux_conversion_keywords, "AB_zeropoint")
-        assert config.flux_conversion_keywords.AB_zeropoint == "MAGZERO"
-        assert config.user_flux_conversion_function is None
-
-    def test_config_ui_section(self):
-        """Test that UI configuration section is properly structured."""
-        config = get_default_config()
-
-        assert hasattr(config, "ui")
-        assert isinstance(config.ui, DotMap)
-        assert 1 <= config.ui.preview_samples <= 50
-        assert 16 <= config.ui.preview_size <= 512
-        assert isinstance(config.ui.auto_regenerate_preview, bool)

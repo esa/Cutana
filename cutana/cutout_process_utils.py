@@ -16,6 +16,7 @@ This module provides common functions used by both regular and streaming cutout 
 
 import os
 import time
+import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -23,18 +24,47 @@ import numpy as np
 from dotmap import DotMap
 from loguru import logger
 
+from .catalogue_preprocessor import parse_fits_file_paths
 from .cutout_extraction import extract_cutouts_batch_vectorized
 from .fits_dataset import prepare_fits_sets_and_sources
 from .image_processor import (
     apply_normalisation,
     combine_channels,
-    convert_data_type,
     resize_batch_tensor,
 )
 from .job_tracker import JobTracker
 from .performance_profiler import ContextProfiler, PerformanceProfiler
 from .system_monitor import SystemMonitor
 from .validate_config import validate_channel_order_consistency
+
+
+def _extract_tile_basename(fits_file_paths: Any) -> str:
+    """
+    Extract the tile basename(s) from a source's fits_file_paths field.
+
+    For single-channel sources this returns the FITS filename (basename). Multi-channel
+    sources return a comma-separated string of all channel filenames so the exact
+    tile set is preserved in the per-source metadata.
+
+    Args:
+        fits_file_paths: Raw fits_file_paths value from the source record. Accepts
+            the string-encoded list (e.g. "['a.fits', 'b.fits']"), a list, or a bare
+            path string.
+
+    Returns:
+        Comma-separated basenames of the source's FITS files.
+
+    Raises:
+        ValueError: If ``fits_file_paths`` is None, malformed, or parses to an empty
+            list. Every source must have at least one valid FITS file path — a
+            missing or empty value is a broken invariant, not a recoverable state.
+    """
+    if fits_file_paths is None:
+        raise ValueError("fits_file_paths is required for tile metadata extraction")
+    paths = parse_fits_file_paths(fits_file_paths, normalize=False)
+    if not paths:
+        raise ValueError(f"fits_file_paths parsed to empty list: {fits_file_paths!r}")
+    return ",".join(os.path.basename(p) for p in paths)
 
 
 def _set_thread_limits_for_process(system_monitor=None, thread_override=None):
@@ -162,8 +192,6 @@ def _process_source_sub_batch(
             logger.warning(f"{process_name}: Memory reporting returned False - check JobTracker")
     except Exception as e:
         logger.error(f"Failed to report peak memory usage: {e}")
-        import traceback
-
         logger.error(f"Full traceback: {traceback.format_exc()}")
 
     # Process each FITS file set with all sources that use it
@@ -227,8 +255,6 @@ def _process_source_sub_batch(
                 logger.debug(f"{process_name}: Memory sampling success: {success}")
             except Exception as e:
                 logger.error(f"Failed to sample memory during processing: {e}")
-                import traceback
-
                 logger.error(f"Full traceback: {traceback.format_exc()}")
 
             # Note: FITS file memory management is now handled at process level
@@ -358,10 +384,10 @@ def _process_sources_batch_vectorized_with_fits_set(
             if ext_name not in tensor_channel_names:
                 tensor_channel_names.append(ext_name)
 
-    # Validate that channel order in data matches channel_weights order (only for multi-channel)
-    if len(channel_weights) > 1:
-        # Use dedicated validation function
-
+    # Validate channel order/coverage. Run whenever either side has >1 entry so
+    # the silent-extension-drop case (single weight, multi-channel tensor) is
+    # caught alongside the multi-channel order check. See issue #315.
+    if len(channel_weights) > 1 or len(tensor_channel_names) > 1:
         validate_channel_order_consistency(tensor_channel_names, channel_weights)
 
     # Report stage: combining channels
@@ -374,21 +400,15 @@ def _process_sources_batch_vectorized_with_fits_set(
         with ContextProfiler(profiler, "ChannelMixing"):
             cutouts_batch = combine_channels(batch_cutouts, channel_weights)
 
-        # Report stage: applying normalization
+        # Report stage: applying normalization and data type conversion
         if process_name and job_tracker:
-            _report_stage(process_name, "Applying normalization", job_tracker)
+            _report_stage(
+                process_name, "Applying normalization and data type conversion", job_tracker
+            )
 
-        # Normalization
+        # Normalization and data type conversion
         with ContextProfiler(profiler, "Normalisation"):
-            processed_cutouts_batch = apply_normalisation(cutouts_batch, config)
-
-        # Report stage: converting data types
-        if process_name and job_tracker:
-            _report_stage(process_name, "Converting data types", job_tracker)
-
-        # Data type conversion
-        with ContextProfiler(profiler, "DataTypeConversion"):
-            final_cutouts_batch = convert_data_type(processed_cutouts_batch, target_dtype)
+            final_cutouts_batch = apply_normalisation(cutouts_batch, config)
     else:
         final_cutouts_batch = combine_unresized_cutouts_to_list(all_source_cutouts)
 
@@ -406,12 +426,27 @@ def _process_sources_batch_vectorized_with_fits_set(
         # Pre-compute sample pixel scale for diameter_arcsec conversion
         first_sample_key = next(iter(pixel_scales_dict), None)
         first_pixel_scale = pixel_scales_dict.get(first_sample_key) if first_sample_key else None
+        if first_pixel_scale is None:
+            # No WCS available for this batch → pixel_scale_arcsec_per_pixel will be
+            # None for every source. One warning per batch, not per source, since
+            # batches can carry >1M sources.
+            logger.warning(
+                f"No pixel scale available for batch of {n_sources} sources — "
+                "PIXSCALE metadata will be undefined and diameter_arcsec→pixel "
+                "conversion will fall back to 0."
+            )
 
         # Vectorized extraction of source data
         source_data_list = [source_lookup.get(sid, {}) for sid in source_ids]
 
-        # Vectorized computation of original_cutout_size if needed
-        if compute_full_wcs:
+        # Vectorized computation of original_cutout_size is only needed when a
+        # downstream consumer will actually use it:
+        # - compute_full_wcs (FITS output reconstructs per-source WCS from it)
+        # - resizing (pixel_scale + offset scaling use orig_size / target_resolution)
+        # The two N-length list comprehensions below dominate metadata-build time
+        # at >1M sources, so skip them for the do_only_cutout_extraction + zarr path.
+        need_original_sizes = compute_full_wcs or not config.do_only_cutout_extraction
+        if need_original_sizes:
             # Extract diameter_pixel and diameter_arcsec arrays
             diameter_pixels = np.array(
                 [
@@ -439,6 +474,14 @@ def _process_sources_batch_vectorized_with_fits_set(
         else:
             original_sizes = np.zeros(n_sources, dtype=int)
 
+        # Resolve the scalar target resolution used for resize_factor math. Config
+        # can carry either an int or a (H, W) tuple; assume square output for the
+        # purposes of offset/pixel-scale scaling.
+        if isinstance(config.target_resolution, (tuple, list)):
+            target_resolution_scalar = int(config.target_resolution[0])
+        else:
+            target_resolution_scalar = int(config.target_resolution)
+
         # Build metadata list and WCS list
         metadata_list = []
         wcs_list = []
@@ -451,21 +494,39 @@ def _process_sources_batch_vectorized_with_fits_set(
             extraction_offset_x = source_offsets.get("x", 0.0)
             extraction_offset_y = source_offsets.get("y", 0.0)
 
-            # Scale pixel offsets by resize factor if resizing was applied
-            # The rescaled offset is in the final output image pixel coordinates
-            # (larger final image = proportionally larger offset in final pixel coords)
-            if not config.do_only_cutout_extraction and orig_size is not None and orig_size > 0:
-                resize_factor = config.target_resolution / orig_size
+            # When resizing is applied, scale offsets and pixel scale by the same
+            # resize_factor so both stay consistent with the final output coords.
+            # `first_pixel_scale` is arcsec/pixel in the original FITS tile; the
+            # output pixel scale shrinks by 1/resize_factor (more output pixels →
+            # smaller arcsec per pixel).
+            resizing_applied = (
+                not config.do_only_cutout_extraction and orig_size is not None and orig_size > 0
+            )
+            if resizing_applied:
+                resize_factor = target_resolution_scalar / orig_size
                 rescaled_offset_x = extraction_offset_x * resize_factor
                 rescaled_offset_y = extraction_offset_y * resize_factor
+                pixel_scale_arcsec_per_pixel = (
+                    float(first_pixel_scale / resize_factor)
+                    if first_pixel_scale is not None
+                    else None
+                )
                 logger.debug(
                     f"{source_id}: Offset scaling - extraction:({extraction_offset_x:.4f}, {extraction_offset_y:.4f}) "
                     f"-> rescaled:({rescaled_offset_x:.4f}, {rescaled_offset_y:.4f}) [factor={resize_factor:.2f}]"
                 )
             else:
-                # No resizing: offsets remain in extraction coordinates
+                # No resizing: offsets and pixel scale stay in original coordinates
                 rescaled_offset_x = extraction_offset_x
                 rescaled_offset_y = extraction_offset_y
+                pixel_scale_arcsec_per_pixel = (
+                    float(first_pixel_scale) if first_pixel_scale is not None else None
+                )
+
+            # Tile identifier(s): basename(s) of the FITS file(s) this source came from.
+            # Multi-channel sources concatenate all tile basenames separated by a comma
+            # so downstream users can recover the exact tile set.
+            tile = _extract_tile_basename(source_data.get("fits_file_paths"))
 
             metadata_list.append(
                 {
@@ -475,6 +536,8 @@ def _process_sources_batch_vectorized_with_fits_set(
                     "diameter_arcsec": source_data.get("diameter_arcsec"),
                     "diameter_pixel": source_data.get("diameter_pixel"),
                     "original_cutout_size": orig_size,
+                    "pixel_scale_arcsec_per_pixel": pixel_scale_arcsec_per_pixel,
+                    "tile": tile,
                     "processing_timestamp": batch_timestamp,
                     "rescaled_offset_x": rescaled_offset_x,
                     "rescaled_offset_y": rescaled_offset_y,

@@ -287,7 +287,9 @@ def run_cutana_benchmark(
         total_step_time = sum(timing_breakdown.values())
         for step, step_time in timing_breakdown.items():
             if step_time > 0:
-                logger.info(f"    {step}: {step_time:.2f}s ({step_time/total_step_time*100:.1f}%)")
+                logger.info(
+                    f"    {step}: {step_time:.2f}s ({step_time / total_step_time * 100:.1f}%)"
+                )
 
         # Create timing breakdown chart
         figures_dir = Path(__file__).parent / "figures"
@@ -423,9 +425,9 @@ def run_all_comparisons(catalogues: Dict[str, str], output_dir: Path) -> List[Di
 
     for scenario_name, catalogue_path in catalogues.items():
         scenario_num += 1
-        logger.info(f"\n{'='*80}")
+        logger.info(f"\n{'=' * 80}")
         logger.info(f"SCENARIO {scenario_num}/{total_scenarios}: {scenario_name}")
-        logger.info(f"{'='*80}\n")
+        logger.info(f"{'=' * 80}\n")
 
         # Load catalogue
         catalogue_df = pd.read_csv(catalogue_path)
@@ -489,9 +491,9 @@ def run_all_comparisons(catalogues: Dict[str, str], output_dir: Path) -> List[Di
         except Exception as e:
             logger.error(f"✗ Cutana 4 workers failed for {scenario_name}: {e}")
 
-        logger.info(f"\n{'='*80}")
+        logger.info(f"\n{'=' * 80}")
         logger.info(f"Scenario {scenario_num}/{total_scenarios} completed")
-        logger.info(f"{'='*80}\n")
+        logger.info(f"{'=' * 80}\n")
 
     return all_results
 

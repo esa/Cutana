@@ -6,6 +6,8 @@
 #   the terms contained in the file 'LICENCE.txt'.
 """Output folder selection component."""
 
+import threading
+import time
 from pathlib import Path
 
 import ipywidgets as widgets
@@ -122,11 +124,8 @@ class OutputFolderComponent(widgets.VBox):
                 def on_select_click(button):
                     logger.debug("Directory Select button clicked")
                     # Small delay then check for changes
-                    import threading
 
                     def delayed_check():
-                        import time
-
                         time.sleep(0.5)
                         on_dir_change(self.dir_chooser.file_chooser)
 

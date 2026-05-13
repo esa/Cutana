@@ -90,7 +90,7 @@ TILE_102018666_12346,45.124,12.457,256,"['/path/to/tile_vis.fits','/path/to/tile
 ```
 
 **Required Columns:**
-- `SourceID`: Unique identifier for each astronomical object
+- `SourceID`: Unique identifier for each astronomical object. **SourceIDs must be unique across all rows** — duplicate IDs cause silent data loss where earlier cutouts are overwritten. Cutana will detect and warn about duplicates in catalogues with fewer than 100,000 sources, and will reformat IDs as `SourceID_RA_Dec` if any are found. For larger catalogues the check is skipped for performance reasons, so it is your responsibility to ensure uniqueness.
 - `RA`: Right Ascension in degrees (0-360°, ICRS coordinate system)
 - `Dec`: Declination in degrees (-90 to +90°, ICRS coordinate system)  
 - `diameter_pixel`: Cutout size in pixels (creates square cutouts). Alternatively `diameter_arcsec`.
@@ -370,6 +370,8 @@ The following table describes all configuration parameters available in Cutana:
 | `output_format`                               | str      | "zarr"                    | zarr, fits                                   | Output format                                           |
 | `data_type`                                   | str      | "float32"                 | float32, uint8                               | Output data type                                        |
 | `flux_conserved_resizing`                     | bool     | False                     | -                                            | Enable flux-conserving resizing (use with float32 + none normalisation, uses drizzle (slower)) |
+| **Preprocessing Configuration**
+| `skip_catalogue_validation` | bool | False | - | If True, catalogue validation is skipped during the preprocessing step
 | **Processing Configuration**                  |
 | `max_workers`                                 | int      | 16                        | 1-1024                                       | Maximum number of worker processes                      |
 | `N_batch_cutout_process`                      | int      | 1000                      | 10-10000                                     | Batch size within each process                          |
@@ -398,7 +400,7 @@ The following table describes all configuration parameters available in Cutana:
 | `normalisation.crop_height`                   | int      | -                         | 0-5000                                       | Crop height in pixels                                   |
 | **Advanced Processing Settings**              |
 | `channel_weights`                             | dict     | {"PRIMARY": [1.0]}        | Dict of str: list[float]                     | Channel weights for multi-channel processing            |
-| `external_fitsbolt_cfg`                       | DotMap   | None                      | FITSBolt config or None                      | External FITSBolt config for ML pipeline integration (overrides normalisation settings) |
+| `external_fitsbolt_cfg`                       | DotMap   | None                      | FITSBolt config or None                      | External FITSBolt config for ML pipeline integration (overrides normalisation settings). Initialize this parameter using fitsbolt.create_config(), then modify the specific parameters by updating the returned dictionary. |
 | **File Management**                           |
 | `tracking_file`                               | str      | "workflow_tracking.json"  | -                                            | Job tracking file                                       |
 | `config_file`                                 | str      | None                      | File path                                    | Path to saved configuration file                        |
@@ -494,6 +496,34 @@ result = orchestrator.run()
 **Returns:**
 - `dict`: Same format as `start_processing()`
 
+#### Direct Cutout Generation (Fast, Small Batches)
+
+For small batches (< ~1000 sources), `create_cutouts_direct()` runs entirely in-process — ~3x faster than the full orchestrator by avoiding subprocess overhead.
+
+```python
+import pandas as pd
+from cutana import create_cutouts_direct, get_default_config
+
+config = get_default_config()
+config.target_resolution = 256
+config.selected_extensions = [{'name': 'VIS', 'ext': 'PrimaryHDU'}]
+config.channel_weights = {"VIS": [1.0]}
+
+catalogue_df = pd.read_csv("sources.csv")
+results = create_cutouts_direct(catalogue_df, config)
+
+for result in results:
+    cutouts = result["cutouts"]   # ndarray (N, H, W, C)
+    metadata = result["metadata"] # list of per-source dicts
+```
+
+**When to use which API:**
+| Use case | API |
+|---|---|
+| Quick-look / previews (< 1000 sources) | `create_cutouts_direct()` |
+| Full catalogue processing | `Orchestrator` |
+| Streaming / ML pipeline integration | `StreamingOrchestrator` |
+
 #### Streaming Mode (Advanced)
 
 Process large catalogues in batches for integration into data pipelines using `StreamingOrchestrator`.
@@ -525,7 +555,7 @@ orchestrator.init_streaming(
 for i in range(orchestrator.get_batch_count()):
     result = orchestrator.next_batch()
 
-    # result['cutouts']: numpy array of shape (N, H, W, C)
+    # result['cutouts']: list of numpy arrays, one per source (H, W, C)
     # result['metadata']: list of source metadata dicts
     # result['batch_number']: 1-indexed batch number
 

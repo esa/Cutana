@@ -13,7 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from cutana.preview_generator import clear_preview_cache
+from cutana.get_default_config import get_default_config
+from cutana.preview_generator import PreviewCache, clear_preview_cache
 from cutana_ui.utils.backend_interface import BackendInterface
 
 
@@ -266,8 +267,6 @@ class TestBackendInterfaceReal:
             )
 
             # Create a config with selected extensions using default config
-            from cutana.get_default_config import get_default_config
-
             config = get_default_config()
             config.source_catalogue = small_catalogue
             config.selected_extensions = analysis_result["extensions"][:1]  # Use first extension
@@ -392,8 +391,6 @@ class TestBackendInterfaceReal:
             )
 
             # Create a config with selected extensions using default config
-            from cutana.get_default_config import get_default_config
-
             config = get_default_config()
             config.source_catalogue = small_catalogue
             config.selected_extensions = analysis_result["extensions"][:1]
@@ -442,8 +439,6 @@ class TestBackendInterfaceReal:
             )
 
             # Create a config with selected extensions using default config
-            from cutana.get_default_config import get_default_config
-
             config = get_default_config()
             config.source_catalogue = small_catalogue
             config.selected_extensions = analysis_result["extensions"][:1]
@@ -502,8 +497,6 @@ class TestBackendInterfaceReal:
             )
 
             # Create a config with selected extensions using default config
-            from cutana.get_default_config import get_default_config
-
             config = get_default_config()
             config.source_catalogue = small_catalogue
             config.selected_extensions = analysis_result["extensions"][:1]
@@ -542,8 +535,6 @@ class TestBackendInterfaceReal:
             )
 
             # Create a config with selected extensions using default config
-            from cutana.get_default_config import get_default_config
-
             config = get_default_config()
             config.source_catalogue = small_catalogue
             config.selected_extensions = analysis_result["extensions"][:1]
@@ -560,8 +551,6 @@ class TestBackendInterfaceReal:
             )
 
             # Verify cache is available by checking PreviewCache directly
-            from cutana.preview_generator import PreviewCache
-
             assert PreviewCache.config_cache is not None
             assert PreviewCache.sources_cache is not None
 

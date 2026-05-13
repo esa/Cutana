@@ -23,6 +23,7 @@ import pytest
 from dotmap import DotMap
 
 from cutana.cutout_writer_zarr import (
+    calculate_optimal_chunk_shape,
     create_process_zarr_archive_initial,
     create_zarr_from_memory,
     generate_process_subfolder,
@@ -396,8 +397,6 @@ class TestCalculateOptimalChunkShape:
         n_channels = 4
         dtype = np.dtype("uint8")
 
-        from cutana.cutout_writer_zarr import calculate_optimal_chunk_shape
-
         chunk_shape = calculate_optimal_chunk_shape(n_sources, height, width, n_channels, dtype)
 
         # Should return full dimensions since it's way below 2GB
@@ -416,8 +415,6 @@ class TestCalculateOptimalChunkShape:
         width = 512
         n_channels = 3
         dtype = np.dtype("float32")
-
-        from cutana.cutout_writer_zarr import calculate_optimal_chunk_shape
 
         chunk_shape = calculate_optimal_chunk_shape(n_sources, height, width, n_channels, dtype)
 
@@ -444,8 +441,6 @@ class TestCalculateOptimalChunkShape:
         n_channels = 4
         dtype = np.dtype("float32")
 
-        from cutana.cutout_writer_zarr import calculate_optimal_chunk_shape
-
         chunk_shape = calculate_optimal_chunk_shape(
             n_sources, height, width, n_channels, dtype, max_chunk_size_gb=1.8
         )
@@ -470,8 +465,6 @@ class TestCalculateOptimalChunkShape:
         n_channels = 8
         dtype = np.dtype("uint16")
 
-        from cutana.cutout_writer_zarr import calculate_optimal_chunk_shape
-
         chunk_shape = calculate_optimal_chunk_shape(n_sources, height, width, n_channels, dtype)
 
         # Should not chunk this small dataset
@@ -492,8 +485,6 @@ class TestCalculateOptimalChunkShape:
         bytes_per_image = height * width * n_channels * dtype.itemsize
         n_sources = int((1.8 * 1024**3) / bytes_per_image)  # Exactly at limit
 
-        from cutana.cutout_writer_zarr import calculate_optimal_chunk_shape
-
         chunk_shape = calculate_optimal_chunk_shape(
             n_sources, height, width, n_channels, dtype, max_chunk_size_gb=1.8
         )
@@ -513,8 +504,6 @@ class TestCalculateOptimalChunkShape:
         width = 128
         n_channels = 1
         dtype = np.dtype("float64")
-
-        from cutana.cutout_writer_zarr import calculate_optimal_chunk_shape
 
         chunk_shape = calculate_optimal_chunk_shape(n_sources, height, width, n_channels, dtype)
 

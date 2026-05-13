@@ -7,6 +7,7 @@
 """Markdown loading and rendering utilities for Cutana UI."""
 
 import os
+import re
 
 from loguru import logger
 
@@ -46,8 +47,6 @@ def format_markdown_display(md_content):
     Returns:
         str: HTML with formatted markdown for display
     """
-    import re
-
     # Debug: Print the input content length
     logger.debug(f"Formatting markdown content with length: {len(md_content)}")
 
@@ -256,7 +255,7 @@ def format_markdown_display(md_content):
                 processed_text = escape_html(text)
 
             processed_lines.append(
-                f'<ul style="margin-left: {indent*10}px"><li>{processed_text}</li></ul>'
+                f'<ul style="margin-left: {indent * 10}px"><li>{processed_text}</li></ul>'
             )
             continue
 
@@ -300,7 +299,7 @@ def format_markdown_display(md_content):
 
             # Use the actual number from the markdown in the HTML
             processed_lines.append(
-                f'<ol start="{number}" style="margin-left: {indent*10}px"><li>{processed_text}</li></ol>'
+                f'<ol start="{number}" style="margin-left: {indent * 10}px"><li>{processed_text}</li></ol>'
             )
             continue
 
@@ -424,9 +423,7 @@ def format_markdown_display(md_content):
             <div class="code-header">{}</div>
             <pre><code class="language-{}">{}</code></pre>
         </div>
-        """.format(
-            lang, lang, highlighted_code
-        )
+        """.format(lang, lang, highlighted_code)
 
         # Make sure all instances of the placeholder are replaced
         html_content = html_content.replace(placeholder, html_code_block)

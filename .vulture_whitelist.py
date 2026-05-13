@@ -37,7 +37,13 @@ _.preview_cutouts  # noqa
 _.original_layout  # noqa
 _.channel_matrix  # noqa
 _.max_width  # noqa
+_.min_width  # noqa
+_.padding  # noqa
 _.margin  # noqa
+_.background  # noqa
+_.border  # noqa
+_.border_radius  # noqa
+_.overflow  # noqa
 _.crop_enable_label  # noqa
 _.disabled  # noqa
 _.default_filename  # noqa
@@ -53,11 +59,14 @@ ESA_RED  # noqa
 # PreviewCache class attribute - accessed dynamically within class methods
 _.config_cache  # noqa
 
-# StreamingOrchestrator public API - documented in README, used in examples/async_streaming.py
+# StreamingOrchestrator instance attributes - stored for introspection, not read internally
+_._min_workers  # noqa - set by init_streaming, exposed for external inspection
+
+# StreamingOrchestrator public API - documented in README, used in examples/
 init_streaming  # noqa - public API for batch streaming workflow
 next_batch  # noqa - public API for getting next batch of cutouts
 get_batch_count  # noqa - public API for getting total batch count
-get_batch  # noqa - public API for random access to batches
+get_worker_events  # noqa - public API for Gantt chart generation, used in benchmark scripts
 
 # SystemMonitor utility methods - public API for resource monitoring
 check_memory_constraints  # noqa - utility for checking available memory

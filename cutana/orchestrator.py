@@ -17,17 +17,15 @@ This module handles:
 
 import json
 import os
-import select
 import subprocess
 import sys
 import tempfile
 import time
 import traceback
-from multiprocessing import shared_memory
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-import numpy as np
 import pandas as pd
 from dotmap import DotMap
 from loguru import logger
@@ -134,18 +132,21 @@ class Orchestrator:
             logger.warning(f"Could not estimate catalogue size: {e}")
 
         # Validate a sample from the catalogue
-        logger.info("Validating catalogue sample...")
-        validation_errors = validate_catalogue_sample(
-            catalogue_path,
-            sample_size=10000,
-            skip_fits_check=False,
-        )
-        if validation_errors:
-            error_msg = "; ".join(validation_errors[:5])
-            if len(validation_errors) > 5:
-                error_msg += f" (and {len(validation_errors) - 5} more errors)"
-            raise ValueError(f"Catalogue validation failed: {error_msg}")
-        logger.info("Catalogue sample validation passed")
+        if not self.config.skip_catalogue_validation:
+            logger.info("Validating catalogue sample...")
+            validation_errors = validate_catalogue_sample(
+                catalogue_path,
+                sample_size=10000,
+                skip_fits_check=False,
+            )
+            if validation_errors:
+                error_msg = "; ".join(validation_errors[:5])
+                if len(validation_errors) > 5:
+                    error_msg += f" (and {len(validation_errors) - 5} more errors)"
+                raise ValueError(f"Catalogue validation failed: {error_msg}")
+            logger.info("Catalogue sample validation passed")
+        else:
+            logger.info("Skipping catalogue validation (skip_catalogue_validation=True)")
 
         # Build lightweight catalogue index
         logger.info("Building catalogue index (streaming mode)...")
@@ -302,7 +303,11 @@ class Orchestrator:
         logger.info("======================")
 
     def _spawn_cutout_process(
-        self, process_id: str, source_batch: pd.DataFrame, write_to_disk: bool
+        self,
+        process_id: str,
+        source_batch: pd.DataFrame,
+        write_to_disk: bool,
+        shm_pool=None,
     ) -> None:
         """
         Spawn a cutout process for a batch of sources using subprocess.
@@ -313,6 +318,7 @@ class Orchestrator:
             process_id: Unique identifier for the process
             source_batch: DataFrame containing sources for this process
             write_to_disk: Whether to write outputs to disk (True) or keep in memory (False)
+            shm_pool: Optional ShmPool instance for pre-allocated shared memory mode
         """
         temp_files = []
         try:
@@ -336,6 +342,12 @@ class Orchestrator:
             subprocess_config.batch_index = batch_index
             subprocess_config.process_id = process_id
             subprocess_config.job_tracker_session_id = self.job_tracker.session_id
+
+            # Inject SHM pool config if provided
+            if shm_pool is not None:
+                subprocess_config.shm_pool_name = shm_pool.name
+                subprocess_config.shm_control_name = shm_pool.control_name
+                subprocess_config.shm_pool_config = shm_pool.config.to_dict()
 
             # Save config as TOML for subprocess communication
             with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as config_file:
@@ -442,180 +454,6 @@ class Orchestrator:
                     "timestamp": time.time(),
                 }
             )
-
-    def _receive_cutouts_from_shm(
-        self, process_id: str, batch_number: int, timeout_seconds: int
-    ) -> tuple:
-        """
-        Receive cutouts from subprocess via shared memory streaming.
-
-        Reads chunks from shared memory as worker sends them via stdout pipe.
-        Sends ACK after each chunk is processed. Accumulates all cutouts and metadata.
-
-        Args:
-            process_id: Process identifier
-            batch_number: Batch number (0-indexed)
-            timeout_seconds: Timeout for the whole operation
-
-        Returns:
-            Tuple of (all_cutouts, all_metadata)
-
-        Raises:
-            RuntimeError: If process fails or times out
-        """
-        process = self.active_processes.get(process_id)
-        if not process:
-            raise RuntimeError(f"Process {process_id} not found in active processes")
-
-        all_cutouts = []
-        all_metadata = []
-        start_time = time.time()
-
-        logger.info(f"Batch {batch_number + 1}: Receiving cutouts via shared memory")
-
-        try:
-            while True:
-                # Check timeout to prevent indefinite blocking if subprocess hangs or stalls
-                # Terminates the subprocess and raises error if exceeded
-                if time.time() - start_time > timeout_seconds:
-                    logger.error(f"Batch {batch_number + 1} timed out while receiving cutouts")
-                    process.terminate()
-                    process.wait(timeout=10.0)
-                    self.active_processes.pop(process_id, None)
-                    raise RuntimeError(f"Batch {batch_number + 1} timed out receiving cutouts")
-
-                # Check if process is still alive
-                process_exit_code = process.poll()
-                if process_exit_code is not None:
-                    # Process terminated - try to read any remaining output, then break
-                    logger.debug(
-                        f"Batch {batch_number + 1}: Subprocess terminated with code {process_exit_code}"
-                    )
-                    # Try one more read in case there's buffered output
-                    try:
-                        remaining_line = process.stdout.readline()
-                        if remaining_line:
-                            try:
-                                msg = json.loads(remaining_line)
-                                if msg.get("type") == "complete":
-                                    logger.info(
-                                        f"Batch {batch_number + 1}: Got completion message from terminated process"
-                                    )
-                            except json.JSONDecodeError:
-                                pass
-                    except Exception:
-                        pass
-                    break
-
-                # Read line from stdout (non-blocking with timeout)
-                # Use select to check if data is available (Unix-like) or just readline with timeout (Windows)
-                if sys.platform == "win32":
-                    # On Windows, just try to read (will block until data or process ends)
-                    # The overall timeout mechanism will handle hung processes
-                    line = process.stdout.readline()
-                else:
-                    # On Unix, use select for proper timeout
-                    ready, _, _ = select.select([process.stdout], [], [], 1.0)
-                    if not ready:
-                        continue
-                    line = process.stdout.readline()
-
-                if not line:
-                    continue
-
-                try:
-                    msg = json.loads(line)
-                except json.JSONDecodeError:
-                    logger.debug(f"Non-JSON line from subprocess: {line[:100]}")
-                    continue
-
-                msg_type = msg.get("type")
-
-                if msg_type == "chunk":
-                    # Read chunk from shared memory
-                    shm_name = msg["shm_name"]
-                    shape = tuple(msg["shape"])
-                    dtype = np.dtype(msg["dtype"])
-                    chunk_metadata = msg["metadata"]
-
-                    # Attach to shared memory
-                    shm = None
-                    try:
-                        shm = shared_memory.SharedMemory(name=shm_name)
-
-                        # Create numpy array from shared memory
-                        chunk_array = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
-
-                        # Copy data out of shared memory (important!)
-                        chunk_copy = chunk_array.copy()
-
-                        # Extract individual cutouts from chunk
-                        for i in range(len(chunk_copy)):
-                            all_cutouts.append(chunk_copy[i])
-
-                        all_metadata.extend(chunk_metadata)
-
-                        logger.debug(
-                            f"Batch {batch_number + 1}: Received chunk with {len(chunk_copy)} cutouts "
-                            f"({msg['nbytes'] / 1024 / 1024:.1f}MB)"
-                        )
-
-                    finally:
-                        # Close shared memory (worker will unlink it after ACK)
-                        if shm is not None:
-                            shm.close()
-
-                    # Send ACK to worker so it can cleanup and proceed
-                    process.stdin.write("ACK\n")
-                    process.stdin.flush()
-
-                elif msg_type == "complete":
-                    total_cutouts = msg.get("total_cutouts", 0)
-                    logger.info(
-                        f"Batch {batch_number + 1}: Received completion message "
-                        f"({total_cutouts} total cutouts)"
-                    )
-                    break
-
-                else:
-                    logger.warning(f"Unknown message type from subprocess: {msg_type}")
-
-            # Wait for process to finish
-            return_code = process.wait(timeout=10.0)
-
-            if return_code != 0:
-                logger.error(f"Batch {batch_number + 1} subprocess exited with code {return_code}")
-                raise RuntimeError(
-                    f"Batch {batch_number + 1} subprocess failed with code {return_code}"
-                )
-
-            # Clean up process from active list
-            self.active_processes.pop(process_id, None)
-
-            logger.info(
-                f"Batch {batch_number + 1}: Successfully received {len(all_cutouts)} cutouts "
-                f"via shared memory (subprocess completed)"
-            )
-
-            # Stack all cutouts into single numpy array
-            if all_cutouts:
-                all_cutouts = np.stack(all_cutouts)
-                logger.debug(f"Stacked cutouts into array with shape: {all_cutouts.shape}")
-
-            return all_cutouts, all_metadata
-
-        except Exception as e:
-            # Cleanup on error
-            if process_id in self.active_processes:
-                try:
-                    process.terminate()
-                    process.wait(timeout=10.0)
-                except Exception:
-                    pass
-                self.active_processes.pop(process_id, None)
-
-            logger.error(f"Error receiving cutouts from shared memory: {e}")
-            raise
 
     def _monitor_processes(self, timeout_seconds: int) -> List[Dict[str, Any]]:
         """
@@ -791,8 +629,6 @@ class Orchestrator:
             parquet_path = output_dir / "source_to_zarr_mapping.parquet"
 
             # Create DataFrame and write to Parquet
-            import pandas as pd
-
             df = pd.DataFrame(self.source_to_batch_mapping)
             df.to_parquet(parquet_path, index=False)
 
@@ -970,8 +806,6 @@ class Orchestrator:
                     )
 
                     if recommendation["spawn_new"] and not self._stop_requested:
-                        import uuid
-
                         unique_id = str(uuid.uuid4())[:8]
                         process_id = f"cutout_process_{batch_index:03d}_{unique_id}"
 
@@ -985,7 +819,7 @@ class Orchestrator:
                         )
 
                         # Preprocess the batch
-                        batch_df = preprocess_catalogue(batch_df, self.config)
+                        batch_df = preprocess_catalogue(batch_df)
 
                         # Track source to zarr mapping
                         zarr_file = f"batch_{process_id}/images.zarr"
@@ -1063,11 +897,14 @@ class Orchestrator:
             logger.error(f"Error in streaming processing workflow: {e}")
             logger.error(f"Full traceback:\n{error_traceback}")
 
-            # Clean up batch reader on error
+            # Clean up batch reader on error (best-effort; we're already in
+            # an error path, but surface cleanup failures instead of hiding them).
             try:
                 batch_reader.close()
-            except Exception:
-                pass
+            except Exception as cleanup_error:
+                logger.warning(
+                    f"Failed to close batch_reader during error cleanup: {cleanup_error}"
+                )
 
             self._send_ui_update(force=True)
 
@@ -1203,9 +1040,13 @@ class Orchestrator:
         logger.debug("Starting Orchestrator cleanup")
 
     def __del__(self):
-        """Ensure cleanup when object is destroyed."""
+        """Ensure cleanup when object is destroyed.
+
+        Destructors must never raise (Python will print a warning and swallow
+        it anyway), but we surface the failure via the logger so the root
+        cause is visible rather than silently discarded.
+        """
         try:
             self.cleanup()
-        except Exception:
-            # Ignore errors in destructor
-            pass
+        except Exception as e:
+            logger.warning(f"Orchestrator cleanup failed during __del__: {e}")

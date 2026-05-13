@@ -22,6 +22,7 @@ Test Setup:
 import json
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 import numpy as np
@@ -44,8 +45,6 @@ class TestEndToEndRawCutout:
         temp_dir = tempfile.mkdtemp()
         yield temp_dir
         # Handle Windows file permission issues by retrying deletion
-        import time
-
         for attempt in range(3):
             try:
                 shutil.rmtree(temp_dir)
@@ -202,9 +201,9 @@ class TestEndToEndRawCutout:
 
         # Find the output FITS file
         output_fits_files = list(output_dir.glob("*.fits"))
-        assert (
-            len(output_fits_files) == 1
-        ), f"Expected 1 output FITS file, found {len(output_fits_files)}"
+        assert len(output_fits_files) == 1, (
+            f"Expected 1 output FITS file, found {len(output_fits_files)}"
+        )
 
         output_fits_path = output_fits_files[0]
         logger.info(f"Found output FITS file: {output_fits_path}")
@@ -228,12 +227,12 @@ class TestEndToEndRawCutout:
             logger.info(f"Output data min: {output_data.min()}, max: {output_data.max()}")
 
             # Verify data type is float32 (may have different byte order like >f4 for big-endian)
-            assert np.issubdtype(
-                output_data.dtype, np.floating
-            ), f"Expected floating point, got {output_data.dtype}"
-            assert (
-                output_data.dtype.itemsize == 4
-            ), f"Expected 4-byte float (float32), got {output_data.dtype.itemsize}-byte"
+            assert np.issubdtype(output_data.dtype, np.floating), (
+                f"Expected floating point, got {output_data.dtype}"
+            )
+            assert output_data.dtype.itemsize == 4, (
+                f"Expected 4-byte float (float32), got {output_data.dtype.itemsize}-byte"
+            )
 
             # Get the input image for comparison
             input_data = small_fits_file["image_data"]

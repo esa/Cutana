@@ -8,6 +8,7 @@
 Unit tests for LoadBalancer module.
 """
 
+import shutil
 import tempfile
 from unittest.mock import Mock, patch
 
@@ -30,8 +31,6 @@ class TestLoadBalancer:
     def teardown_method(self):
         """Clean up after tests."""
         # Clean up temp files
-        import shutil
-
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_init(self):
@@ -256,7 +255,7 @@ class TestLoadBalancer:
             lb.processes_measured = 1
 
             # Mock JobTracker to indicate progress has been made
-            with patch("cutana.job_tracker.JobTracker") as mock_job_tracker:
+            with patch("cutana.loadbalancer.JobTracker") as mock_job_tracker:
                 mock_tracker_instance = Mock()
                 mock_tracker_instance.get_process_details.return_value = {
                     "test_process": {"completed_sources": 1}  # Some progress made

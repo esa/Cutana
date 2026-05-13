@@ -18,6 +18,7 @@ import pytest
 from dotmap import DotMap
 
 from cutana.cutout_process_utils import _process_sources_batch_vectorized_with_fits_set
+from cutana.get_default_config import get_default_config
 
 
 class TestMultiResolutionChannelProcessing:
@@ -26,8 +27,6 @@ class TestMultiResolutionChannelProcessing:
     @pytest.fixture
     def base_config(self):
         """Create base configuration for testing."""
-        from cutana.get_default_config import get_default_config
-
         config = get_default_config()
         config.target_resolution = 64
         config.data_type = "float32"
@@ -112,9 +111,14 @@ class TestMultiResolutionChannelProcessing:
         config = DotMap(base_config.copy())
         config.target_resolution = (64, 64)
         config.fits_extensions = ["PRIMARY"]
-        # Set channel_weights to pass through all channels without combination
-        # Using single weight [1.0] for each channel preserves them separately
-        config.channel_weights = {"PRIMARY": [1.0, 1.0, 1.0]}  # 3 output channels from PRIMARY
+        # Map each input file basename to its own output channel so all three
+        # extensions are preserved separately (combine_channels applies weights
+        # positionally — see issue #315).
+        config.channel_weights = {
+            "ch1": [1.0, 0.0, 0.0],
+            "ch2": [0.0, 1.0, 0.0],
+            "ch3": [0.0, 0.0, 1.0],
+        }
 
         # Create mock loaded FITS data
         mock_loaded_fits_data = {}
@@ -163,3 +167,110 @@ class TestMultiResolutionChannelProcessing:
 
         # Verify extract was called for each FITS file (3 files)
         assert mock_extract_cutouts.call_count == 3, "Should extract from all 3 FITS files"
+
+    @patch("cutana.cutout_process_utils.extract_cutouts_batch_vectorized")
+    def test_metadata_includes_pixel_scale_and_tile(self, mock_extract_cutouts, base_config):
+        """
+        New per-source metadata fields ``pixel_scale_arcsec_per_pixel`` (#219) and
+        ``tile`` (#206) must be present for every source and reflect the pixel scale
+        in the OUTPUT coordinates (i.e. scaled by the resize factor) along with the
+        basenames of the source's input FITS tiles.
+        """
+        source_id_single = "single_tile_source"
+        source_id_multi = "multi_tile_source"
+        sources_batch = [
+            {
+                "SourceID": source_id_single,
+                "RA": 150.0,
+                "Dec": 2.0,
+                "diameter_pixel": 32,
+                "fits_file_paths": "['/mock/tile_A.fits']",
+            },
+            {
+                "SourceID": source_id_multi,
+                "RA": 150.1,
+                "Dec": 2.1,
+                "diameter_pixel": 32,
+                "fits_file_paths": "['/mock/tile_B_ch1.fits', '/mock/tile_B_ch2.fits']",
+            },
+        ]
+
+        mock_wcs = MagicMock()
+        mock_pixel_scale = 0.2  # arcsec/pixel in the original FITS tile
+
+        def mock_extract_side_effect(
+            sources, hdul, wcs_dict, extensions, padding_factor=1.0, config=None
+        ):
+            combined_cutouts = {}
+            combined_wcs = {}
+            combined_offsets = {}
+            for s in sources:
+                sid = s["SourceID"]
+                combined_cutouts[sid] = {"PRIMARY": np.random.random((32, 32)).astype(np.float32)}
+                combined_wcs[sid] = {"PRIMARY": mock_wcs}
+                combined_offsets[sid] = {"x": 0.0, "y": 0.0}
+            return (
+                combined_cutouts,
+                combined_wcs,
+                [s["SourceID"] for s in sources],
+                mock_pixel_scale,
+                combined_offsets,
+            )
+
+        mock_extract_cutouts.side_effect = mock_extract_side_effect
+
+        config = DotMap(base_config.copy())
+        config.target_resolution = 64
+        config.fits_extensions = ["PRIMARY"]
+        # The mocked extractor returns a PRIMARY cutout for every source × every
+        # FITS file, so the resulting tensor exposes one channel per tile across
+        # both sources. Weights must cover all of them to satisfy the silent-drop
+        # check introduced for issue #315.
+        config.channel_weights = {
+            "tile_A": [1.0],
+            "tile_B_ch1": [1.0],
+            "tile_B_ch2": [1.0],
+        }
+
+        # Build loaded FITS data for both single- and multi-tile sources so the
+        # processor visits each unique path exactly once.
+        mock_loaded_fits_data = {}
+        for fits_path in [
+            "/mock/tile_A.fits",
+            "/mock/tile_B_ch1.fits",
+            "/mock/tile_B_ch2.fits",
+        ]:
+            mock_hdul = MagicMock()
+            mock_hdul._mock_name = fits_path
+            mock_loaded_fits_data[fits_path] = (mock_hdul, {"PRIMARY": mock_wcs})
+
+        results = _process_sources_batch_vectorized_with_fits_set(
+            sources_batch,
+            mock_loaded_fits_data,
+            config,
+            profiler=None,
+            process_name=None,
+            job_tracker=None,
+        )
+
+        metadata_by_id = {m["source_id"]: m for m in results[0]["metadata"]}
+
+        # Both new fields must be populated for every source.
+        for meta in metadata_by_id.values():
+            assert "pixel_scale_arcsec_per_pixel" in meta
+            assert "tile" in meta
+
+        # With target_resolution=64 and original size=32 the output pixels represent
+        # half the sky, so the reported pixel scale is halved as well.
+        expected_scale = mock_pixel_scale * 32 / 64
+        assert metadata_by_id[source_id_single]["pixel_scale_arcsec_per_pixel"] == pytest.approx(
+            expected_scale
+        )
+        assert metadata_by_id[source_id_multi]["pixel_scale_arcsec_per_pixel"] == pytest.approx(
+            expected_scale
+        )
+
+        # Single-tile sources report only the basename; multi-tile sources report
+        # all basenames comma-joined in input order.
+        assert metadata_by_id[source_id_single]["tile"] == "tile_A.fits"
+        assert metadata_by_id[source_id_multi]["tile"] == "tile_B_ch1.fits,tile_B_ch2.fits"

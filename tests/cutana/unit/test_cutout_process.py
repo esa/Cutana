@@ -15,15 +15,22 @@ Tests cover:
 - Integration with image_processor
 """
 
+import json
+import os
+import sys
+import tempfile
 from unittest.mock import MagicMock, Mock, patch
 
 import numpy as np
 import pytest
 from astropy.io import fits
 from astropy.wcs import WCS
+from dotmap import DotMap
 
-from cutana.cutout_process import create_cutouts_batch
+from cutana.cutout_process import create_cutouts_batch, create_cutouts_main
 from cutana.fits_reader import load_fits_file
+from cutana.get_default_config import get_default_config
+from cutana.image_processor import combine_channels, resize_batch_tensor
 from cutana.job_tracker import JobTracker
 
 
@@ -93,10 +100,6 @@ class TestCutoutProcessFunctions:
     @pytest.fixture
     def cutout_config(self):
         """Create cutout processing configuration."""
-        from dotmap import DotMap
-
-        from cutana.get_default_config import get_default_config
-
         config = get_default_config()
         config.target_resolution = 64
         config.data_type = "float32"
@@ -186,7 +189,6 @@ class TestCutoutProcessFunctions:
             patch("cutana.cutout_process.create_process_zarr_archive_initial") as mock_zarr_create,
             patch("cutana.cutout_process.append_to_zarr_archive") as mock_zarr_append,
         ):
-
             mock_load_fits.return_value = (mock_hdul, {"VIS": mock_wcs})
             # Mock should return batch format: {"cutouts": tensor, "metadata": list}
             batch_cutouts = np.random.random((1, 20, 20, 1)).astype(np.float32)
@@ -243,7 +245,6 @@ class TestCutoutProcessFunctions:
                 "cutana.cutout_process_utils._process_sources_batch_vectorized_with_fits_set"
             ) as mock_process,
         ):
-
             mock_load_fits.return_value = (mock_hdul, {"VIS": mock_wcs})
 
             # Mock successful vectorized batch processing for all sources
@@ -339,31 +340,17 @@ class TestCutoutProcessFunctions:
         # Use VIS extension instead of PRIMARY since PRIMARY has no data in our test files
         fits_extensions = ["VIS"]
 
-        # Test that the old function still works through the wrapper
-        try:
-            hdul, wcs_dict = load_fits_file(mock_fits_file, fits_extensions)
+        hdul, wcs_dict = load_fits_file(mock_fits_file, fits_extensions)
 
-            assert hdul is not None
-            assert isinstance(wcs_dict, dict)
-            # Should have at least one extension loaded
-            assert len(wcs_dict) >= 1
+        assert hdul is not None
+        assert isinstance(wcs_dict, dict)
+        # Should have at least one extension loaded
+        assert len(wcs_dict) >= 1
 
-            hdul.close()
-
-        except Exception as e:
-            # This is expected if fitsbolt has compatibility issues
-            assert (
-                "fitsbolt failed" in str(e)
-                or "Invalid FITS file" in str(e)
-                or "No valid extensions found" in str(e)
-            )
-            pytest.skip(f"fitsbolt compatibility issue in wrapper: {e}")
+        hdul.close()
 
     def test_create_cutouts_main_subprocess_execution(self, tmp_path):
         """Test the main subprocess entry point with file-based communication."""
-        import json
-        import tempfile
-
         # Create test data
         source_batch = [
             {
@@ -392,8 +379,6 @@ class TestCutoutProcessFunctions:
             config_temp_path = config_file.name
 
         # Test command line argument parsing
-        import sys
-
         original_argv = sys.argv[:]
 
         try:
@@ -405,8 +390,6 @@ class TestCutoutProcessFunctions:
                 patch("builtins.print") as mock_print,
             ):
                 # Import and run the main function
-                from cutana.cutout_process import create_cutouts_main
-
                 try:
                     create_cutouts_main()
                     # Should print JSON output
@@ -421,8 +404,6 @@ class TestCutoutProcessFunctions:
         finally:
             sys.argv = original_argv
             # Cleanup temp files (files should be cleaned up by the process)
-            import os
-
             for temp_file in [source_temp_path, config_temp_path]:
                 try:
                     os.unlink(temp_file)
@@ -431,10 +412,6 @@ class TestCutoutProcessFunctions:
 
     def test_create_cutouts_main_error_handling(self, tmp_path):
         """Test main function error handling."""
-        import json
-        import sys
-        import tempfile
-
         # Test insufficient arguments
         original_argv = sys.argv[:]
 
@@ -442,8 +419,6 @@ class TestCutoutProcessFunctions:
             sys.argv = ["cutout_process.py"]  # Missing arguments
 
             with patch("builtins.print") as mock_print:
-                from cutana.cutout_process import create_cutouts_main
-
                 try:
                     create_cutouts_main()
                 except SystemExit as e:
@@ -470,8 +445,6 @@ class TestCutoutProcessFunctions:
             ]
 
             with patch("builtins.print") as mock_print:
-                from cutana.cutout_process import create_cutouts_main
-
                 try:
                     create_cutouts_main()
                 except SystemExit as e:
@@ -484,8 +457,6 @@ class TestCutoutProcessFunctions:
 
         finally:
             sys.argv = original_argv
-            import os
-
             for temp_file in [invalid_temp_path, valid_temp_path]:
                 try:
                     os.unlink(temp_file)
@@ -1021,8 +992,6 @@ class TestCutoutProcessFunctions:
 
     def test_channel_combination_with_different_resolutions(self, cutout_config):
         """Test that resize_batch_tensor and combine_channels handle different input resolutions."""
-        from cutana.image_processor import combine_channels, resize_batch_tensor
-
         # Create mock cutouts with different resolutions per channel
         source_id = "multi_res_test_001"
 

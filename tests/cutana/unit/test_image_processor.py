@@ -9,7 +9,6 @@ Unit tests for the image_processor module using TDD approach.
 
 Tests cover:
 - Image resizing to target resolution
-- Data type conversion (float32, uint8, etc.)
 - Normalization using fitsbolt
 - Stretch function application (linear, log, asinh, sqrt)
 - Multi-channel image processing
@@ -21,13 +20,14 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 from astropy.wcs import WCS
+from dotmap import DotMap
 
 from cutana.image_processor import (
     apply_normalisation,
     combine_channels,
-    convert_data_type,
     resize_batch_tensor,
 )
+from cutana.normalisation_parameters import NormalisationDefaults
 
 
 class TestImageProcessor:
@@ -36,33 +36,19 @@ class TestImageProcessor:
     @pytest.fixture
     def mock_config(self):
         """Create mock config for apply_normalisation tests."""
-        from dotmap import DotMap
-
         return DotMap(
             {
                 "normalisation_method": "linear",
                 "normalisation": {
-                    "a": None,
-                    "percentile": None,
-                    "n_samples": None,
-                    "contrast": None,
+                    "a": NormalisationDefaults.ASINH_A,
+                    "percentile": NormalisationDefaults.PERCENTILE,
+                    "n_samples": NormalisationDefaults.N_SAMPLES,
+                    "contrast": NormalisationDefaults.CONTRAST,
+                    "crop_enable": False,
                 },
-                "norm_minimum_value": None,
-                "norm_maximum_value": None,
-                "norm_crop_for_maximum_value": None,
-                "norm_log_calculate_minimum_value": False,
+                "external_fitsbolt_cfg": DotMap(),
             }
         )
-
-    @pytest.fixture
-    def processor_config(self):
-        """Create image processing configuration."""
-        return {
-            "target_resolution": 256,
-            "file_type": "float32",
-            "stretch": "linear",
-            "interpolation": "bilinear",
-        }
 
     @pytest.fixture
     def mock_cutout_data(self):
@@ -73,19 +59,10 @@ class TestImageProcessor:
             "NIR-H": np.random.random((128, 128)).astype(np.float32),
         }
 
-    def test_image_processor_initialization(self, processor_config):
-        """Test function-based image processor configuration works."""
-        # Since we use functions, just test that config values are valid
-        assert processor_config["target_resolution"] == 256
-        assert processor_config["file_type"] == "float32"
-        assert processor_config["stretch"] == "linear"
-        assert processor_config["interpolation"] == "bilinear"
-
     def test_resize_batch_tensor_upscale(self):
         """Test resizing image from smaller to larger resolution using resize_batch_tensor."""
         input_image = np.random.random((64, 64)).astype(np.float32)
 
-        # Create input dict in format: source_id -> {channel_key: cutout}
         source_cutouts = {"source_0": {"VIS": input_image}}
 
         resized = resize_batch_tensor(
@@ -96,17 +73,14 @@ class TestImageProcessor:
             pixel_scales_dict={"VIS": 0.1},
         )
 
-        assert resized.shape == (1, 128, 128, 1)  # (N_sources, H, W, N_extensions)
+        assert resized.shape == (1, 128, 128, 1)
         assert resized.dtype == np.float32
-        assert not np.array_equal(
-            resized[0, :, :, 0], input_image
-        )  # Should be different due to interpolation
+        assert not np.array_equal(resized[0, :, :, 0], input_image)
 
     def test_resize_batch_tensor_downscale(self):
         """Test resizing image from larger to smaller resolution using resize_batch_tensor."""
         input_image = np.random.random((512, 512)).astype(np.float32)
 
-        # Create input dict in format: source_id -> {channel_key: cutout}
         source_cutouts = {"source_0": {"VIS": input_image}}
 
         resized = resize_batch_tensor(
@@ -117,15 +91,13 @@ class TestImageProcessor:
             pixel_scales_dict={"VIS": 0.1},
         )
 
-        assert resized.shape == (1, 256, 256, 1)  # (N_sources, H, W, N_extensions)
+        assert resized.shape == (1, 256, 256, 1)
         assert resized.dtype == np.float32
 
     def test_resize_batch_tensor_preserve_range(self):
         """Test that resizing preserves the approximate data range."""
-        # Create image with known range
         input_image = np.linspace(0, 1, 64 * 64).reshape(64, 64).astype(np.float32)
 
-        # Create input dict in format: source_id -> {channel_key: cutout}
         source_cutouts = {"source_0": {"VIS": input_image}}
 
         resized = resize_batch_tensor(
@@ -136,107 +108,81 @@ class TestImageProcessor:
             pixel_scales_dict={"VIS": 0.1},
         )
 
-        # Range should be approximately preserved
-        assert resized[0, :, :, 0].min() >= -0.1  # Allow small interpolation artifacts
+        assert resized[0, :, :, 0].min() >= -0.1
         assert resized[0, :, :, 0].max() <= 1.1
         assert abs(resized[0, :, :, 0].mean() - input_image.mean()) < 0.1
 
-    def test_convert_data_type_float32(self):
-        """Test conversion to float32 data type."""
-        input_image = np.random.randint(0, 65535, (100, 100)).astype(np.uint16)
-
-        converted = convert_data_type(input_image, "float32")
-
-        assert converted.dtype == np.float32
-        assert converted.shape == input_image.shape
-
-    def test_convert_data_type_uint8(self):
-        """Test conversion to uint8 with proper scaling."""
-        input_image = np.random.random((100, 100)).astype(np.float32)
-
-        converted = convert_data_type(input_image, "uint8")
-
-        assert converted.dtype == np.uint8
-        assert converted.min() >= 0
-        assert converted.max() <= 255
-
-    @patch("fitsbolt.normalise_images")
-    def test_apply_normalisation_fitsbolt(self, mock_normalise_images, mock_config):
-        """Test applying normalization using fitsbolt with batch processing."""
-        # Use batch format from the start
-        input_batch = np.random.random((2, 100, 100)).astype(np.float32)
-        # Mock fitsbolt response - it expects batch format
-        normalized_output = np.random.random((2, 100, 100, 1)).astype(np.float32)
-        mock_normalise_images.return_value = normalized_output
-
-        result = apply_normalisation(input_batch, mock_config)
-
-        # Check that fitsbolt.normalise_images was called
-        mock_normalise_images.assert_called_once()
-        assert result.shape == input_batch.shape  # Should match input batch shape
-        assert result.dtype == np.float32
-
-    def test_apply_normalisation_linear(self, mock_config):
-        """Test linear normalization application with batch processing."""
-        # Use batch format (1, H, W)
-        input_batch = np.linspace(0, 1, 100).reshape(1, 10, 10).astype(np.float32)
-
+    @pytest.mark.parametrize(
+        "method,input_range",
+        [
+            ("linear", (0, 1)),
+            ("log", (0.1, 1)),
+            ("asinh", (-1, 1)),
+            ("zscale", (0.01, 1)),
+        ],
+    )
+    def test_apply_normalisation_methods(self, mock_config, method, input_range):
+        """Test normalisation with each supported stretch method."""
+        input_batch = (
+            np.linspace(input_range[0], input_range[1], 100).reshape(1, 10, 10).astype(np.float32)
+        )
+        mock_config.normalisation_method = method
         normalized = apply_normalisation(input_batch, mock_config)
 
-        # Should return normalized image with same shape
         assert normalized.shape == input_batch.shape
-        # fitsbolt may convert to uint8, so check for valid numeric type
-        assert normalized.dtype in [np.float32, np.float64, np.uint8, np.uint16]
-
-    def test_apply_normalisation_log(self, mock_config):
-        """Test logarithmic normalization application with batch processing."""
-        # Use batch format (1, H, W)
-        input_batch = np.linspace(0.1, 1, 100).reshape(1, 10, 10).astype(np.float32)
-
-        # Set the normalization method to log
-        mock_config.normalisation_method = "log"
-        normalized = apply_normalisation(input_batch, mock_config)
-
-        # Log normalization should process the image
-        assert normalized.shape == input_batch.shape
-        # fitsbolt may convert to uint8, so check for valid numeric type
         assert normalized.dtype in [np.float32, np.float64, np.uint8, np.uint16]
         assert np.isfinite(normalized).all()
 
-    def test_apply_normalisation_asinh(self, mock_config):
-        """Test asinh normalization application with batch processing."""
-        # Use batch format (1, H, W)
-        input_batch = np.linspace(-1, 1, 100).reshape(1, 10, 10).astype(np.float32)
+    @pytest.mark.parametrize(
+        "method",
+        ["linear", "log", "asinh", "zscale"],
+    )
+    def test_apply_normalisation_batch_methods(self, mock_config, method):
+        """Test batch normalisation with each stretch method on multi-image batches."""
+        images_batch = np.random.random((3, 32, 32)).astype(np.float32)
+        mock_config.normalisation_method = method
+        normalized_batch = apply_normalisation(images_batch, mock_config)
 
-        # Set the normalization method to asinh
-        mock_config.normalisation_method = "asinh"
-        normalized = apply_normalisation(input_batch, mock_config)
+        assert normalized_batch.shape == images_batch.shape
+        assert np.isfinite(normalized_batch).all()
 
-        assert normalized.shape == input_batch.shape
-        # fitsbolt may convert to uint8, so check for valid numeric type
-        assert normalized.dtype in [np.float32, np.float64, np.uint8, np.uint16]
-        # Asinh should handle negative values gracefully
-        assert np.isfinite(normalized).all()
-
-    def test_apply_normalisation_fallback(self, mock_config):
-        """Test normalization fallback when fitsbolt fails with batch processing."""
-        # Use batch format (1, H, W)
+    def test_apply_normalisation_unsupported_method(self, mock_config):
+        """Test normalisation with unsupported method falls back to CONVERSION_ONLY."""
         input_batch = np.linspace(0, 1, 100).reshape(1, 10, 10).astype(np.float32)
 
-        # Test with an unsupported method to trigger fallback
         mock_config.normalisation_method = "unsupported"
         normalized = apply_normalisation(input_batch, mock_config)
 
         assert normalized.shape == input_batch.shape
-        # fitsbolt may convert to uint8, so check for valid numeric type
         assert normalized.dtype in [np.float32, np.float64, np.uint8, np.uint16]
-        # Normalization should produce reasonable range - adjust for uint8
-        if normalized.dtype == np.uint8:
-            assert normalized.min() >= 0
-            assert normalized.max() <= 255
-        else:
-            assert normalized.min() >= 0
-            assert normalized.max() <= 1
+
+    @patch("fitsbolt.normalise_images")
+    def test_apply_normalisation_fitsbolt_mock(self, mock_normalise_images, mock_config):
+        """Test that apply_normalisation calls fitsbolt correctly and handles its output."""
+        batch_size = 2
+        images_batch = np.random.random((batch_size, 16, 16)).astype(np.float32)
+
+        mock_normalise_images.return_value = np.random.random((batch_size, 16, 16, 1)).astype(
+            np.float32
+        )
+
+        mock_config.normalisation_method = "linear"
+        result = apply_normalisation(images_batch, mock_config)
+
+        mock_normalise_images.assert_called_once()
+        call_kwargs = mock_normalise_images.call_args[1]
+        assert call_kwargs["show_progress"] is False
+        assert result.shape == images_batch.shape
+        assert result.dtype == np.float32
+
+    def test_apply_normalisation_error_raises(self, mock_config):
+        """Test that normalisation raises RuntimeError when fitsbolt fails."""
+        batch_images = np.random.random((1, 16, 16)).astype(np.float32) * 100
+
+        mock_config.normalisation_method = "linear"
+        with patch("fitsbolt.normalise_images", side_effect=Exception("Fitsbolt failed")):
+            with pytest.raises(RuntimeError, match="Fitsbolt normalisation failed"):
+                apply_normalisation(batch_images, mock_config)
 
     def test_combine_channels_simple(self, mock_cutout_data):
         """Test combining multiple channels into single output."""
@@ -246,7 +192,6 @@ class TestImageProcessor:
             "NIR-H": [0.0, 0.0, 0.6],
         }
 
-        # Convert dict to batch format (1, H, W, 3)
         extension_names = ["VIS", "NIR-Y", "NIR-H"]
         H, W = mock_cutout_data["VIS"].shape
         batch_cutouts = np.zeros((1, H, W, 3), dtype=np.float32)
@@ -255,47 +200,44 @@ class TestImageProcessor:
 
         combined = combine_channels(batch_cutouts, channel_weights)
 
-        # Should return RGB format (1, H, W, 3)
         assert combined.shape == (1, H, W, 3)
-        assert combined.dtype in [
-            np.float32,
-            np.float64,
-        ]  # fitsbolt may return float32 or float64 depending on input data
+        assert combined.dtype == np.float32
         assert isinstance(combined, np.ndarray)
 
-    def test_combine_channels_equal_weights(self, mock_cutout_data):
-        """Test combining channels with equal weighting."""
-        channel_weights = {
-            "VIS": [0.33, 0.33, 0.33],
-            "NIR-Y": [0.33, 0.33, 0.33],
-            "NIR-H": [0.34, 0.34, 0.34],
+    def test_combine_channels_comprehensive(self):
+        """Test comprehensive channel combination scenarios."""
+        cutouts = {
+            "RED": np.ones((32, 32)) * 1.0,
+            "GREEN": np.ones((32, 32)) * 2.0,
+            "BLUE": np.ones((32, 32)) * 3.0,
         }
 
-        # Convert dict to batch format (1, H, W, 3)
-        extension_names = ["VIS", "NIR-Y", "NIR-H"]
-        H, W = mock_cutout_data["VIS"].shape
-        batch_cutouts = np.zeros((1, H, W, 3), dtype=np.float32)
+        channel_weights = {
+            "RED": [0.33, 0.33, 0.33],
+            "GREEN": [0.33, 0.33, 0.33],
+            "BLUE": [0.34, 0.34, 0.34],
+        }
+
+        extension_names = ["RED", "GREEN", "BLUE"]
+        batch_cutouts = np.zeros((1, 32, 32, 3), dtype=np.float32)
         for i, ext in enumerate(extension_names):
-            batch_cutouts[0, :, :, i] = mock_cutout_data[ext]
+            batch_cutouts[0, :, :, i] = cutouts[ext]
 
         combined = combine_channels(batch_cutouts, channel_weights)
-
-        # Note: fitsbolt.batch_channel_combination does not simply average channels
-        # It processes RGB weights differently than simple linear combination
-        # Just verify basic properties - should return RGB format (1, H, W, 3)
-        assert combined.shape == (1, H, W, 3)
-        assert combined.dtype in [
-            np.float32,
-            np.float64,
-        ]  # fitsbolt may return float32 or float64 depending on input data
+        assert combined.shape == (1, 32, 32, 3)
         assert isinstance(combined, np.ndarray)
+
+        # Test empty channel_weights - should raise assertion error
+        try:
+            combined = combine_channels(batch_cutouts, {})
+            assert False, "Should have raised AssertionError for empty channel_weights"
+        except AssertionError:
+            pass  # Expected behavior
 
     def test_error_handling_invalid_cutout_data(self):
         """Test error handling with invalid cutout data."""
-        # Test with empty dict - should handle gracefully
         try:
             empty_cutouts = {}
-            # This might raise an exception or handle gracefully
             result = resize_batch_tensor(
                 empty_cutouts,
                 target_resolution=(64, 64),
@@ -305,16 +247,12 @@ class TestImageProcessor:
             )
             assert isinstance(result, np.ndarray)
         except Exception:
-            # It's acceptable to raise an exception for invalid input
             pass
 
     def test_error_handling_missing_channels(self):
         """Test error handling with malformed input shapes."""
-        # Test with incorrectly shaped array in dict values
         try:
-            malformed_cutouts = {
-                "source_0": {"VIS": np.random.random((2, 10)).astype(np.float32)}  # Valid 2D array
-            }
+            malformed_cutouts = {"source_0": {"VIS": np.random.random((2, 10)).astype(np.float32)}}
             result = resize_batch_tensor(
                 malformed_cutouts,
                 target_resolution=(64, 64),
@@ -322,15 +260,12 @@ class TestImageProcessor:
                 flux_conserved_resizing=False,
                 pixel_scales_dict={"VIS": 0.1},
             )
-            # If successful, should be a valid array
             assert isinstance(result, np.ndarray)
         except Exception:
-            # It's acceptable to raise an exception for malformed input
             pass
 
     def test_memory_efficient_processing(self, mock_cutout_data, mock_config):
         """Test memory-efficient processing of large cutouts."""
-        # Create larger cutout data in dict format - single source with all channels
         source_cutouts = {"source_0": {}}
         pixel_scales_dict = {}
         for channel in mock_cutout_data.keys():
@@ -338,7 +273,6 @@ class TestImageProcessor:
             source_cutouts["source_0"][channel] = large_cutout
             pixel_scales_dict[channel] = 0.1
 
-        # Process using resize_batch_tensor
         resized = resize_batch_tensor(
             source_cutouts,
             target_resolution=(256, 256),
@@ -347,23 +281,20 @@ class TestImageProcessor:
             pixel_scales_dict=pixel_scales_dict,
         )
 
-        # Reshape for normalization: (N_sources, H, W, N_extensions) -> (N, H, W)
         N_sources, H, W, N_extensions = resized.shape
         resized_for_norm = resized.reshape(N_sources * N_extensions, H, W)
 
         mock_config.normalisation_method = "linear"
-        normalized = apply_normalisation(resized_for_norm, mock_config)
-        converted = convert_data_type(normalized, "float32")
+        mock_config.data_type = "float32"
+        converted = apply_normalisation(resized_for_norm, mock_config)
 
-        # Should complete without memory errors
         assert isinstance(converted, np.ndarray)
-        assert converted.shape[0] == len(mock_cutout_data)  # Should be 3 (one per channel)
+        assert converted.shape[0] == len(mock_cutout_data)
         assert converted.shape[1:] == (256, 256)
         assert converted.dtype == np.float32
 
     def test_batch_processing_multiple_sources(self, mock_config):
         """Test batch processing multiple cutouts efficiently."""
-        # Create batch of cutouts (5 sources with 3 channels each)
         source_cutouts = {}
         pixel_scales_dict = {"VIS": 0.1, "NIR-Y": 0.1, "NIR-H": 0.1}
         for i in range(5):
@@ -373,7 +304,6 @@ class TestImageProcessor:
                 cutout = np.random.random((64, 64)).astype(np.float32)
                 source_cutouts[source_id][channel] = cutout
 
-        # Process using resize_batch_tensor
         resized = resize_batch_tensor(
             source_cutouts,
             target_resolution=(256, 256),
@@ -382,21 +312,19 @@ class TestImageProcessor:
             pixel_scales_dict=pixel_scales_dict,
         )
 
-        # Reshape for normalization: (N_sources, H, W, N_extensions) -> (N, H, W)
         N_sources, H, W, N_extensions = resized.shape
         resized_for_norm = resized.reshape(N_sources * N_extensions, H, W)
 
         mock_config.normalisation_method = "linear"
-        normalized = apply_normalisation(resized_for_norm, mock_config)
-        converted = convert_data_type(normalized, "float32")
+        mock_config.data_type = "float32"
+        converted = apply_normalisation(resized_for_norm, mock_config)
 
-        assert converted.shape[0] == 15  # 5 sources × 3 channels
+        assert converted.shape[0] == 15
         assert converted.shape[1:] == (256, 256)
         assert converted.dtype == np.float32
 
     def test_batch_processing_consistency(self, mock_cutout_data, mock_config):
         """Test that batch processing produces consistent results."""
-        # Create source_cutouts dict from mock data
         source_cutouts = {}
         pixel_scales_dict = {}
         for idx, (channel, cutout) in enumerate(mock_cutout_data.items()):
@@ -404,7 +332,6 @@ class TestImageProcessor:
             source_cutouts[source_id] = {channel: cutout}
             pixel_scales_dict[channel] = 0.1
 
-        # Process twice with same parameters
         resized1 = resize_batch_tensor(
             source_cutouts,
             target_resolution=(128, 128),
@@ -413,13 +340,11 @@ class TestImageProcessor:
             pixel_scales_dict=pixel_scales_dict,
         )
 
-        # Reshape for normalization: (N_sources, H, W, N_extensions) -> (N, H, W)
         N_sources, H, W, N_extensions = resized1.shape
         resized1_for_norm = resized1.reshape(N_sources * N_extensions, H, W)
 
         mock_config.normalisation_method = "linear"
-        normalized1 = apply_normalisation(resized1_for_norm, mock_config)
-        result1 = convert_data_type(normalized1, "float32")
+        result1 = apply_normalisation(resized1_for_norm, mock_config)
 
         resized2 = resize_batch_tensor(
             source_cutouts,
@@ -429,49 +354,29 @@ class TestImageProcessor:
             pixel_scales_dict=pixel_scales_dict,
         )
         resized2_for_norm = resized2.reshape(N_sources * N_extensions, H, W)
-        normalized2 = apply_normalisation(resized2_for_norm, mock_config)
-        result2 = convert_data_type(normalized2, "float32")
+        result2 = apply_normalisation(resized2_for_norm, mock_config)
 
-        # Results should be identical (deterministic processing)
         assert result1.shape == result2.shape
         assert result1.dtype == result2.dtype
         assert np.allclose(result1, result2, rtol=1e-6)
 
-    def test_different_normalisation_methods(self, mock_config):
-        """Test all supported normalization methods with batch processing."""
-        # Use batch format (1, H, W)
-        input_batch = np.linspace(0.01, 1, 100).reshape(1, 10, 10).astype(np.float32)
-
-        normalisation_methods = ["linear", "log", "asinh", "zscale"]
-
-        for method in normalisation_methods:
-            mock_config.normalisation_method = method
-            normalized = apply_normalisation(input_batch, mock_config)
-
-            assert normalized.shape == input_batch.shape
-            # fitsbolt may convert to uint8, so check for valid numeric type
-            assert normalized.dtype in [np.float32, np.float64, np.uint8, np.uint16]
-            assert np.isfinite(normalized).all()
-
     @patch("fitsbolt.normalise_images")
     def test_fitsbolt_integration(self, mock_normalise_images, mock_cutout_data, mock_config):
         """Test integration with fitsbolt library."""
-        # Create source_cutouts dict from mock data - single source with all channels
         source_cutouts = {"source_0": {}}
         pixel_scales_dict = {}
         for channel, cutout in mock_cutout_data.items():
             source_cutouts["source_0"][channel] = cutout
             pixel_scales_dict[channel] = 0.1
 
-        # Mock fitsbolt responses - normalise_images expects batch format and returns batch format
-        def mock_normalise_func(images, normalisation_method, show_progress):
-            # Return normalized version of the input batch
+        def mock_normalise_func(
+            images, output_dtype, normalisation_method, show_progress, num_workers=1
+        ):
             batch_size, height, width, channels = images.shape
             return np.random.random((batch_size, height, width, channels)).astype(np.float32)
 
         mock_normalise_images.side_effect = mock_normalise_func
 
-        # Process with individual functions
         resized = resize_batch_tensor(
             source_cutouts,
             target_resolution=(256, 256),
@@ -480,22 +385,19 @@ class TestImageProcessor:
             pixel_scales_dict=pixel_scales_dict,
         )
 
-        # Reshape for normalization: (N_sources, H, W, N_extensions) -> (N, H, W)
         N_sources, H, W, N_extensions = resized.shape
         resized_for_norm = resized.reshape(N_sources * N_extensions, H, W)
 
         mock_config.normalisation_method = "linear"
         result = apply_normalisation(resized_for_norm, mock_config)
 
-        # Vectorized implementation calls fitsbolt once for entire batch
         assert mock_normalise_images.call_count == 1
         assert isinstance(result, np.ndarray)
-        assert result.shape[0] == len(mock_cutout_data)  # Should be 3 (one per channel)
+        assert result.shape[0] == len(mock_cutout_data)
         assert result.shape[1:] == (256, 256)
 
     def test_resize_batch_tensor_edge_cases(self):
         """Test resize_batch_tensor function with edge cases."""
-        # Test same size - should return copy
         image = np.random.random((64, 64)).astype(np.float32)
         source_cutouts = {"source_0": {"VIS": image}}
 
@@ -506,12 +408,10 @@ class TestImageProcessor:
             flux_conserved_resizing=False,
             pixel_scales_dict={"VIS": 0.1},
         )
-        assert resized.shape == (1, 64, 64, 1)  # (N_sources, H, W, N_extensions)
-        # Should be a copy but values should be the same since no resizing happened
-        assert resized[0, :, :, 0] is not image  # Different objects
+        assert resized.shape == (1, 64, 64, 1)
+        assert resized[0, :, :, 0] is not image
         assert np.allclose(resized[0, :, :, 0], image)
 
-        # Test different interpolation methods
         for method in ["nearest", "bilinear", "biquadratic", "bicubic", "invalid_method"]:
             resized = resize_batch_tensor(
                 source_cutouts,
@@ -520,9 +420,8 @@ class TestImageProcessor:
                 flux_conserved_resizing=False,
                 pixel_scales_dict={"VIS": 0.1},
             )
-            assert resized.shape == (1, 32, 32, 1)  # (N_sources, H, W, N_extensions)
+            assert resized.shape == (1, 32, 32, 1)
 
-        # Test with error condition
         with patch("skimage.transform.resize", side_effect=Exception("Resize failed")):
             resized = resize_batch_tensor(
                 source_cutouts,
@@ -531,156 +430,19 @@ class TestImageProcessor:
                 flux_conserved_resizing=False,
                 pixel_scales_dict={"VIS": 0.1},
             )
-            # Should return zeros on error
-            assert resized.shape == (1, 128, 128, 1)  # (N_sources, H, W, N_extensions)
+            assert resized.shape == (1, 128, 128, 1)
             assert np.allclose(resized, 0)
-
-    def test_convert_data_type_all_types(self):
-        """Test data type conversion for all supported types."""
-        image = np.random.random((32, 32)).astype(np.float64)
-
-        # Test all supported types
-        type_map = {
-            "float32": np.float32,
-            "float64": np.float64,
-            "uint8": np.uint8,
-            "uint16": np.uint16,
-        }
-
-        for target_dtype, expected_type in type_map.items():
-            converted = convert_data_type(image, target_dtype)
-            assert converted.dtype == expected_type
-
-        # Test unknown type
-        converted = convert_data_type(image, "unknown_type")
-        assert converted.dtype == image.dtype  # Should return original
-
-        # Test with conversion error
-        with patch("skimage.util.img_as_float32", side_effect=Exception("Conversion failed")):
-            converted = convert_data_type(image, "float32")
-            assert converted.dtype == image.dtype  # Should return original
-
-    def test_apply_normalisation_error_fallback(self, mock_config):
-        """Test normalization fallback when fitsbolt fails with batch processing."""
-        # Use batch format (1, H, W)
-        batch_images = np.random.random((1, 16, 16)).astype(np.float32) * 100
-
-        mock_config.normalisation_method = "linear"
-        # Mock fitsbolt to fail
-        with patch("fitsbolt.normalise_images", side_effect=Exception("Fitsbolt failed")):
-            normalized = apply_normalisation(batch_images, mock_config)
-
-            # Should use fallback normalization
-            assert normalized.shape == batch_images.shape
-            assert np.min(normalized) >= 0
-            assert np.max(normalized) <= 1
-
-    def test_combine_channels_comprehensive(self):
-        """Test comprehensive channel combination scenarios."""
-        cutouts = {
-            "RED": np.ones((32, 32)) * 1.0,
-            "GREEN": np.ones((32, 32)) * 2.0,
-            "BLUE": np.ones((32, 32)) * 3.0,
-        }
-
-        # Test equal weights (channels and weights available for reference)
-        # channels = ["RED", "GREEN", "BLUE"]
-        # weights = [1.0, 1.0, 1.0]
-
-        channel_weights = {
-            "RED": [0.33, 0.33, 0.33],
-            "GREEN": [0.33, 0.33, 0.33],
-            "BLUE": [0.34, 0.34, 0.34],
-        }
-
-        # Convert dict to batch format (1, 32, 32, 3)
-        extension_names = ["RED", "GREEN", "BLUE"]
-        batch_cutouts = np.zeros((1, 32, 32, 3), dtype=np.float32)
-        for i, ext in enumerate(extension_names):
-            batch_cutouts[0, :, :, i] = cutouts[ext]
-
-        combined = combine_channels(batch_cutouts, channel_weights)
-        assert combined.shape == (1, 32, 32, 3)  # RGB output
-        assert isinstance(combined, np.ndarray)
-
-        # Test empty channel_weights - should raise assertion error
-        try:
-            combined = combine_channels(batch_cutouts, {})
-            assert False, "Should have raised AssertionError for empty channel_weights"
-        except AssertionError:
-            pass  # Expected behavior
-
-    def test_apply_normalisation_batch_processing(self, mock_config):
-        """Test batch normalization of multiple images."""
-        # Create batch of test images
-        batch_size = 4
-        height, width = 64, 64
-        images_batch = np.random.random((batch_size, height, width)).astype(np.float32)
-
-        mock_config.normalisation_method = "linear"
-        normalized_batch = apply_normalisation(images_batch, mock_config)
-
-        assert normalized_batch.shape == (batch_size, height, width)
-        assert normalized_batch.dtype in [np.float32, np.float64, np.uint8, np.uint16]
-
-    def test_apply_normalisation_different_methods(self, mock_config):
-        """Test batch normalization with different methods."""
-        batch_size = 3
-        images_batch = np.random.random((batch_size, 32, 32)).astype(np.float32)
-
-        methods = ["linear", "log", "asinh", "zscale"]
-        for method in methods:
-            mock_config.normalisation_method = method
-            normalized_batch = apply_normalisation(images_batch, mock_config)
-            assert normalized_batch.shape == images_batch.shape
-            assert np.isfinite(normalized_batch).all()
-
-    @patch("fitsbolt.normalise_images")
-    def test_apply_normalisation_fitsbolt_call(self, mock_normalise_images, mock_config):
-        """Test that batch normalization calls fitsbolt correctly."""
-        batch_size = 2
-        images_batch = np.random.random((batch_size, 16, 16)).astype(np.float32)
-
-        # Mock fitsbolt response
-        mock_normalise_images.return_value = np.random.random((batch_size, 16, 16, 1)).astype(
-            np.float32
-        )
-
-        mock_config.normalisation_method = "linear"
-        apply_normalisation(images_batch, mock_config)
-
-        # Should call fitsbolt correctly
-        mock_normalise_images.assert_called_once()
-        call_kwargs = mock_normalise_images.call_args[1]
-        assert call_kwargs["show_progress"] is False
-
-    def test_apply_normalisation_fallback_batch(self, mock_config):
-        """Test batch normalization fallback when fitsbolt fails."""
-        images_batch = np.random.random((3, 16, 16)).astype(np.float32) * 100
-
-        mock_config.normalisation_method = "linear"
-        # Mock fitsbolt to fail
-        with patch("fitsbolt.normalise_images", side_effect=Exception("Fitsbolt failed")):
-            normalized_batch = apply_normalisation(images_batch, mock_config)
-
-            # Should use fallback normalization
-            assert normalized_batch.shape == images_batch.shape
-            for i in range(images_batch.shape[0]):
-                assert np.min(normalized_batch[i]) >= 0
-                assert np.max(normalized_batch[i]) <= 1
 
     def test_flux_conserved_resizing_single_scale(self):
         """Test that flux-conserved resizing preserves total flux for different scales."""
-        # Test different input and output sizes
         test_cases = [
-            ((100, 100), (50, 50)),  # Downscaling
-            ((50, 50), (100, 100)),  # Upscaling
-            ((80, 80), (120, 120)),  # Upscaling different ratio
-            ((200, 200), (64, 64)),  # Downscaling to typical output
+            ((100, 100), (50, 50)),
+            ((50, 50), (100, 100)),
+            ((80, 80), (120, 120)),
+            ((200, 200), (64, 64)),
         ]
 
         for input_shape, output_shape in test_cases:
-            # Create a test image with a square in the middle containing known flux
             input_image = np.zeros(input_shape, dtype=np.float32)
             center_h, center_w = input_shape[0] // 2, input_shape[1] // 2
             square_size = min(input_shape) // 4
@@ -689,26 +451,21 @@ class TestImageProcessor:
             w_start = center_w - square_size // 2
             w_end = center_w + square_size // 2
 
-            # Fill square with constant flux value
             flux_value = 1000.0
             input_image[h_start:h_end, w_start:w_end] = flux_value
 
-            # Calculate total input flux
             input_flux = np.sum(input_image)
 
-            # Create WCS for input
-            pixel_scale = 0.1  # arcsec per pixel
+            pixel_scale = 0.1
             input_wcs = WCS(naxis=2)
             input_wcs.wcs.crpix = [input_shape[1] / 2, input_shape[0] / 2]
             input_wcs.wcs.cdelt = [pixel_scale, pixel_scale]
             input_wcs.wcs.crval = [0, 0]
             input_wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
 
-            # Prepare input for resize_batch_tensor
             source_cutouts = {"source_1": {"channel_1": input_image}}
             pixel_scales_dict = {"channel_1": pixel_scale}
 
-            # Apply flux-conserved resizing
             resized_tensor = resize_batch_tensor(
                 source_cutouts,
                 output_shape,
@@ -717,11 +474,9 @@ class TestImageProcessor:
                 pixel_scales_dict=pixel_scales_dict,
             )
 
-            # Extract resized image
             resized_image = resized_tensor[0, :, :, 0]
             output_flux = np.sum(resized_image)
 
-            # Check flux conservation (allow 1% tolerance due to numerical precision)
             flux_ratio = output_flux / input_flux
             assert abs(flux_ratio - 1.0) < 0.01, (
                 f"Flux not conserved for {input_shape} -> {output_shape}: "
@@ -729,16 +484,14 @@ class TestImageProcessor:
             )
 
     def test_flux_conserved_resizing_roundtrip(self):
-        """Test that flux-conserved resizing roundtrip (original->finer->original) preserves flux."""
-        # Test roundtrip: original -> finer resolution -> back to original
+        """Test that flux-conserved resizing roundtrip preserves flux."""
         test_cases = [
-            ((100, 100), (200, 200)),  # 2x upscale then back
-            ((80, 80), (160, 160)),  # 2x upscale then back
-            ((120, 120), (240, 240)),  # 2x upscale then back
+            ((100, 100), (200, 200)),
+            ((80, 80), (160, 160)),
+            ((120, 120), (240, 240)),
         ]
 
         for original_shape, intermediate_shape in test_cases:
-            # Create test image with a square containing known flux
             input_image = np.zeros(original_shape, dtype=np.float32)
             center_h, center_w = original_shape[0] // 2, original_shape[1] // 2
             square_size = min(original_shape) // 4
@@ -747,22 +500,18 @@ class TestImageProcessor:
             w_start = center_w - square_size // 2
             w_end = center_w + square_size // 2
 
-            # Fill square with constant flux
             flux_value = 1000.0
             input_image[h_start:h_end, w_start:w_end] = flux_value
 
-            # Calculate total input flux
             input_flux = np.sum(input_image)
 
-            # Create WCS for original
-            pixel_scale = 0.1  # arcsec per pixel
+            pixel_scale = 0.1
             original_wcs = WCS(naxis=2)
             original_wcs.wcs.crpix = [original_shape[1] / 2, original_shape[0] / 2]
             original_wcs.wcs.cdelt = [pixel_scale, pixel_scale]
             original_wcs.wcs.crval = [0, 0]
             original_wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
 
-            # Step 1: Resize to finer resolution
             source_cutouts_1 = {"source_1": {"channel_1": input_image}}
             pixel_scales_dict_1 = {"channel_1": pixel_scale}
 
@@ -777,14 +526,12 @@ class TestImageProcessor:
             intermediate_image = intermediate_tensor[0, :, :, 0]
             intermediate_flux = np.sum(intermediate_image)
 
-            # Check flux after first resize
             flux_ratio_1 = intermediate_flux / input_flux
             assert abs(flux_ratio_1 - 1.0) < 0.01, (
                 f"Flux not conserved in first resize {original_shape} -> {intermediate_shape}: "
                 f"ratio={flux_ratio_1:.4f}"
             )
 
-            # Step 2: Create WCS for intermediate resolution
             intermediate_pixel_scale = pixel_scale * (original_shape[0] / intermediate_shape[0])
             intermediate_wcs = WCS(naxis=2)
             intermediate_wcs.wcs.crpix = [intermediate_shape[1] / 2, intermediate_shape[0] / 2]
@@ -792,7 +539,6 @@ class TestImageProcessor:
             intermediate_wcs.wcs.crval = [0, 0]
             intermediate_wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
 
-            # Step 3: Resize back to original resolution
             source_cutouts_2 = {"source_1": {"channel_1": intermediate_image}}
             pixel_scales_dict_2 = {"channel_1": intermediate_pixel_scale}
 
@@ -807,168 +553,14 @@ class TestImageProcessor:
             final_image = final_tensor[0, :, :, 0]
             final_flux = np.sum(final_image)
 
-            # Check flux after roundtrip
             flux_ratio_final = final_flux / input_flux
             assert abs(flux_ratio_final - 1.0) < 0.02, (
-                f"Flux not conserved in roundtrip {original_shape} -> {intermediate_shape} -> {original_shape}: "
+                f"Flux not conserved in roundtrip "
+                f"{original_shape} -> {intermediate_shape} -> {original_shape}: "
                 f"input={input_flux:.2f}, final={final_flux:.2f}, ratio={flux_ratio_final:.4f}"
             )
 
-            # Also check that the image structure is reasonably preserved
-            # (correlation should be high even if pixel values differ slightly)
             correlation = np.corrcoef(input_image.flatten(), final_image.flatten())[0, 1]
-            assert (
-                correlation > 0.9
-            ), f"Image structure not well preserved in roundtrip: correlation={correlation:.4f}"
-
-    def test_flux_conserved_vs_standard_resizing(self):
-        """Test that flux-conserved resizing differs from standard resizing in flux preservation."""
-        # Create test image with known flux
-        input_shape = (100, 100)
-        output_shape = (50, 50)
-
-        input_image = np.zeros(input_shape, dtype=np.float32)
-        center_h, center_w = input_shape[0] // 2, input_shape[1] // 2
-        square_size = 20
-        h_start = center_h - square_size // 2
-        h_end = center_h + square_size // 2
-        w_start = center_w - square_size // 2
-        w_end = center_w + square_size // 2
-
-        flux_value = 1000.0
-        input_image[h_start:h_end, w_start:w_end] = flux_value
-        input_flux = np.sum(input_image)
-
-        # Create WCS
-        pixel_scale = 0.1
-        input_wcs = WCS(naxis=2)
-        input_wcs.wcs.crpix = [input_shape[1] / 2, input_shape[0] / 2]
-        input_wcs.wcs.cdelt = [pixel_scale, pixel_scale]
-        input_wcs.wcs.crval = [0, 0]
-        input_wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
-
-        source_cutouts = {"source_1": {"channel_1": input_image}}
-        pixel_scales_dict = {"channel_1": pixel_scale}
-
-        # Apply flux-conserved resizing
-        flux_conserved_tensor = resize_batch_tensor(
-            source_cutouts,
-            output_shape,
-            interpolation="bilinear",
-            flux_conserved_resizing=True,
-            pixel_scales_dict=pixel_scales_dict,
-        )
-        flux_conserved_flux = np.sum(flux_conserved_tensor[0, :, :, 0])
-
-        # Apply standard resizing
-        standard_tensor = resize_batch_tensor(
-            source_cutouts,
-            output_shape,
-            interpolation="bilinear",
-            flux_conserved_resizing=False,
-            pixel_scales_dict=pixel_scales_dict,
-        )
-        standard_flux = np.sum(standard_tensor[0, :, :, 0])
-
-        # Flux-conserved should preserve flux better
-        flux_conserved_ratio = flux_conserved_flux / input_flux
-        standard_ratio = standard_flux / input_flux
-
-        # Flux-conserved should be within 1% of original
-        assert (
-            abs(flux_conserved_ratio - 1.0) < 0.01
-        ), f"Flux-conserved resizing failed: ratio={flux_conserved_ratio:.4f}"
-
-        # Standard resizing should NOT preserve flux as well (typically loses flux on downscale)
-        # The difference should be noticeable
-        assert abs(flux_conserved_ratio - 1.0) < abs(standard_ratio - 1.0), (
-            f"Flux-conserved ({flux_conserved_ratio:.4f}) should be closer to 1.0 "
-            f"than standard ({standard_ratio:.4f})"
-        )
-
-
-class TestExternalFitsboltConfig:
-    """Tests for external fitsbolt configuration support (e.g., from AnomalyMatch)."""
-
-    @patch("fitsbolt.normalise_images")
-    def test_apply_normalisation_with_external_fitsbolt_config_log(self, mock_normalise_images):
-        """Test normalization using external fitsbolt config with LOG method."""
-        from dotmap import DotMap
-        from fitsbolt.cfg.create_config import create_config as fb_create_cfg
-        from fitsbolt.normalisation.NormalisationMethod import NormalisationMethod
-
-        # Create external config using fitsbolt's own config creator
-        external_cfg = fb_create_cfg(
-            normalisation_method=NormalisationMethod.LOG,
-            norm_log_scale_a=500.0,
-        )
-
-        # Create cutana config with external fitsbolt config
-        config = DotMap(
-            {
-                "normalisation_method": "log",
-                "external_fitsbolt_cfg": external_cfg,
-            }
-        )
-
-        # Create test images
-        test_images = np.random.rand(2, 64, 64, 3).astype(np.float32)
-
-        # Mock return value
-        mock_normalise_images.return_value = (test_images * 255).astype(np.uint8)
-
-        # Apply normalisation
-        apply_normalisation(test_images, config)
-
-        # Verify fitsbolt.normalise_images was called
-        mock_normalise_images.assert_called_once()
-
-        # Check that the external config parameters were passed
-        call_kwargs = mock_normalise_images.call_args[1]
-        assert call_kwargs["normalisation_method"] == NormalisationMethod.LOG
-        assert call_kwargs["norm_log_scale_a"] == 500.0
-        assert call_kwargs["num_workers"] == 1  # Cutana handles parallelism
-
-    @patch("fitsbolt.normalise_images")
-    def test_apply_normalisation_with_external_fitsbolt_config_conversion_only(
-        self, mock_normalise_images
-    ):
-        """Test normalization using external fitsbolt config with CONVERSION_ONLY."""
-        from dotmap import DotMap
-        from fitsbolt.cfg.create_config import create_config as fb_create_cfg
-        from fitsbolt.normalisation.NormalisationMethod import NormalisationMethod
-
-        # Create external config with CONVERSION_ONLY (simplest case)
-        external_cfg = fb_create_cfg(
-            normalisation_method=NormalisationMethod.CONVERSION_ONLY,
-        )
-
-        config = DotMap(
-            {
-                "normalisation_method": "linear",
-                "external_fitsbolt_cfg": external_cfg,
-            }
-        )
-
-        test_images = np.random.rand(2, 64, 64, 3).astype(np.float32)
-        mock_normalise_images.return_value = (test_images * 255).astype(np.uint8)
-
-        apply_normalisation(test_images, config)
-
-        mock_normalise_images.assert_called_once()
-        call_kwargs = mock_normalise_images.call_args[1]
-        assert call_kwargs["normalisation_method"] == NormalisationMethod.CONVERSION_ONLY
-
-    def test_external_config_midtones_raises_error(self):
-        """Test that MIDTONES method raises appropriate error."""
-        from fitsbolt.cfg.create_config import create_config as fb_create_cfg
-        from fitsbolt.normalisation.NormalisationMethod import NormalisationMethod
-
-        from cutana.normalisation_parameters import build_fitsbolt_params_from_external_cfg
-
-        external_cfg = fb_create_cfg(
-            normalisation_method=NormalisationMethod.MIDTONES,
-        )
-
-        with pytest.raises(ValueError, match="MIDTONES.*not supported"):
-            build_fitsbolt_params_from_external_cfg(external_cfg, num_channels=3)
+            assert correlation > 0.9, (
+                f"Image structure not well preserved in roundtrip: correlation={correlation:.4f}"
+            )

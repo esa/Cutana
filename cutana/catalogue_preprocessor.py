@@ -20,7 +20,10 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 from astropy.io import fits
+from astropy.table import Table
+from astropy.wcs import WCS
 from loguru import logger
 
 
@@ -45,11 +48,6 @@ def extract_fits_sets(
         - fits_set_dict: Dict mapping fits_set tuples to list of fits files
         - resolution_ratios: Dict mapping filter names to pixel scale ratios
     """
-    import os
-
-    from astropy.io import fits
-    from astropy.wcs import WCS
-
     fits_set_dict = {}
     resolution_ratios = {}
 
@@ -70,7 +68,10 @@ def extract_fits_sets(
 
                 # Get pixel scale from WCS
                 with fits.open(fits_path) as hdul:
-                    # Try PRIMARY extension first, then first extension with WCS
+                    # Try PRIMARY extension first, then first extension with WCS.
+                    # A WCS() failure on one HDU is expected (not every HDU has
+                    # celestial coords), so we continue searching — but log at
+                    # debug level so the root cause is not silently discarded.
                     wcs_obj = None
                     for hdu in hdul:
                         try:
@@ -79,16 +80,19 @@ def extract_fits_sets(
                                 if test_wcs.has_celestial:
                                     wcs_obj = test_wcs
                                     break
-                        except Exception:
+                        except Exception as wcs_error:
+                            logger.debug(
+                                f"Skipping HDU in {fits_path} (no usable WCS): {wcs_error}"
+                            )
                             continue
 
                     if wcs_obj:
                         pixel_scale_matrix = wcs_obj.pixel_scale_matrix
                         pixel_scale_deg = abs(pixel_scale_matrix[0, 0])  # degrees per pixel
                         # sanity check of the wcs direction
-                        assert pixel_scale_deg == np.max(
-                            np.abs(pixel_scale_matrix)
-                        ), f"unexpected pixel scale matrix. Expected pixel scale {pixel_scale_deg} from [0,0] of {pixel_scale_matrix}"
+                        assert pixel_scale_deg == np.max(np.abs(pixel_scale_matrix)), (
+                            f"unexpected pixel scale matrix. Expected pixel scale {pixel_scale_deg} from [0,0] of {pixel_scale_matrix}"
+                        )
                         pixel_scale_arcsec = pixel_scale_deg * 3600.0
                         pixel_scales[filter_name] = pixel_scale_arcsec
 
@@ -390,7 +394,7 @@ def validate_resolution_ratios(catalogue_df: pd.DataFrame) -> List[str]:
                         deviation = abs(ratio - 1.0)
                         if deviation > 0.0001:  # 0.01% = 0.0001
                             errors.append(
-                                f"Resolution ratio difference of {deviation*100:.2f}% detected between filters."
+                                f"Resolution ratio difference of {deviation * 100:.2f}% detected between filters."
                                 f"When using multiple filters with different resolutions, you must specify 'diameter_arcsec'"
                                 f"instead of 'diameter_pixel' to avoid ambiguity about which filter's pixel scale to"
                                 f"reference. Found resolution ratio {ratio:.4f} for filter {filter_name}."
@@ -481,14 +485,13 @@ def check_fits_files_exist(catalogue_df: pd.DataFrame) -> Tuple[List[str], List[
     return errors, warnings
 
 
-def preprocess_catalogue(catalogue_df: pd.DataFrame, config=None) -> pd.DataFrame:
+def preprocess_catalogue(catalogue_df: pd.DataFrame) -> pd.DataFrame:
     """
     Preprocess catalogue by resetting index and any other required operations.
     Ensures SourceID column is converted to string type.
 
     Args:
         catalogue_df: Input DataFrame
-        config: Optional configuration DotMap for validation
 
     Returns:
         Preprocessed DataFrame with reset index and string SourceID
@@ -502,46 +505,36 @@ def preprocess_catalogue(catalogue_df: pd.DataFrame, config=None) -> pd.DataFram
     if not catalogue_df.index.equals(pd.RangeIndex(len(catalogue_df))):
         logger.info("Reset non-contiguous catalogue index")
 
-    # Ensure SourceID is string type
+    # Check for duplicate SourceIDs in small catalogues. For large catalogues the
+    # check is skipped as it would require loading all IDs into memory at once.
+    _DUPLICATE_CHECK_THRESHOLD = 100_000
     if "SourceID" in processed_df.columns:
         try:
             processed_df["SourceID"] = processed_df["SourceID"].astype(str)
-            logger.debug("Converted SourceID column to string type")
         except Exception as e:
             logger.warning(f"Could not convert SourceID to string: {e}")
 
-    # Validate extension order if config is provided
-    if config is not None:
-        validate_extension_order_matches_fits_order(processed_df, config)
+        if len(processed_df) < _DUPLICATE_CHECK_THRESHOLD:
+            if processed_df["SourceID"].duplicated().any():
+                n_duplicates = processed_df["SourceID"].duplicated().sum()
+                logger.warning(
+                    f"Duplicate SourceIDs detected ({n_duplicates} duplicates). "
+                    "Reformatting all SourceIDs as SourceID_RA_Dec to prevent silent data loss."
+                )
+                processed_df["SourceID"] = (
+                    processed_df["SourceID"].astype(str)
+                    + "_"
+                    + processed_df["RA"].map("{:.10f}".format)
+                    + "_"
+                    + processed_df["Dec"].map("{:.10f}".format)
+                )
+        else:
+            logger.info(
+                f"Large catalogue ({len(processed_df):,} sources) detected — "
+                "skipping duplicate SourceID check."
+            )
 
     return processed_df
-
-
-def validate_extension_order_matches_fits_order(catalogue_df: pd.DataFrame, config) -> None:
-    """
-    Validate that the order of extensions in config matches the order in FITS files.
-
-    TODO: This function needs to be implemented to ensure that:
-    1. The order of extensions in config.selected_extensions matches the actual
-       order of extensions found in the FITS files referenced by the catalogue
-    2. Channel weights are applied in the correct order corresponding to the
-       actual FITS file structure
-    3. Multi-channel processing uses consistent extension ordering across all sources
-
-    This is critical for ensuring that channel combination weights are applied
-    to the correct input channels, preventing silent data corruption where
-    e.g., NIR-H weights might be applied to NIR-J data due to ordering mismatches.
-
-    Args:
-        catalogue_df: Preprocessed catalogue DataFrame
-        config: Configuration DotMap containing selected_extensions and channel_weights
-
-    Raises:
-        CatalogueValidationError: If extension ordering is inconsistent
-    """
-    # TODO: Implement extension order validation
-    # See issue.md for detailed implementation requirements
-    pass
 
 
 def load_catalogue(catalogue_path: str) -> pd.DataFrame:
@@ -563,8 +556,6 @@ def load_catalogue(catalogue_path: str) -> pd.DataFrame:
     if catalogue_file.suffix.lower() == ".csv":
         catalogue_df = pd.read_csv(catalogue_file)
     elif catalogue_file.suffix.lower() in [".fits", ".fit"]:
-        from astropy.table import Table
-
         table = Table.read(catalogue_file)
         catalogue_df = table.to_pandas()
     elif catalogue_file.suffix.lower() == ".parquet":
@@ -600,8 +591,6 @@ def stream_catalogue_chunks(
     Raises:
         ValueError: If file format is unsupported
     """
-    import pyarrow.parquet as pq
-
     path_obj = Path(path)
     suffix = path_obj.suffix.lower()
     row_offset = 0

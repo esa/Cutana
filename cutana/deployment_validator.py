@@ -17,14 +17,27 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from pathlib import Path
 from typing import Dict, List
+
+import numpy as np
+import pandas as pd
+import toml
+import zarr
+from astropy.io import fits
+from astropy.wcs import WCS
 
 try:
     from loguru import logger
 except ImportError:
     print("ERROR: loguru not installed. Please install cutana dependencies.")
     sys.exit(1)
+
+from cutana.get_default_config import get_default_config
+from cutana.logging_config import setup_logging
+from cutana.orchestrator import Orchestrator
+from cutana.validate_config import validate_config
 
 
 class DeploymentValidator:
@@ -43,8 +56,6 @@ class DeploymentValidator:
 
     def _setup_logging(self):
         """Configure logging for validation."""
-        from cutana.logging_config import setup_logging
-
         # Use consistent logging configuration from cutana
         # Set console level to DEBUG for verbose mode, INFO otherwise
         console_level = "DEBUG" if self.verbose else "INFO"
@@ -61,21 +72,25 @@ class DeploymentValidator:
             console_level=console_level,
         )
 
-    def validate_conda_environment(self) -> bool:
-        """Check if running in the correct conda environment.
+    def validate_python_environment(self) -> bool:
+        """Check if running in a virtual environment.
 
         Returns:
-            bool: True if in 'cutana' conda environment
+            bool: True if in a virtual environment (venv, conda, or uv)
         """
-        logger.info("[CHECK] Checking conda environment...")
+        logger.info("[CHECK] Checking Python environment...")
 
+        in_venv = sys.prefix != sys.base_prefix
         conda_env = os.environ.get("CONDA_DEFAULT_ENV", "")
-        if conda_env == "cutana":
-            logger.success(f"[PASS] Running in correct conda environment: {conda_env}")
+        virtual_env = os.environ.get("VIRTUAL_ENV", "")
+
+        if in_venv or conda_env or virtual_env:
+            env_name = conda_env or Path(virtual_env).name if virtual_env else Path(sys.prefix).name
+            logger.success(f"[PASS] Running in virtual environment: {env_name}")
             return True
         else:
-            logger.warning(f"[WARN] Not in 'cutana' environment (current: '{conda_env or 'none'}')")
-            logger.info("   Run 'conda activate cutana' before using Cutana")
+            logger.warning("[WARN] Not in a virtual environment")
+            logger.info("   Run 'uv sync' or 'uv venv && source .venv/bin/activate' first")
             return False
 
     def _get_dependencies_from_config(self) -> List[str]:
@@ -90,8 +105,6 @@ class DeploymentValidator:
         pyproject_path = Path(__file__).parent.parent / "pyproject.toml"
         if pyproject_path.exists():
             try:
-                import toml
-
                 with open(pyproject_path, "r") as f:
                     pyproject = toml.load(f)
 
@@ -182,9 +195,6 @@ class DeploymentValidator:
         logger.info("[CHECK] Checking configuration system...")
 
         try:
-            from cutana.get_default_config import get_default_config
-            from cutana.validate_config import validate_config
-
             # Load default config
             config = get_default_config()
             logger.debug("  [OK] Default config loaded")
@@ -226,15 +236,6 @@ class DeploymentValidator:
         temp_output_dir = None
 
         try:
-            # Import required modules
-            import numpy as np
-            import pandas as pd
-            import zarr
-            from astropy.io import fits
-            from astropy.wcs import WCS
-
-            from cutana import Orchestrator, get_default_config
-
             # Create temporary directories
             temp_data_dir = Path(tempfile.mkdtemp(prefix="cutana_e2e_data_"))
             temp_output_dir = Path(tempfile.mkdtemp(prefix="cutana_e2e_output_"))
@@ -359,8 +360,6 @@ class DeploymentValidator:
 
         except Exception as e:
             logger.error(f"[FAIL] End-to-end test failed: {e}")
-            import traceback
-
             logger.debug(traceback.format_exc())
             return False
 
@@ -449,7 +448,7 @@ class DeploymentValidator:
         start_time = time.time()
 
         # Run all checks
-        self.results["conda_environment"] = self.validate_conda_environment()
+        self.results["python_environment"] = self.validate_python_environment()
         self.results["dependencies"] = self.validate_dependencies()
         self.results["configuration"] = self.validate_configuration()
         self.results["end_to_end"] = self.run_minimal_e2e_test()
@@ -518,10 +517,12 @@ class DeploymentValidator:
             print(f"  Completed in {elapsed:.1f} seconds")
             print("")
             print("  Troubleshooting tips:")
-            if not self.results.get("conda_environment", False):
-                print("    - Run 'conda activate cutana' and try again")
+            if not self.results.get("python_environment", False):
+                print(
+                    "    - Run 'uv sync' to create a virtual environment and install dependencies"
+                )
             if not self.results.get("dependencies", False):
-                print("    - Run 'conda env create -f environment.yml' to install dependencies")
+                print("    - Run 'uv sync --all-extras' to install all dependencies")
             if not self.results.get("git_access", False):
                 print("    - Check your git configuration and network access")
 

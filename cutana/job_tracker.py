@@ -17,6 +17,7 @@ This module handles:
 
 import tempfile
 import time
+import uuid
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
@@ -55,8 +56,6 @@ class JobTracker:
         self.progress_dir = progress_dir or tempfile.gettempdir()
 
         # Session ID to avoid conflicts between different job runs
-        import uuid
-
         self.session_id = session_id if session_id else str(uuid.uuid4())[:8]
 
         # Job-level state

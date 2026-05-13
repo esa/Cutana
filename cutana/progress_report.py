@@ -11,7 +11,7 @@ This module provides a clean, type-safe way to handle progress information
 instead of manually constructing large dictionaries.
 """
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
 
@@ -204,8 +204,6 @@ class ProgressReport:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert ProgressReport back to dictionary for compatibility."""
-        from dataclasses import asdict
-
         return asdict(self)
 
     def safe_float(self, value, default: float = 0.0) -> float:

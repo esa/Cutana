@@ -25,6 +25,9 @@ from typing import Any, Dict
 import portalocker
 from loguru import logger
 
+from .process_status_reader import ProcessStatusReader
+from .system_monitor import SystemMonitor
+
 
 class ProcessStatusWriter:
     """
@@ -131,12 +134,16 @@ class ProcessStatusWriter:
 
         except Exception as e:
             logger.error(f"Failed to write progress file for {process_id}: {e}")
-            # Clean up temp file if it exists
+            # Clean up temp file if it exists (best-effort; we're already
+            # reporting the primary failure via return False, but surface any
+            # cleanup failure instead of silently discarding it).
             if "temp_file" in locals() and temp_file.exists():
                 try:
                     temp_file.unlink()
-                except Exception:
-                    pass
+                except Exception as unlink_error:
+                    logger.warning(
+                        f"Failed to remove temp progress file {temp_file}: {unlink_error}"
+                    )
             return False
 
     def register_process(self, process_id: str, sources_assigned: int) -> bool:
@@ -190,8 +197,6 @@ class ProcessStatusWriter:
             completed_count = progress_update["completed_sources"]
 
             # Read current progress file to get existing data
-            from .process_status_reader import ProcessStatusReader
-
             reader = ProcessStatusReader(str(self.progress_dir), self.session_id)
             current_progress = reader.read_progress_file(process_id) or {}
 
@@ -251,8 +256,6 @@ class ProcessStatusWriter:
             True if completion was recorded successfully, False otherwise
         """
         # Read current progress to get existing data
-        from .process_status_reader import ProcessStatusReader
-
         reader = ProcessStatusReader(str(self.progress_dir), self.session_id)
         current_progress = reader.read_progress_file(process_id) or {}
 
@@ -326,8 +329,6 @@ class ProcessStatusWriter:
         """
         try:
             # Read current progress to get total sources
-            from .process_status_reader import ProcessStatusReader
-
             reader = ProcessStatusReader(str(self.progress_dir), self.session_id)
 
             # Retry logic to handle race condition with progress file creation
@@ -368,8 +369,6 @@ class ProcessStatusWriter:
             )
 
             # Get memory usage from system monitor
-            from .system_monitor import SystemMonitor
-
             system_monitor = SystemMonitor()
             memory_mb = system_monitor.get_current_process_memory_mb()
 

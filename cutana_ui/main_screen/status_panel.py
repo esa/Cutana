@@ -6,6 +6,8 @@
 #   the terms contained in the file 'LICENCE.txt'.
 """Simplified status panel for the main screen."""
 
+import traceback
+
 import ipywidgets as widgets
 from loguru import logger
 
@@ -178,8 +180,6 @@ class StatusPanel(widgets.VBox):
 
         except Exception as e:
             logger.error(f"StatusPanel: Error in receive_status_UI_update: {e}")
-            import traceback
-
             logger.error(f"StatusPanel: Full traceback: {traceback.format_exc()}")
 
     def _handle_progress_update(self, status):
@@ -243,8 +243,6 @@ class StatusPanel(widgets.VBox):
 
         except Exception as e:
             logger.error(f"StatusPanel: Error handling progress update: {e}")
-            import traceback
-
             logger.error(f"StatusPanel: Full traceback: {traceback.format_exc()}")
 
     def _handle_completion(self):

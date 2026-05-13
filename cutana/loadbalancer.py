@@ -14,13 +14,17 @@ This module handles:
 - Real-time load balancing with detailed logging
 """
 
+import json
+import tempfile
 import time
 from collections import deque
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from dotmap import DotMap
 from loguru import logger
 
+from .job_tracker import JobTracker
 from .process_status_reader import ProcessStatusReader
 from .system_monitor import SystemMonitor
 
@@ -105,9 +109,6 @@ class LoadBalancer:
             return
 
         try:
-            import json
-            from pathlib import Path
-
             event = {
                 "timestamp": time.time(),
                 "category": category,
@@ -217,7 +218,6 @@ class LoadBalancer:
                 and self.active_worker_count > 0
                 and len(self.system_memory_history) > 5
             ):
-
                 # Get recent memory usage
                 recent_memory = [mem for _, mem in list(self.system_memory_history)[-5:]]
                 current_peak_memory = max(recent_memory)
@@ -380,7 +380,7 @@ class LoadBalancer:
         logger.info(
             f"LoadBalancer configuration ({resource_source}): "
             f"max_workers={max_workers}/{effective_cpu_count}, "
-            f"memory_limit={memory_limit_gb:.1f}GB/{memory_total/(1024**3):.1f}GB, "
+            f"memory_limit={memory_limit_gb:.1f}GB/{memory_total / (1024**3):.1f}GB, "
             f"max_sources_per_process={max_sources_per_process}, "
             f"N_batch_cutout_process={n_batch_cutout_process}, "
             f"initial_workers={self.initial_workers}"
@@ -570,10 +570,6 @@ class LoadBalancer:
         ):
             # Check if any active process has completed sources using JobTracker
             # IMPORTANT: Use the same session_id as the ProcessStatusReader to access the same progress files
-            import tempfile
-
-            from .job_tracker import JobTracker
-
             temp_tracker = JobTracker(
                 progress_dir=tempfile.gettempdir(), session_id=self.process_reader.session_id
             )

@@ -15,85 +15,144 @@ on:
   pull_request:
   workflow_dispatch:
 jobs:
-  lint_flake8:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v2
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v2
-        with:
-          python-version: 3.11
-      - name: Lint with flake8
-        run: |
-          pip install flake8
-          flake8 . --count --show-source --statistics --max-line-length=127 --ignore=E402,W503,E203
   build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+      - name: Search for severe code errors with ruff
+        run: uvx ruff check . --select=E9,F63,F7,F82 --output-format=full
+      - name: Install dependencies
+        run: uv sync --all-extras
+      - name: Generate test data
+        run: |
+          cd tests/test_data
+          uv run python generate_test_data.py
+      - name: Test with pytest
+        run: |
+          set -e
+          set -o pipefail
+          uv run pytest -n auto -m "not browser and not slow" --durations=20 --junitxml=pytest.xml --cov-report=xml:coverage.xml --cov-report="term-missing:skip-covered" --cov=cutana --cov=cutana_ui tests/ | tee pytest-coverage.txt
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-results
+          path: |
+            pytest-coverage.txt
+            coverage.xml
+            pytest.xml
+
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+      - name: Install dependencies
+        timeout-minutes: 5
+        run: uv sync --all-extras
+      - name: Generate test data
+        timeout-minutes: 3
+        run: |
+          cd tests/test_data
+          uv run python generate_test_data.py
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+      - name: Install Playwright chromium
+        timeout-minutes: 7
+        run: uv run playwright install chromium --with-deps
+      - name: Browser tests (fast)
+        timeout-minutes: 12
+        run: |
+          set -e
+          set -o pipefail
+          uv run pytest -m "browser and not slow" tests/browser/ -v --timeout=120 --junitxml=pytest-browser.xml | tee pytest-browser-output.txt
+      - name: Collect subprocess coverage
+        if: always()
+        run: |
+          uv run coverage combine || true
+          uv run coverage xml -o coverage-browser.xml || true
+          uv run coverage report --skip-covered --format=text | tee pytest-browser-coverage.txt || true
+      - name: Upload browser artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-results
+          path: |
+            pytest-browser-coverage.txt
+            coverage-browser.xml
+            pytest-browser.xml
+      - name: Upload failure videos
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-test-videos
+          path: /tmp/pytest-*/pytest-*/test_*/videos/
+          retention-days: 7
+
+  coverage-report:
+    needs: [build, browser]
+    if: always() && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
       contents: read
-      id-token: write
     steps:
-      - uses: actions/checkout@v2
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v2
+      - uses: actions/checkout@v4
         with:
-          python-version: 3.11
-      - name: Search for severe code errors with flake8
-        run: |
-          # stop the build if there are Python syntax errors or undefined names
-          pip install flake8
-          flake8 . --count --select=E9,F63,F7,F82,F541 --show-source --statistics --max-line-length=127
-      - name: provision-with-micromamba
-        uses: mamba-org/setup-micromamba@v2
+          sparse-checkout: scripts
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
         with:
-          environment-file: environment.yml
-          environment-name: cutana
-          cache-downloads: true
-      - name: Generate test data
-        shell: bash -l {0}
+          name: build-results
+          path: build-results
+      - name: Download browser artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: browser-results
+          path: browser-results
+        continue-on-error: true
+      - name: Merge coverage
+        run: python3 scripts/merge_coverage_xml.py
+      - name: Merge JUnit XML
+        run: python3 scripts/merge_junit_xml.py
+      - name: Merge coverage text
         run: |
-          set -e
-          micromamba activate cutana
-          cd tests/test_data
-
-          # Generate the actual test data (all sizes for comprehensive testing)
-          # Generate 3 tiles to ensure we have euclid_tile_001.fits, 002.fits, 003.fits
-          python generate_test_data.py
-
-          # List generated files for debugging
-          echo "Generated files:"
-          ls -la *.csv *.fits *.json | head -20
-      - name: Run deployment validation
-        shell: bash -l {0}
-        run: |
-          set -e
-          micromamba activate cutana
-          python -m cutana.deployment_validator
-      - name: Test with pytest
-        shell: bash -l {0}
-        run: |
-          set -e
-          set -o pipefail
-          micromamba activate cutana
-          micromamba install pytest pytest-cov
-          # playwright install  # Temporarily disabled
-          pip install -e .
-          pytest --junitxml=pytest.xml --cov-report=xml:coverage.xml --cov-report=term --cov=cutana tests/ --ignore=tests/playwright/ | tee pytest-coverage.txt
-          echo "===== Coverage report ====="
-          cat pytest-coverage.txt      
+          echo "===== Combined Coverage Report (build + browser) =====" > combined-coverage.txt
+          if [ -f build-results/pytest-coverage.txt ]; then
+            cat build-results/pytest-coverage.txt >> combined-coverage.txt
+          fi
+          if [ -f browser-results/pytest-browser-coverage.txt ]; then
+            echo "" >> combined-coverage.txt
+            echo "===== Browser Tests =====" >> combined-coverage.txt
+            cat browser-results/pytest-browser-coverage.txt >> combined-coverage.txt
+          fi
       - name: Pytest coverage comment
         uses: MishaKav/pytest-coverage-comment@main
-        if: always() && github.event_name == 'pull_request'
         with:
-          pytest-coverage-path: ./pytest-coverage.txt
-          pytest-xml-coverage-path: ./coverage.xml
-          title: Coverage Report
+          pytest-coverage-path: ./combined-coverage.txt
+          pytest-xml-coverage-path: ./combined-coverage.xml
+          title: Coverage Report (build + browser)
           badge-title: Overall Coverage
           hide-badge: false
           hide-report: false
           create-new-comment: false
           hide-comment: false
           report-only-changed-files: false
-          junitxml-path: ./pytest.xml
+          xml-skip-covered: true
+          remove-links-to-lines: true
+          junitxml-path: ./combined-pytest.xml

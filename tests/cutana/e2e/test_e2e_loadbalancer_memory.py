@@ -6,6 +6,7 @@
 #   the terms contained in the file 'LICENCE.txt'.
 """End-to-end tests for LoadBalancer memory monitoring with real processing."""
 
+import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -14,6 +15,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from astropy.io import fits
+from astropy.wcs import WCS
 
 from cutana.get_default_config import get_default_config
 from cutana.orchestrator import Orchestrator
@@ -52,15 +54,11 @@ class TestE2ELoadBalancerMemory:
 
     def teardown_method(self):
         """Clean up test environment."""
-        import shutil
-
         if Path(self.temp_dir).exists():
             shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def _create_test_fits_file(self, filename: str, size: int = 100) -> str:
         """Create a test FITS file with proper WCS."""
-        from astropy.wcs import WCS
-
         filepath = self.temp_path / filename
         data = np.random.random((size, size)).astype(np.float32)
 

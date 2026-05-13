@@ -6,19 +6,30 @@
 #   the terms contained in the file 'LICENCE.txt'.
 """Main processing screen for Cutana UI."""
 
+import asyncio
+import html
+import json
+import re
+
 import ipywidgets as widgets
+from IPython.display import Javascript, display
 from loguru import logger
 
+from cutana.__init__ import __version__ as cutana_version
 from cutana.get_default_config import save_config_with_timestamp
 
 from ..styles import (
     BACKGROUND_DARK,
     BORDER_COLOR,
     COMMON_STYLES,
+    ESA_BLUE_ACCENT,
     MAIN_WIDTH,
     PANEL_WIDTH,
+    TEXT_COLOR_LIGHT,
+    TEXT_COLOR_MUTED,
     scale_px,
 )
+from ..utils.backend_interface import BackendInterface
 from ..utils.log_manager import get_console_log_level, set_console_log_level
 from ..widgets.header_version_help import (
     HelpPopup,
@@ -50,22 +61,19 @@ class MainScreen(widgets.VBox):
         self.style_html = widgets.HTML(value=COMMON_STYLES)
 
         # Get Cutana version
-        try:
-            from cutana.__init__ import __version__ as cutana_version
-
-            version_text = f"v{cutana_version}"
-        except ImportError:
-            logger.warning("Could not import cutana version")
-            version_text = "version unknown"
+        version_text = f"v{cutana_version}"
 
         # Create header container with version, log level dropdown, and help button
-        self.header_container, self.help_button, self.log_level_dropdown = create_header_container(
-            version_text=version_text,
-            container_width=MAIN_WIDTH,
-            help_button_callback=self._toggle_help,
-            log_level_callback=set_console_log_level,
-            logo_title="CUTANA Cutout Generator",
-            initial_log_level=get_console_log_level(),
+        self.header_container, self.help_button, self.config_button, self.log_level_dropdown = (
+            create_header_container(
+                version_text=version_text,
+                container_width=MAIN_WIDTH,
+                help_button_callback=self._toggle_help,
+                config_button_callback=self._toggle_config,
+                log_level_callback=set_console_log_level,
+                logo_title="CUTANA Cutout Generator",
+                initial_log_level=get_console_log_level(),
+            )
         )
 
         # Create panels with explicit height ratios
@@ -88,7 +96,7 @@ class MainScreen(widgets.VBox):
             children=[self.start_button],
             layout=widgets.Layout(
                 width="100%",
-                max_width=f"{PANEL_WIDTH}px",  # Match Configuration Panel width
+                max_width=f"{PANEL_WIDTH + 60}px",  # Match Configuration Panel width
                 margin=f"{scale_px(10)}px 0 0 0",  # Add top margin to create space from config panel
                 padding=f"{scale_px(12)}px",
                 background=BACKGROUND_DARK,
@@ -120,6 +128,13 @@ class MainScreen(widgets.VBox):
 
         # Configuration panel no longer shows extensions selector - they are set from start screen
 
+        # Create config display panel
+        self.config_display_panel = None
+        self.config_content = None
+        self.config_copy_button = None
+        self._config_copy_text = ""
+        self.showing_config = False
+
         # Create help panel
         self.help_panel = None  # Will be created on demand
         self.showing_help = False
@@ -130,17 +145,12 @@ class MainScreen(widgets.VBox):
             children=[self.config_panel, self.start_button_container],
             layout=widgets.Layout(
                 width="100%",
-                max_width=f"{PANEL_WIDTH}px",
+                max_width=f"{PANEL_WIDTH + 60}px",
                 min_height=f"{scale_px(860)}px",  # Minimum height instead of fixed
                 overflow="visible",
             ),
         )
 
-        # Create help panel
-        self.help_panel = None  # Will be created on demand
-        self.showing_help = False
-
-        # Status panel without help button
         self.status_container = widgets.HBox(
             children=[self.status_panel],
             layout=widgets.Layout(
@@ -212,10 +222,6 @@ class MainScreen(widgets.VBox):
         logger.info(f"Configuration saved to: {config_path}")
 
         # Call backend to start processing
-        import asyncio
-
-        from ..utils.backend_interface import BackendInterface
-
         async def start_backend():
             try:
                 logger.info("Starting backend processing with direct status panel updates...")
@@ -271,10 +277,6 @@ class MainScreen(widgets.VBox):
         self.status_panel.stop_processing()
 
         # Actually stop the backend processing
-        import asyncio
-
-        from ..utils.backend_interface import BackendInterface
-
         async def stop_backend():
             try:
                 logger.info("Stopping backend processing...")
@@ -303,8 +305,12 @@ class MainScreen(widgets.VBox):
             self.start_button.button_style = "success"
 
     def _on_config_change(self):
-        """Handle configuration changes - update preview panel."""
+        """Handle configuration changes - update preview panel and config display."""
         logger.debug("MainScreen: Configuration change callback triggered")
+
+        # Reset copy button text if it was in "Copied" state
+        if self.config_copy_button:
+            self.config_copy_button.description = "Copy Config"
 
         # Get current config and update preview panel
         current_config = self.config_panel.get_current_config()
@@ -317,9 +323,52 @@ class MainScreen(widgets.VBox):
 
         self.preview_panel.update_config(current_config)
 
+        # Update JSON config display if it's already built
+        self._update_config_json_display(current_config)
+
         # Trigger preview regeneration if config affects preview
         logger.debug("MainScreen: Triggering preview regeneration")
         self.preview_panel.regenerate_preview()
+
+    def _update_config_json_display(self, config=None):
+        """Update the JSON display with current configuration."""
+        if config is None:
+            config = self.config_panel.get_current_config()
+
+        config_dict = config.toDict()
+        config_str = json.dumps(config_dict, indent=2, default=str)
+        self._config_copy_text = config_str
+
+        escaped_config = html.escape(config_str)
+        highlighted_config = self._highlight_json_text(escaped_config)
+
+        if self.config_content:
+            self.config_content.value = f"""
+            <div style="height: 100%; overflow: auto;">
+                <pre style="margin: 0; padding: {scale_px(10)}px; color: {TEXT_COLOR_LIGHT}; font-family: monospace; font-size: {scale_px(13)}px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;">{highlighted_config}</pre>
+            </div>
+            """
+        return highlighted_config
+
+    def _highlight_json_text(self, escaped_config):
+        """Apply token-aware syntax highlighting to escaped JSON text."""
+        token_pattern = re.compile(r"&quot;.*?&quot;|\btrue\b|\bfalse\b|\bnull\b|-?\d+(?:\.\d+)?")
+
+        def highlight_token(match):
+            token = match.group(0)
+            if token.startswith("&quot;"):
+                remainder = escaped_config[match.end() :]
+                if remainder.lstrip().startswith(":"):
+                    color = ESA_BLUE_ACCENT
+                else:
+                    color = TEXT_COLOR_LIGHT
+            elif token in {"true", "false", "null"}:
+                color = TEXT_COLOR_MUTED
+            else:
+                color = "#FBAB18"
+            return f'<span style="color: {color};">{token}</span>'
+
+        return token_pattern.sub(highlight_token, escaped_config)
 
     def _toggle_help(self, _):
         """Toggle between help panel and preview panel."""
@@ -331,6 +380,10 @@ class MainScreen(widgets.VBox):
     def _show_help(self):
         """Replace the preview panel with the help panel."""
         logger.info("Showing help panel")
+
+        # Hide config if it's currently showing
+        if self.showing_config:
+            self._hide_config()
 
         # Create help panel if it doesn't exist
         if not self.help_panel:
@@ -368,3 +421,167 @@ class MainScreen(widgets.VBox):
 
         # Set state
         self.showing_help = False
+
+    def _toggle_config(self, _):
+        """Toggle between config display panel and preview panel."""
+        if self.showing_config:
+            self._hide_config()
+        else:
+            self._show_config()
+
+    def _copy_config_to_clipboard(self, _button=None):
+        """Copy the current config text to the browser clipboard using asyncio-only reset."""
+        # Immediate UI feedback
+        self.config_copy_button.description = "✓ Copied!"
+
+        # Cancel any existing asyncio reset task
+        prev_task = getattr(self, "_copy_reset_task", None)
+        if prev_task is not None:
+            prev_task.cancel()
+            self._copy_reset_task = None
+
+        async def _reset():
+            await asyncio.sleep(2)
+            self.config_copy_button.description = "Copy Config"
+
+        # Schedule reset on the running asyncio loop only (no fallback)
+        try:
+            loop = asyncio.get_running_loop()
+            self._copy_reset_task = loop.create_task(_reset())
+        except RuntimeError as e:
+            logger.warning(f"No running event loop; cannot schedule copy-reset task: {e}")
+
+        # Trigger clipboard copy in the browser
+        js_code = f"""
+        (async () => {{
+            const text = {json.dumps(self._config_copy_text)};
+            try {{
+                if (navigator.clipboard && navigator.clipboard.writeText) {{
+                    await navigator.clipboard.writeText(text);
+                }} else {{
+                    const helper = document.createElement('textarea');
+                    helper.value = text;
+                    helper.style.position = 'fixed';
+                    helper.style.opacity = '0';
+                    document.body.appendChild(helper);
+                    helper.focus();
+                    helper.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(helper);
+                }}
+            }} catch (error) {{
+                const helper = document.createElement('textarea');
+                helper.value = text;
+                helper.style.position = 'fixed';
+                helper.style.opacity = '0';
+                document.body.appendChild(helper);
+                helper.focus();
+                helper.select();
+                document.execCommand('copy');
+                document.body.removeChild(helper);
+            }}
+        }})()
+        """
+        display(Javascript(js_code))
+
+    def _build_config_panel(self, highlighted_config):
+        """Create the config panel widgets."""
+        self.config_title = widgets.HTML(
+            value=f'<h2 style="color: {ESA_BLUE_ACCENT}; margin: 0; font-size: {scale_px(20)}px; line-height: 1.2;">Configuration Data</h2>'
+        )
+
+        self.config_copy_button = widgets.Button(
+            description="Copy Config",
+            layout=widgets.Layout(
+                width=f"{scale_px(150)}px",
+                height=f"{scale_px(40)}px",
+                margin="0px",
+                min_width=f"{scale_px(150)}px",
+            ),
+        )
+        self.config_copy_button.style.button_color = ESA_BLUE_ACCENT
+        self.config_copy_button.on_click(self._copy_config_to_clipboard)
+
+        header = widgets.HBox(
+            children=[self.config_title, self.config_copy_button],
+            layout=widgets.Layout(
+                justify_content="space-between",
+                align_items="center",
+                margin=f"0px 0px {scale_px(2)}px 0px",
+                overflow="hidden",
+                min_height=f"{scale_px(50)}px",
+                padding=f"0px {scale_px(8)}px",
+            ),
+        )
+
+        self.config_content = widgets.HTML(
+            value=f"""
+            <div style="height: 100%; overflow: auto;">
+                <pre style="margin: 0; padding: {scale_px(10)}px; color: {TEXT_COLOR_LIGHT}; font-family: monospace; font-size: {scale_px(13)}px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;">{highlighted_config}</pre>
+            </div>
+            """,
+            layout=widgets.Layout(flex="1 1 auto", min_height="0", overflow="hidden"),
+        )
+
+        self.config_display_panel = widgets.VBox(
+            children=[header, self.config_content],
+            layout=widgets.Layout(
+                padding=f"{scale_px(8)}px {scale_px(10)}px",
+                background=BACKGROUND_DARK,
+                border_radius=f"{scale_px(10)}px",
+                border=f"1px solid {BORDER_COLOR}",
+                width="100%",
+                height="100%",
+                overflow="hidden",
+            ),
+        )
+        self.config_display_panel.add_class("cutana-panel")
+        self.config_display_panel.layout.height = self.preview_panel.layout.height
+        self.config_display_panel.layout.min_height = self.preview_panel.layout.min_height
+        self.config_display_panel.layout.max_height = self.preview_panel.layout.max_height
+
+    def _show_config(self):
+        """Replace the preview panel with the config display panel."""
+        logger.info("Showing config display panel")
+
+        # Hide help if it's currently showing
+        if self.showing_help:
+            self._hide_help()
+
+        # Update JSON display logic refactored
+        highlighted_config = self._update_config_json_display()
+
+        if not self.config_display_panel:
+            self._build_config_panel(highlighted_config)
+
+        # Save current children
+        current_children = list(self.right_container.children)
+
+        # Replace preview panel with config panel
+        current_children[0] = self.config_display_panel
+        self.right_container.children = current_children
+
+        # Update button text
+        self.config_button.description = "Close Config"
+        self.config_button.button_style = "warning"
+
+        # Set state
+        self.showing_config = True
+
+    def _hide_config(self):
+        """Replace the config display panel with the preview panel."""
+        logger.info("Hiding config display panel")
+
+        # Save current children
+        current_children = list(self.right_container.children)
+
+        # Replace config panel with preview panel
+        current_children[0] = self.preview_panel
+        self.right_container.children = current_children
+
+        # Update button text
+        self.config_button.description = "Config"
+        self.config_button.button_style = "info"
+
+        # Set state
+        self.showing_config = False

@@ -195,9 +195,9 @@ def run_scaling_study(
         warmup_fits_cache(catalogue_df, warmup_size=min(100, len(catalogue_df)))
 
     for num_workers in worker_counts:
-        logger.info(f"\n{'='*80}")
+        logger.info(f"\n{'=' * 80}")
         logger.info(f"Testing with {num_workers} workers")
-        logger.info(f"{'='*80}\n")
+        logger.info(f"{'=' * 80}\n")
 
         # Create worker-specific output directory
         worker_output = output_dir / f"workers_{num_workers}"
