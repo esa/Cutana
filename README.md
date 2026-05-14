@@ -528,7 +528,7 @@ for result in results:
 
 Process large catalogues in batches for integration into data pipelines using `StreamingOrchestrator`.
 
-The `StreamingOrchestrator` class provides a dedicated API for streaming workflows with optional **asynchronous batch preparation**, allowing the next batch to be prepared in the background while you process the current one.
+The `StreamingOrchestrator` class offers a dedicated API for streaming workflows and supports configurable background worker counts.
 
 ```python
 from cutana import get_default_config, StreamingOrchestrator
@@ -544,11 +544,10 @@ config.channel_weights =  {"VIS": [1.0,0.0],
 # Create streaming orchestrator
 orchestrator = StreamingOrchestrator(config)
 
-# Initialize streaming - set synchronised_loading=False for async batch preparation
+# Initialize streaming
 orchestrator.init_streaming(
     batch_size=10000,
     write_to_disk=False,  # Return cutouts in memory (zero disk I/O)
-    synchronised_loading=False  # Prepare next batch in background
 )
 
 # Process batches
@@ -562,22 +561,17 @@ for i in range(orchestrator.get_batch_count()):
     # Your ML inference or analysis here...
     process_cutouts(result['cutouts'])
 
-    # With async mode, the next batch is already preparing in background!
+    # The next batches are already being prepared in background!
 
 orchestrator.cleanup()
 ```
 
 **Key Parameters for `init_streaming()`:**
-- `batch_size` (int): Maximum sources per batch
+- `batch_size` (int): Maximum number of sources per batch
 - `write_to_disk` (bool): If False, returns cutouts via shared memory (recommended for ML pipelines)
-- `synchronised_loading` (bool):
-  - `True` (default): Each batch is prepared when `next_batch()` is called
-  - `False`: Next batch is prepared in background while you process the current one
-
-**Async Mode Benefits:**
-When `synchronised_loading=False`, Cutana spawns a subprocess to prepare the next batch while your code processes the current batch. If your processing time is similar to batch preparation time, you can achieve up to 2x throughput.
-
-See `examples/async_streaming.py` for a benchmark comparing synchronous vs asynchronous streaming.
+- `max_workers` (int): Maximum number of parallel workers
+- `min_workers` (int): Number of workers to pre-spawn at init time so they are already processing when next_batch() is first called
+- `max_shm_memory_consumption` (int): Total SHM memory budget in bytes
 
 #### Progress and Status Methods
 
