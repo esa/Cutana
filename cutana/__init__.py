@@ -27,7 +27,7 @@ from loguru import logger
 # Application entry points (Orchestrator, UI) will enable logging when needed
 logger.disable("cutana")
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 __author__ = "ESA Datalabs"
 
 # Import main classes for easy access

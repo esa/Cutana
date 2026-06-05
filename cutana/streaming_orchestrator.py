@@ -25,8 +25,9 @@ import sys
 import threading
 import time
 import uuid
+from collections import deque
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import numpy as np
 from dotmap import DotMap
@@ -81,8 +82,13 @@ class StreamingOrchestrator(Orchestrator):
 
         # Result accumulation
         self._ready_results: List[Dict[str, Any]] = []  # completed batch results (unordered)
-        self._leftover_cutouts: Optional[List[np.ndarray]] = None
-        self._leftover_metadata: Optional[List] = None
+        # Rolling buffer of cutouts/metadata not yet emitted to the user. Internal
+        # batch results are appended here and drained in batch_size batches, so
+        # remainders carry over across internal batch boundaries instead of leaking
+        # out as short batches mid-stream. A deque keeps append/popleft O(1) so
+        # emission cost stays O(batch_size) regardless of how large the buffer grows.
+        self._pending_cutouts: Deque[np.ndarray] = deque()
+        self._pending_metadata: Deque = deque()
 
         # Per-worker accumulation (chunk arrays received so far from each worker)
         self._worker_cutouts: Dict[str, List[np.ndarray]] = {}
@@ -185,8 +191,8 @@ class StreamingOrchestrator(Orchestrator):
         self._pool_to_worker = {}
         self._worker_to_pool = {}
         self._ready_results = []
-        self._leftover_cutouts = None
-        self._leftover_metadata = None
+        self._pending_cutouts = deque()
+        self._pending_metadata = deque()
         self._worker_cutouts = {}
         self._worker_metadata = {}
         self._worker_stdout_queues = {}
@@ -589,81 +595,52 @@ class StreamingOrchestrator(Orchestrator):
             self._ready_results.append(result)
             logger.info(f"Worker {proc_id} finalized: {n_cutouts} cutouts")
 
-    def _consume_ready_result(self) -> Dict[str, Any]:
-        """
-        Pop a ready result and split into user-sized batch.
+    def _consume_disk_result(self) -> Dict[str, Any]:
+        """Pop a ready disk-mode result and tag it with the next batch number.
 
-        If the internal batch has more cutouts than user_batch_size,
-        returns the first chunk and saves the rest as leftover.
+        Disk mode keeps a 1:1 mapping between internal batches and user batches
+        (zarr output cannot be re-split), so each result passes straight through.
         """
         result = self._ready_results.pop(0)
+        self._streaming_batch_index += 1
+        result["batch_number"] = self._streaming_batch_index
+        return result
 
-        # Disk mode: pass through with batch number
-        if "zarr_path" in result:
-            self._streaming_batch_index += 1
-            result["batch_number"] = self._streaming_batch_index
-            return result
+    def _absorb_ready_results(self) -> None:
+        """Move all ready in-memory results into the rolling pending buffer.
 
-        all_cutouts = result["cutouts"]
-        all_metadata = result["metadata"]
+        Appending here (rather than emitting per internal batch) is what lets a
+        sub-batch_size remainder carry over and combine with the next
+        internal batch instead of being flushed as a short batch.
+        """
+        while self._ready_results:
+            result = self._ready_results.pop(0)
+            self._pending_cutouts.extend(result["cutouts"])
+            self._pending_metadata.extend(result["metadata"])
 
-        if len(all_cutouts) == 0:
-            self._streaming_batch_index += 1
-            return {
-                "batch_number": self._streaming_batch_index,
-                "cutouts": all_cutouts,
-                "metadata": all_metadata,
-            }
+    def _work_remaining(self) -> bool:
+        """Return True while more cutouts may still arrive from workers."""
+        return (
+            bool(self._ready_results)
+            or bool(self.active_processes)
+            or self._next_internal_batch_idx < len(self._batch_ranges)
+        )
 
-        n = len(all_cutouts)
+    def _emit_pending_user_batch(self) -> Dict[str, Any]:
+        """Emit up to user_batch_size cutouts from the front of the pending buffer."""
         user_size = self._user_batch_size
+        n = min(user_size, len(self._pending_cutouts))
 
-        if n <= user_size:
-            self._streaming_batch_index += 1
-            return {
-                "batch_number": self._streaming_batch_index,
-                "cutouts": all_cutouts,
-                "metadata": all_metadata,
-            }
+        # popleft (O(n)) rather than slicing (O(buffer)) so a large buffer never
+        # forces a full re-copy of the remaining references on every batch.
+        cutouts = [self._pending_cutouts.popleft() for _ in range(n)]
+        metadata = [self._pending_metadata.popleft() for _ in range(n)]
 
-        # Split: return first user_size, save rest as leftover
-        self._leftover_cutouts = all_cutouts[user_size:]
-        self._leftover_metadata = all_metadata[user_size:]
         self._streaming_batch_index += 1
         return {
             "batch_number": self._streaming_batch_index,
-            "cutouts": all_cutouts[:user_size],
-            "metadata": all_metadata[:user_size],
-        }
-
-    def _pop_user_batch_from_leftover(self) -> Dict[str, Any]:
-        """Return next user batch from leftover cutouts."""
-        cutouts = self._leftover_cutouts
-        metadata = self._leftover_metadata
-
-        if cutouts is None or metadata is None:
-            raise RuntimeError("Internal error: leftover state is inconsistent")
-
-        user_size = self._user_batch_size
-
-        if len(cutouts) <= user_size:
-            self._leftover_cutouts = None
-            self._leftover_metadata = None
-            self._streaming_batch_index += 1
-            return {
-                "batch_number": self._streaming_batch_index,
-                "cutouts": cutouts,
-                "metadata": metadata,
-            }
-
-        # Still more leftover
-        self._leftover_cutouts = cutouts[user_size:]
-        self._leftover_metadata = metadata[user_size:]
-        self._streaming_batch_index += 1
-        return {
-            "batch_number": self._streaming_batch_index,
-            "cutouts": cutouts[:user_size],
-            "metadata": metadata[:user_size],
+            "cutouts": cutouts,
+            "metadata": metadata,
         }
 
     def next_batch(self) -> Dict[str, Any]:
@@ -672,6 +649,10 @@ class StreamingOrchestrator(Orchestrator):
 
         Returns whichever worker finishes first (unordered). Adaptively spawns
         additional workers if the caller is consuming faster than production.
+
+        In-memory batches are assembled from a rolling buffer so that every batch
+        except the last contains exactly ``batch_size`` cutouts; only the final
+        batch may be smaller. Disk-mode batches map 1:1 to internal batches.
 
         Returns:
             Dictionary with:
@@ -688,37 +669,38 @@ class StreamingOrchestrator(Orchestrator):
         if self._streaming_batch_index >= self._user_batch_count:
             raise RuntimeError("No more batches available.")
 
-        # 1. Check leftover from previous internal batch split
-        if self._leftover_cutouts is not None and len(self._leftover_cutouts) > 0:
-            return self._pop_user_batch_from_leftover()
-
-        # 2. Check already-ready results
-        if self._ready_results:
-            return self._consume_ready_result()
-
-        # 3. Poll + spawn loop until we have a result
         timeout_start = time.time()
         timeout_seconds = self.config.max_workflow_time_seconds
 
         while True:
-            if time.time() - timeout_start > timeout_seconds:
-                raise RuntimeError("Timeout waiting for batch completion")
-
-            # Poll all active workers
             self._poll_workers()
 
-            # If results became ready, return one
-            if self._ready_results:
-                # Adaptive: try to fill remaining worker slots
-                self._maybe_spawn_workers()
-                return self._consume_ready_result()
+            if self._streaming_write_to_disk:
+                if self._ready_results:
+                    self._maybe_spawn_workers()
+                    return self._consume_disk_result()
+            else:
+                self._absorb_ready_results()
+                # Emit a full batch as soon as one is available. Only emit a
+                # smaller (final) batch once no further cutouts can arrive.
+                if len(self._pending_cutouts) >= self._user_batch_size:
+                    self._maybe_spawn_workers()
+                    return self._emit_pending_user_batch()
+                if not self._work_remaining():
+                    if self._pending_cutouts:
+                        return self._emit_pending_user_batch()
+                    raise RuntimeError(
+                        "All workers completed but no cutouts remain for the "
+                        "expected batch. This may indicate worker failures."
+                    )
 
             # Adaptive spawn: consumer is waiting, spawn more workers
             self._maybe_spawn_workers()
 
-            # Check if all work is done but no results (shouldn't happen normally)
+            # Disk-mode deadlock guard (in-memory is handled by _work_remaining above)
             if (
-                not self.active_processes
+                self._streaming_write_to_disk
+                and not self.active_processes
                 and self._next_internal_batch_idx >= len(self._batch_ranges)
                 and not self._ready_results
             ):
@@ -726,6 +708,9 @@ class StreamingOrchestrator(Orchestrator):
                     "All workers completed but no results available. "
                     "This may indicate worker failures."
                 )
+
+            if time.time() - timeout_start > timeout_seconds:
+                raise RuntimeError("Timeout waiting for batch completion")
 
             time.sleep(0.05)
 

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Dict, List, Set
 
 import pandas as pd
+import pyarrow as pa
 import pyarrow.parquet as pq
 from loguru import logger
 
@@ -297,8 +298,16 @@ class CatalogueBatchReader:
         self.suffix = Path(path).suffix.lower()
 
         if self.suffix == ".parquet":
+            # Ensure string columns use 64-bit offsets to avoid 2GB limits.
+            default_schema = pq.read_schema(path)
+            new_fields = [
+                field.with_type(pa.large_string()) if pa.types.is_string(field.type) else field
+                for field in default_schema
+            ]
+            new_schema = pa.schema(new_fields)
+
             # Pre-load parquet table for efficient take() operations
-            self._parquet_table = pq.read_table(path)
+            self._parquet_table = pq.read_table(path, schema=new_schema)
             logger.debug(f"Loaded parquet table with {self._parquet_table.num_rows} rows")
         elif self.suffix == ".csv":
             self._parquet_table = None

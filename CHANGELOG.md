@@ -7,6 +7,18 @@
 
 # Changelog
 
+## [v0.3.1] – 2026-06-04
+
+### Fixed
+- **Streaming in-memory batch repacking**: when returning cutouts in memory, results are now drained from a rolling pending buffer in exact `batch_size` chunks, so every batch but the last contains exactly `batch_size` cutouts and the tail batch is no longer silently dropped (no sources lost). Disk mode (1:1 internal-to-user mapping) and `get_batch_count()` are unchanged
+- **Large parquet catalogues**: string columns are now read with `pa.large_string()` (64-bit offsets), avoiding the 2 GB per-column string limit when loading large catalogues
+
+### Changed
+- **Streaming pending buffer** backed by a `deque` for O(`batch_size`) emission
+
+### Documentation
+- **README `StreamingOrchestrator` section** updated to reflect the parallel API (`max_workers`/`min_workers`, configurable background workers); removed the obsolete `synchronised_loading` async description
+
 ## [v0.3.0] – 2026-05-12
 
 ### Added
