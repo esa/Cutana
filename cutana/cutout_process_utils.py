@@ -493,6 +493,12 @@ def _process_sources_batch_vectorized_with_fits_set(
             source_offsets = all_source_offsets.get(source_id, {"x": 0.0, "y": 0.0})
             extraction_offset_x = source_offsets.get("x", 0.0)
             extraction_offset_y = source_offsets.get("y", 0.0)
+            # Integer extraction origin/size (parent-tile pixels, pre-resize), computed
+            # vectorised at extraction time. Passed through so the FITS writer can build
+            # the cutout WCS without recomputing world_to_pixel and the window bounds.
+            extraction_origin_x = source_offsets.get("origin_x")
+            extraction_origin_y = source_offsets.get("origin_y")
+            extraction_size = source_offsets.get("extraction_size")
 
             # When resizing is applied, scale offsets and pixel scale by the same
             # resize_factor so both stay consistent with the final output coords.
@@ -541,6 +547,9 @@ def _process_sources_batch_vectorized_with_fits_set(
                     "processing_timestamp": batch_timestamp,
                     "rescaled_offset_x": rescaled_offset_x,
                     "rescaled_offset_y": rescaled_offset_y,
+                    "extraction_origin_x": extraction_origin_x,
+                    "extraction_origin_y": extraction_origin_y,
+                    "extraction_size": extraction_size,
                 }
             )
             wcs_list.append(all_source_wcs.get(source_id, {}))

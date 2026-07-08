@@ -106,11 +106,17 @@ def extract_cutouts_vectorized_from_extension(
         padding_factor: Factor to scale the extraction area (1.0 = no padding)
 
     Returns:
-        Tuple of (cutout_list, success_mask, pixel_offset_x, pixel_offset_y) where:
+        Tuple of (cutout_list, success_mask, pixel_offset_x, pixel_offset_y,
+        origin_x, origin_y) where:
         - cutout_list: List of cutout arrays (or None for failures)
         - success_mask: Boolean array indicating successful extractions
         - pixel_offset_x: Array of sub-pixel X offsets (positive = target toward right)
         - pixel_offset_y: Array of sub-pixel Y offsets (positive = target toward top)
+        - origin_x: Array of 0-based parent-pixel X origins of cutout pixel 0 (the
+          clip- and centre-pad-corrected window start). Pre-resize cutout pixel ``p``
+          maps to parent pixel ``origin + p``; the FITS writer uses this to build the
+          cutout WCS without recomputing the (already-vectorised) extraction geometry.
+        - origin_y: As ``origin_x`` for the Y axis.
     """
     n_sources = len(ra_array)
     logger.debug(f"Starting vectorized cutout extraction for {n_sources} sources")
@@ -125,8 +131,10 @@ def extract_cutouts_vectorized_from_extension(
         return (
             [None] * n_sources,
             np.zeros(n_sources, dtype=bool),
-            np.zeros(n_sources, dtype=np.float64),
-            np.zeros(n_sources, dtype=np.float64),
+            np.zeros(n_sources, dtype=np.float64),  # sub-pixel offset x
+            np.zeros(n_sources, dtype=np.float64),  # sub-pixel offset y
+            np.zeros(n_sources, dtype=np.int32),  # integer origin x
+            np.zeros(n_sources, dtype=np.int32),  # integer origin y
         )
 
     img_height, img_width = image_data.shape
@@ -147,8 +155,10 @@ def extract_cutouts_vectorized_from_extension(
         return (
             [None] * n_sources,
             np.zeros(n_sources, dtype=bool),
-            np.zeros(n_sources, dtype=np.float64),
-            np.zeros(n_sources, dtype=np.float64),
+            np.zeros(n_sources, dtype=np.float64),  # sub-pixel offset x
+            np.zeros(n_sources, dtype=np.float64),  # sub-pixel offset y
+            np.zeros(n_sources, dtype=np.int32),  # integer origin x
+            np.zeros(n_sources, dtype=np.int32),  # integer origin y
         )
 
     # Step 3: Vectorized bound computation
@@ -190,6 +200,13 @@ def extract_cutouts_vectorized_from_extension(
     x_maxs_clipped = np.minimum(img_width, x_maxs)
     y_mins_clipped = np.maximum(0, y_mins)
     y_maxs_clipped = np.minimum(img_height, y_maxs)
+
+    # Parent-pixel origin of cutout pixel 0 (0-based, integer). For an on-tile window
+    # this is the clipped window start; edge-clipped windows are centre-padded below,
+    # which shifts the origin left/down by the integer pad offset. Threaded out so the
+    # FITS writer can build the cutout WCS without recomputing this geometry.
+    origin_x_array = x_mins_clipped.astype(np.int32)
+    origin_y_array = y_mins_clipped.astype(np.int32)
 
     # Check for valid regions (vectorized)
     valid_mask = (x_maxs_clipped > x_mins_clipped) & (y_maxs_clipped > y_mins_clipped)
@@ -263,6 +280,11 @@ def extract_cutouts_vectorized_from_extension(
                     pixel_offset_x[i] -= pad_x_start
                     pixel_offset_y[i] -= pad_y_start
 
+                    # The data now starts pad pixels into the window, so cutout pixel 0
+                    # maps to a parent pixel pad_start before the clipped window start.
+                    origin_x_array[i] -= pad_x_start
+                    origin_y_array[i] -= pad_y_start
+
                     raw_cutout = padded_extraction
 
                 # apply flux conversion here
@@ -292,7 +314,7 @@ def extract_cutouts_vectorized_from_extension(
     successful_count = np.sum(success_mask)
     logger.debug(f"Vectorized extraction completed: {successful_count}/{n_sources} successful")
 
-    return cutouts, success_mask, pixel_offset_x, pixel_offset_y
+    return cutouts, success_mask, pixel_offset_x, pixel_offset_y, origin_x_array, origin_y_array
 
 
 def extract_cutouts_batch_vectorized(
@@ -382,17 +404,22 @@ def extract_cutouts_batch_vectorized(
         logger.debug(f"Processing extension {ext_name} for {n_sources} sources")
 
         # Extract cutouts for all sources in this extension using vectorized method
-        cutout_list, success_mask, offset_x_array, offset_y_array = (
-            extract_cutouts_vectorized_from_extension(
-                hdul[ext_name],
-                wcs_dict[ext_name],
-                ra_array,
-                dec_array,
-                size_pixels_array,
-                source_ids,
-                padding_factor,
-                config,
-            )
+        (
+            cutout_list,
+            success_mask,
+            offset_x_array,
+            offset_y_array,
+            origin_x_array,
+            origin_y_array,
+        ) = extract_cutouts_vectorized_from_extension(
+            hdul[ext_name],
+            wcs_dict[ext_name],
+            ra_array,
+            dec_array,
+            size_pixels_array,
+            source_ids,
+            padding_factor,
+            config,
         )
 
         # Organize results by source ID
@@ -401,10 +428,16 @@ def extract_cutouts_batch_vectorized(
                 if source_id not in combined_cutouts:
                     combined_cutouts[source_id] = {}
                     combined_wcs[source_id] = {}
-                    # Store pixel offsets (same for all extensions since coords are the same)
+                    # Store per-source geometry (same for all extensions since the
+                    # coordinates and window are identical): the sub-pixel offsets and
+                    # the integer extraction origin/size the FITS writer needs to build
+                    # the cutout WCS without recomputing world_to_pixel and the bounds.
                     combined_offsets[source_id] = {
                         "x": float(offset_x_array[i]),
                         "y": float(offset_y_array[i]),
+                        "origin_x": int(origin_x_array[i]),
+                        "origin_y": int(origin_y_array[i]),
+                        "extraction_size": int(size_pixels_array[i] * padding_factor),
                     }
 
                 combined_cutouts[source_id][ext_name] = cutout

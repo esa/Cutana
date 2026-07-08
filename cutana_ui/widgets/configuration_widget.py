@@ -149,7 +149,7 @@ class SharedConfigurationWidget(widgets.VBox):
 
         # Raw cutout only checkbox - disables all processing when checked
         self.do_only_cutout_label = widgets.HTML(
-            value=f'<div style="color: {TEXT_COLOR_LIGHT}; font-weight: 500; font-size: 11px; display: flex; align-items: center; height: 100%;">Raw cutout:</div>',
+            value=f'<div style="color: {TEXT_COLOR_LIGHT}; font-weight: 500; font-size: 11px; display: flex; align-items: center; height: 100%;white-space: nowrap;overflow: visible;">Raw cutout [Jy]:</div>',
             layout=widgets.Layout(height="28px", width="100%"),
         )
         self.do_only_cutout_checkbox = widgets.Checkbox(

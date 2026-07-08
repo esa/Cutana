@@ -7,6 +7,21 @@
 
 # Changelog
 
+## [v0.3.2] – 2026-07-06
+
+### Fixed
+- **FITS cutout WCS re-tangenting bug**: cutout WCS now reproduces the parent tile mapping exactly — `CRVAL`, `CTYPE` and the CD/PC orientation are inherited from the parent unchanged and only `CRPIX` is shifted to the extraction origin — instead of re-tangenting the projection at each source. The previous approach left the cutout frame rotated by the meridian convergence between tile centre and source, producing a positional error that was ~0 at the cutout centre and grew toward the edges (~1″ at a few-arcmin FOV for sources far from the tile centre, worse near high \|Dec\| / tile corners). Only the FITS WCS header was affected; pixel data and Zarr/streaming outputs were not
+
+### Added
+- **`UNIT` and `CONSVFLX` FITS header keywords** on individual cutout outputs: `UNIT` records the pixel unit (`OriginalUnit`, `Jy`, `approx Jy`, or `approx OriginalUnit`) depending on whether flux conversion and flux-conserved resizing were applied, and `CONSVFLX` records whether flux-conserved resizing was used
+
+### Changed
+- **UI "Raw cutout" checkbox** relabelled to "Raw cutout (in Jy):" to make the output unit explicit
+- **`fitsbolt` pinned to `==0.3.0`** (from `==0.2.0`)
+
+### Documentation
+- **README**: added a Flux Conversion section (pixels converted to Jansky by default via the `MAGZERO` keyword, disable with `config.apply_flux_conversion = False`), documented the `UNIT` / `CONSVFLX` header keywords, and clarified the "Raw cutouts" terminology
+
 ## [v0.3.1] – 2026-06-04
 
 ### Fixed
