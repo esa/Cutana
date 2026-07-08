@@ -55,9 +55,9 @@ dev = [
 all = ["cutana[ui,dev]"]
 
 [project.urls]
-Homepage = "https://github.com/ESA-Datalabs/cutana"
-Repository = "https://github.com/ESA-Datalabs/cutana"
-Issues = "https://github.com/ESA-Datalabs/cutana/issues"
+Homepage = "https://github.com/ESA/Cutana"
+Repository = "https://github.com/ESA/Cutana"
+Issues = "https://github.com/ESA/Cutana/issues"
 
 
 [tool.setuptools.packages.find]
