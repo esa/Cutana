@@ -71,15 +71,17 @@ class TestCutoutExtraction:
         ra, dec = 150.0, 2.0  # These should map to approximately center
 
         for size in odd_sizes:
-            cutouts, success_mask, offset_x, offset_y = extract_cutouts_vectorized_from_extension(
-                mock_hdu_ones,
-                mock_wcs,
-                np.array([ra]),
-                np.array([dec]),
-                np.array([size]),
-                source_ids=["test_source"],
-                padding_factor=1.0,
-                config=None,
+            cutouts, success_mask, offset_x, offset_y, *_ = (
+                extract_cutouts_vectorized_from_extension(
+                    mock_hdu_ones,
+                    mock_wcs,
+                    np.array([ra]),
+                    np.array([dec]),
+                    np.array([size]),
+                    source_ids=["test_source"],
+                    padding_factor=1.0,
+                    config=None,
+                )
             )
 
             assert success_mask[0], f"Extraction failed for size {size}"
@@ -104,15 +106,17 @@ class TestCutoutExtraction:
         ra, dec = 150.0, 2.0
 
         for size in even_sizes:
-            cutouts, success_mask, offset_x, offset_y = extract_cutouts_vectorized_from_extension(
-                mock_hdu_ones,
-                mock_wcs,
-                np.array([ra]),
-                np.array([dec]),
-                np.array([size]),
-                source_ids=["test_source"],
-                padding_factor=1.0,
-                config=None,
+            cutouts, success_mask, offset_x, offset_y, *_ = (
+                extract_cutouts_vectorized_from_extension(
+                    mock_hdu_ones,
+                    mock_wcs,
+                    np.array([ra]),
+                    np.array([dec]),
+                    np.array([size]),
+                    source_ids=["test_source"],
+                    padding_factor=1.0,
+                    config=None,
+                )
             )
 
             assert success_mask[0], f"Extraction failed for size {size}"
@@ -138,15 +142,17 @@ class TestCutoutExtraction:
             mock_world_to_pixel.return_value = (5.0, 5.0)  # Near top-left corner
 
             size = 20
-            cutouts, success_mask, offset_x, offset_y = extract_cutouts_vectorized_from_extension(
-                mock_hdu_ones,
-                mock_wcs,
-                np.array([150.0]),
-                np.array([2.0]),
-                np.array([size]),
-                source_ids=["edge_source"],
-                padding_factor=1.0,
-                config=None,
+            cutouts, success_mask, offset_x, offset_y, *_ = (
+                extract_cutouts_vectorized_from_extension(
+                    mock_hdu_ones,
+                    mock_wcs,
+                    np.array([150.0]),
+                    np.array([2.0]),
+                    np.array([size]),
+                    source_ids=["edge_source"],
+                    padding_factor=1.0,
+                    config=None,
+                )
             )
 
             assert success_mask[0], "Extraction failed for edge source"
@@ -172,15 +178,17 @@ class TestCutoutExtraction:
             # Make flux conversion multiply by 2 for testing
             mock_flux_conv.return_value = np.ones((10, 10)) * 2.0
 
-            cutouts, success_mask, offset_x, offset_y = extract_cutouts_vectorized_from_extension(
-                mock_hdu_ones,
-                mock_wcs,
-                np.array([150.0]),
-                np.array([2.0]),
-                np.array([10]),
-                source_ids=["flux_test"],
-                padding_factor=1.0,
-                config=config,
+            cutouts, success_mask, offset_x, offset_y, *_ = (
+                extract_cutouts_vectorized_from_extension(
+                    mock_hdu_ones,
+                    mock_wcs,
+                    np.array([150.0]),
+                    np.array([2.0]),
+                    np.array([10]),
+                    source_ids=["flux_test"],
+                    padding_factor=1.0,
+                    config=config,
+                )
             )
 
             # Verify flux conversion was called
@@ -210,7 +218,7 @@ class TestCutoutExtraction:
                 mock_flux_conv.side_effect = flux_conv_side_effect
 
                 size = 20
-                cutouts, success_mask, offset_x, offset_y = (
+                cutouts, success_mask, offset_x, offset_y, *_ = (
                     extract_cutouts_vectorized_from_extension(
                         mock_hdu_ones,
                         mock_wcs,
@@ -239,7 +247,7 @@ class TestCutoutExtraction:
         padding_factor = 0.5
         expected_extraction_size = int(size * padding_factor)
 
-        cutouts, success_mask, offset_x, offset_y = extract_cutouts_vectorized_from_extension(
+        cutouts, success_mask, offset_x, offset_y, *_ = extract_cutouts_vectorized_from_extension(
             mock_hdu_gradient,
             mock_wcs,
             np.array([150.0]),
@@ -266,7 +274,7 @@ class TestCutoutExtraction:
         padding_factor = 2.0
         expected_extraction_size = int(size * padding_factor)
 
-        cutouts, success_mask, offset_x, offset_y = extract_cutouts_vectorized_from_extension(
+        cutouts, success_mask, offset_x, offset_y, *_ = extract_cutouts_vectorized_from_extension(
             mock_hdu_gradient,
             mock_wcs,
             np.array([150.0]),
@@ -294,15 +302,17 @@ class TestCutoutExtraction:
             mock_world_to_pixel.return_value = (30.0, 40.0)
 
             size = 5  # Small size to manually verify
-            cutouts, success_mask, offset_x, offset_y = extract_cutouts_vectorized_from_extension(
-                mock_hdu_gradient,
-                mock_wcs,
-                np.array([150.0]),
-                np.array([2.0]),
-                np.array([size]),
-                source_ids=["gradient_test"],
-                padding_factor=1.0,
-                config=None,
+            cutouts, success_mask, offset_x, offset_y, *_ = (
+                extract_cutouts_vectorized_from_extension(
+                    mock_hdu_gradient,
+                    mock_wcs,
+                    np.array([150.0]),
+                    np.array([2.0]),
+                    np.array([size]),
+                    source_ids=["gradient_test"],
+                    padding_factor=1.0,
+                    config=None,
+                )
             )
 
             assert success_mask[0], "Extraction failed"
@@ -325,7 +335,7 @@ class TestCutoutExtraction:
         size_array = np.array([5, 11, 20])
 
         # Batch extraction
-        batch_cutouts, batch_success, batch_offset_x, batch_offset_y = (
+        batch_cutouts, batch_success, batch_offset_x, batch_offset_y, *_ = (
             extract_cutouts_vectorized_from_extension(
                 mock_hdu_ones,
                 mock_wcs,
@@ -340,7 +350,7 @@ class TestCutoutExtraction:
 
         # Individual extractions
         for i, size in enumerate(size_array):
-            single_cutouts, single_success, single_offset_x, single_offset_y = (
+            single_cutouts, single_success, single_offset_x, single_offset_y, *_ = (
                 extract_cutouts_vectorized_from_extension(
                     mock_hdu_ones,
                     mock_wcs,
@@ -372,7 +382,7 @@ class TestCutoutExtraction:
             test_sizes = [5, 11, 15, 21]
 
             for size in test_sizes:
-                cutouts, success_mask, offset_x, offset_y = (
+                cutouts, success_mask, offset_x, offset_y, *_ = (
                     extract_cutouts_vectorized_from_extension(
                         mock_hdu_ones,
                         mock_wcs,
@@ -434,7 +444,7 @@ class TestPixelOffsetAccuracy:
         """Helper to extract cutout and verify offset matches expected value."""
         target_ra, target_dec = wcs.pixel_to_world_values(target_x, target_y)
 
-        cutouts, success_mask, offset_x, offset_y = extract_cutouts_vectorized_from_extension(
+        cutouts, success_mask, offset_x, offset_y, *_ = extract_cutouts_vectorized_from_extension(
             hdu,
             wcs,
             np.array([target_ra]),
@@ -549,7 +559,7 @@ class TestPixelOffsetAccuracy:
             ra_array.append(ra)
             dec_array.append(dec)
 
-        cutouts, success_mask, offset_x, offset_y = extract_cutouts_vectorized_from_extension(
+        cutouts, success_mask, offset_x, offset_y, *_ = extract_cutouts_vectorized_from_extension(
             mock_hdu,
             mock_wcs_precise,
             np.array(ra_array),
@@ -600,7 +610,7 @@ class TestPaddingEdgeCases:
         padding_factor = 10.0
         expected_size = int(target_size * padding_factor)  # 640
 
-        cutouts, success_mask, _, _ = extract_cutouts_vectorized_from_extension(
+        cutouts, success_mask, _, _, *_ = extract_cutouts_vectorized_from_extension(
             hdu=hdu,
             wcs_obj=wcs_obj,
             ra_array=np.array([180.0]),
@@ -627,7 +637,7 @@ class TestPaddingEdgeCases:
         padding_factor = 5.0
         expected_size = int(target_size * padding_factor)  # 640
 
-        cutouts, success_mask, _, _ = extract_cutouts_vectorized_from_extension(
+        cutouts, success_mask, _, _, *_ = extract_cutouts_vectorized_from_extension(
             hdu=hdu,
             wcs_obj=wcs_obj,
             ra_array=np.array([180.0]),
@@ -651,7 +661,7 @@ class TestPaddingEdgeCases:
         """Test source completely outside image fails gracefully."""
         hdu, wcs_obj = self._make_mock_hdu_wcs(512, 1000.0, 1000.0)
 
-        cutouts, success_mask, _, _ = extract_cutouts_vectorized_from_extension(
+        cutouts, success_mask, _, _, *_ = extract_cutouts_vectorized_from_extension(
             hdu=hdu,
             wcs_obj=wcs_obj,
             ra_array=np.array([180.0]),
@@ -670,7 +680,7 @@ class TestPaddingEdgeCases:
         hdu, wcs_obj = self._make_mock_hdu_wcs(512, 256.0, 256.0)
         hdu.data = np.random.default_rng(42).random((512, 512)).astype(np.float32)
 
-        cutouts, success_mask, _, _ = extract_cutouts_vectorized_from_extension(
+        cutouts, success_mask, _, _, *_ = extract_cutouts_vectorized_from_extension(
             hdu=hdu,
             wcs_obj=wcs_obj,
             ra_array=np.array([180.0]),
@@ -697,7 +707,7 @@ class TestPaddingEdgeCases:
         hdu.data = data
 
         target_size = 100
-        cutouts, success_mask, _, _ = extract_cutouts_vectorized_from_extension(
+        cutouts, success_mask, _, _, *_ = extract_cutouts_vectorized_from_extension(
             hdu=hdu,
             wcs_obj=wcs_obj,
             ra_array=np.array([180.0]),
@@ -723,7 +733,7 @@ class TestPaddingEdgeCases:
         padding_factor = 2.0
         expected_size = int(target_size * padding_factor)  # 128
 
-        cutouts, success_mask, _, _ = extract_cutouts_vectorized_from_extension(
+        cutouts, success_mask, _, _, *_ = extract_cutouts_vectorized_from_extension(
             hdu=hdu,
             wcs_obj=wcs_obj,
             ra_array=np.array([180.0]),

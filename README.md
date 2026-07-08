@@ -17,7 +17,7 @@
 ![Cutana Demo](assets/cutana_demo_2x.gif)
 
 > **Note:** Cutana is currently optimised for **Euclid Q1/IDR1 data**. Some defaults and assumptions are Euclid-specific:
-> - Flux conversion expects the `MAGZERO` header keyword (configurable via `config.flux_conversion_keywords.AB_zeropoint`)
+> - Flux conversion expects the `MAGZERO` header keyword (configurable via `config.flux_conversion_keywords.AB_zeropoint`) to convert to Jy
 > - Filter detection patterns are tuned for Euclid bands (VIS, NIR-Y, NIR-H, NIR-J)
 > - FITS structure assumes one file per channel/filter
 >
@@ -100,8 +100,11 @@ TILE_102018666_12346,45.124,12.457,256,"['/path/to/tile_vis.fits','/path/to/tile
 
 **ZARR Format** (recommended): All cutouts stored in a efficient archives, ideal for large datasets and analysis workflows. Cutana uses the [Zarr format](https://zarr.readthedocs.io/en/stable/) for high-performance storage and the [images_to_zarr](https://github.com/gomezzz/images_to_zarr/) library for conversion. (See the Output section below for sample code to access)
 
-**FITS Format**: Individual FITS files per source, best for compatibility with existing astronomical software. Mandatory format for `do_only_cutout_extraction`, 
-which skips all processing aside from the flux converison, which can be disabled.
+**FITS Format**: Individual FITS files per source, best for compatibility with existing astronomical software. Mandatory format for `do_only_cutout_extraction` (Raw cutouts), 
+which skips all processing aside from the flux conversion, which can be disabled.
+
+### Flux Conversion
+To align cutout units, pixels are converted to Janskys by default using the `MAGZERO` header keyword (configurable via `config.flux_conversion_keywords.AB_zeropoint`). Disable this flux conversion via `config.apply_flux_conversion = False`.
 
 ## WCS (World Coordinate System) Handling
 
@@ -112,6 +115,8 @@ FITS cutouts **preserve full WCS information** with accurate astrometric calibra
 - **Reference coordinate centering**: WCS reference pixel (`CRPIX`) is set to the cutout center, with reference coordinates (`CRVAL`) pointing to the source position
 - **Format compatibility**: Supports CD matrix, CDELT, and PC+CDELT WCS formats from original FITS files
 - **Sky area preservation**: Total sky coverage remains constant while pixel scale adjusts for resize operations
+- The header denotes the image unit (`UNIT`), `OriginalUnit`,`Jy`,`approx OriginalUnit`, `approx Jy`. 
+- `CONSVFLX` denotes if flux conserved resizing was applied. If not units are "approx"
 
 ### Zarr Output
 **Important**: Zarr archives **do not contain WCS information**. The WCS data is not recorded in the image metadata stored within the Zarr files. The central point and image size (in pixels or arcseconds, depending on what is provided) is recorded.

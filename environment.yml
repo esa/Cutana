@@ -37,7 +37,7 @@ dependencies:
   - vulture>=2.10            # Dead code detection
   - pip:
       - drizzle>=2.0.1         # Image resampling with drizzle algorithm
-      - fitsbolt==0.2.0        # FITS file loading and normalisation
+      - fitsbolt==0.3.0        # FITS file loading and normalisation
       - images-to-zarr>=0.3.5  # Image to Zarr conversion
       - ipyfilechooser>=0.6    # File/folder selection widget
       - memory-profiler>=0.60  # Memory usage profiling
