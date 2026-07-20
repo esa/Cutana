@@ -11,6 +11,7 @@
 [![DOI](https://img.shields.io/badge/DOI-10.48550/arXiv.2511.04429-blue)](https://doi.org/10.48550/arXiv.2511.04429)
 [![License](https://img.shields.io/badge/License-ESA--PL%20Permissive-green)](LICENSE.txt)
 [![Python](https://img.shields.io/pypi/pyversions/cutana.svg)](https://pypi.org/project/cutana/)
+[![Contributions welcome](https://img.shields.io/badge/contributions-welcome-brightgreen)](CONTRIBUTING.md)
 
 **Cutana** is a high-performance Python pipeline for creating astronomical image cutouts from large FITS datasets. It provides both an interactive **Jupyter-based UI** and a **programmatic API** for efficient processing of astronomical survey data like ESA Euclid observations.
 
