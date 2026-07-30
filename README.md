@@ -46,7 +46,8 @@ For most users, the interactive interface provides the easiest way to process as
 
 ```python
 import cutana_ui
-cutana_ui.start() # optionally can specify e.g. ui_scale=0.6 for smaller UI
+
+cutana_ui.start()  # optionally can specify e.g. ui_scale=0.6 for smaller UI
 ```
 
 This launches a step-by-step interface where you can:
@@ -63,16 +64,16 @@ from cutana import get_default_config, Orchestrator
 
 # Configure processing
 config = get_default_config()
-config.source_catalogue = "sources.csv" # See format below
+config.source_catalogue = "sources.csv"  # See format below
 config.output_dir = "cutouts_output/"
 config.output_format = "zarr"  # or "fits"
 config.target_resolution = 256
-config.selected_extensions = [{'name': 'VIS', 'ext': 'PrimaryHDU'}]  # Extensions to process
+config.selected_extensions = [{"name": "VIS", "ext": "PrimaryHDU"}]  # Extensions to process
 # 1 output channel for VIS, details explained below
 config.channel_weights = {
-        "VIS": [1.0],
-    }
-config.console_log_level = "INFO" # Show INFO logs in console
+    "VIS": [1.0],
+}
+config.console_log_level = "INFO"  # Show INFO logs in console
 
 # Process cutouts
 orchestrator = Orchestrator(config)
@@ -151,9 +152,9 @@ The `channel_weights` parameter controls how multiple FITS files are combined in
 ```python
 # Configure channel weights (ordered dictionary format)
 config.channel_weights = {
-    "VIS": [1.0, 0.0, 0.5],    # RGB weights for VIS band
+    "VIS": [1.0, 0.0, 0.5],  # RGB weights for VIS band
     "NIR-H": [0.0, 1.0, 0.3],  # RGB weights for NIR H-band
-    "NIR-J": [0.0, 0.0, 0.8]   # RGB weights for NIR J-band
+    "NIR-J": [0.0, 0.0, 0.8],  # RGB weights for NIR J-band
 }
 ```
 
@@ -182,9 +183,9 @@ config.normalisation_method = "asinh"  # "linear", "log", "asinh", "zscale"
 
 # Configure normalisation parameters (method-specific defaults applied automatically)
 config.normalisation.percentile = 99.8  # Data clipping percentile
-config.normalisation.a = 0.7            # Transition parameter (asinh/log)
-config.normalisation.n_samples = 1000   # ZScale samples  
-config.normalisation.contrast = 0.25    # ZScale contrast
+config.normalisation.a = 0.7  # Transition parameter (asinh/log)
+config.normalisation.n_samples = 1000  # ZScale samples
+config.normalisation.contrast = 0.25  # ZScale contrast
 ```
 
 **Image stretching is powered by [fitsbolt](https://github.com/Lasloruhberg/fitsbolt) for consistent processing.**
@@ -283,7 +284,7 @@ from cutana import get_default_config
 
 config = get_default_config()
 config.normalisation_method = "linear"
-config.normalisation.percentile = 99.8             # Percentile clipping (default)
+config.normalisation.percentile = 99.8  # Percentile clipping (default)
 ```
 
 ### ASINH Stretch (Recommended)
@@ -291,9 +292,9 @@ config.normalisation.percentile = 99.8             # Percentile clipping (defaul
 from cutana import get_default_config
 
 config = get_default_config()
-config.normalisation_method = 'asinh'
-config.normalisation.percentile = 99.8             # Percentile clipping (default)
-config.normalisation.a = 0.7                       # Transition parameter (default for asinh)
+config.normalisation_method = "asinh"
+config.normalisation.percentile = 99.8  # Percentile clipping (default)
+config.normalisation.a = 0.7  # Transition parameter (default for asinh)
 ```
 
 ### Log Stretch
@@ -301,9 +302,9 @@ config.normalisation.a = 0.7                       # Transition parameter (defau
 from cutana import get_default_config
 
 config = get_default_config()
-config.normalisation_method = 'log'
-config.normalisation.percentile = 99.8             # Percentile clipping (default)
-config.normalisation.a = 1000.0                    # Scale factor (default for log)
+config.normalisation_method = "log"
+config.normalisation.percentile = 99.8  # Percentile clipping (default)
+config.normalisation.a = 1000.0  # Scale factor (default for log)
 ```
 
 ### ZScale Stretch
@@ -311,10 +312,10 @@ config.normalisation.a = 1000.0                    # Scale factor (default for l
 from cutana import get_default_config
 
 config = get_default_config()
-config.normalisation_method = 'zscale'
-config.normalisation.percentile = 99.8             # Percentile clipping (default)
-config.normalisation.n_samples = 1000              # Number of samples (default)
-config.normalisation.contrast = 0.25               # Contrast parameter (default)
+config.normalisation_method = "zscale"
+config.normalisation.percentile = 99.8  # Percentile clipping (default)
+config.normalisation.n_samples = 1000  # Number of samples (default)
+config.normalisation.contrast = 0.25  # Contrast parameter (default)
 ```
 
 ## Performance Considerations
@@ -462,11 +463,15 @@ config = get_default_config()
 config.output_dir = "cutouts_output/"
 config.output_format = "zarr"
 config.target_resolution = 256
-config.selected_extensions = [{'name': 'VIS', 'ext': 'PrimaryHDU'}, {'name': 'NIR-H', 'ext': 'PrimaryHDU'},{'name': 'NIR-J', 'ext': 'PrimaryHDU'}]
+config.selected_extensions = [
+    {"name": "VIS", "ext": "PrimaryHDU"},
+    {"name": "NIR-H", "ext": "PrimaryHDU"},
+    {"name": "NIR-J", "ext": "PrimaryHDU"},
+]
 config.channel_weights = {
     "VIS": [1.0, 0.0, 0.5],
     "NIR-H": [0.0, 1.0, 0.3],
-    "NIR-J": [0.0, 0.0, 0.8]
+    "NIR-J": [0.0, 0.0, 0.8],
 }
 
 # Process cutouts
@@ -511,15 +516,15 @@ from cutana import create_cutouts_direct, get_default_config
 
 config = get_default_config()
 config.target_resolution = 256
-config.selected_extensions = [{'name': 'VIS', 'ext': 'PrimaryHDU'}]
+config.selected_extensions = [{"name": "VIS", "ext": "PrimaryHDU"}]
 config.channel_weights = {"VIS": [1.0]}
 
 catalogue_df = pd.read_csv("sources.csv")
 results = create_cutouts_direct(catalogue_df, config)
 
 for result in results:
-    cutouts = result["cutouts"]   # ndarray (N, H, W, C)
-    metadata = result["metadata"] # list of per-source dicts
+    cutouts = result["cutouts"]  # ndarray (N, H, W, C)
+    metadata = result["metadata"]  # list of per-source dicts
 ```
 
 **When to use which API:**
@@ -542,9 +547,11 @@ config = get_default_config()
 config.source_catalogue = "sources.csv"
 config.output_dir = "streaming_output/"
 config.target_resolution = 256
-config.selected_extensions = [{'name': 'VIS', 'ext': 'PrimaryHDU'}, {'name': 'NIR-H', 'ext': 'PrimaryHDU'}]
-config.channel_weights =  {"VIS": [1.0,0.0],
-                         "NIR-H": [0.0,1.0]}
+config.selected_extensions = [
+    {"name": "VIS", "ext": "PrimaryHDU"},
+    {"name": "NIR-H", "ext": "PrimaryHDU"},
+]
+config.channel_weights = {"VIS": [1.0, 0.0], "NIR-H": [0.0, 1.0]}
 
 # Create streaming orchestrator
 orchestrator = StreamingOrchestrator(config)
@@ -564,7 +571,7 @@ for i in range(orchestrator.get_batch_count()):
     # result['batch_number']: 1-indexed batch number
 
     # Your ML inference or analysis here...
-    process_cutouts(result['cutouts'])
+    process_cutouts(result["cutouts"])
 
     # The next batches are already being prepared in background!
 
