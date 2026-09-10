@@ -375,7 +375,7 @@ def validate_config(cfg: DotMap, check_paths: bool = True) -> None:
                 raise ValueError(f"{param_name} file does not exist: {value}")
 
         elif dtype == int:
-            if not isinstance(value, int):
+            if isinstance(value, bool) or not isinstance(value, int):
                 raise ValueError(
                     f"{param_name} must be an integer, got {type(value).__name__}{_format_constraints()}"
                 )
@@ -391,7 +391,7 @@ def validate_config(cfg: DotMap, check_paths: bool = True) -> None:
                 raise ValueError(f"{param_name} must be one of {allowed_values}, got {value}")
 
         elif dtype == float:
-            if not isinstance(value, (int, float)):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValueError(
                     f"{param_name} must be a number, got {type(value).__name__}{_format_constraints()}"
                 )
