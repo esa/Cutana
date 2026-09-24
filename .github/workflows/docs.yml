@@ -1,0 +1,91 @@
+#   Copyright (c) European Space Agency, 2025.
+#
+#   This file is subject to the terms and conditions defined in file 'LICENCE.txt', which
+#   is part of this source code package. No part of the package, including
+#   this file, may be copied, modified, propagated, or distributed except according to
+#   the terms contained in the file 'LICENCE.txt'.
+name: API docs
+# Deliberately not on `pull_request`: a docs build on every PR costs more CI
+# time than it saves. Use `workflow_dispatch` to check a docs change before
+# merging it
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+# Read by default, so write is granted only to the deploy job that needs it
+permissions:
+  contents: read
+jobs:
+  # Runs everywhere, including this repository and forks, so a broken build fails
+  # here rather than reaching the mirror, where the gated deploy job would be the
+  # first thing to notice
+  build-docs:
+    runs-on: ubuntu-latest
+    # Per ref, and cancellable: a newer commit on the same branch should deploy
+    # instead of the one already building
+    concurrency:
+      group: docs-build-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      # Full history so the local mike deploy below can read or create gh-pages
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      # Python version comes from .python-version, which uv reads automatically
+      - name: Install dependencies
+        run: uv sync --extra docs
+      - name: Generate API reference markdown files
+        run: uv run --no-sync python scripts/gen_ref_pages.py
+      - name: Build docs
+        run: uv run --no-sync zensical build
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      # zensical build alone leaves mike untested, and mike is pinned to a fork
+      # commit — without this a mike/zensical incompatibility would first show
+      # up on the mirror, after merge, where it cannot be caught
+      # No --push, so this commits to a local gh-pages and publishes nothing
+      - name: Dry-run the deploy
+        run: uv run --no-sync mike deploy ci
+
+  # Docs publish only from the public mirror, never from this private repository,
+  # and only from `main` — there is no `dev` version of the site. Gating on the
+  # ref rather than the event keeps workflow_dispatch usable as a docs build on
+  # any branch, deploying only when it is run against `main`
+  deploy-docs:
+    needs: build-docs
+    if: github.repository == 'esa/Cutana' && github.ref == 'refs/heads/main'
+    # Every deploy pushes to gh-pages, so they share one group: concurrent mike
+    # runs would clobber each other or fail non-fast-forward. Never cancelled —
+    # a deploy killed mid-push leaves gh-pages half-written
+    concurrency:
+      group: docs-deploy
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      # Python version comes from .python-version, which uv reads automatically
+      - name: Install dependencies
+        run: uv sync --extra docs
+      - name: Generate API reference markdown files
+        run: uv run --no-sync python scripts/gen_ref_pages.py
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Deploy docs (stable/latest)
+        run: |
+          uv run --no-sync mike deploy --push --update-aliases stable latest
+          uv run --no-sync mike set-default --push stable

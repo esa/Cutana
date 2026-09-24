@@ -29,7 +29,7 @@ from dotmap import DotMap
 
 from cutana.cutout_process import create_cutouts_batch, create_cutouts_main
 from cutana.fits_reader import load_fits_file
-from cutana.get_default_config import get_default_config
+from cutana.get_default_config import get_default_config, save_config_toml
 from cutana.image_processor import combine_channels, resize_batch_tensor
 from cutana.job_tracker import JobTracker
 
@@ -213,6 +213,10 @@ class TestCutoutProcessFunctions:
             # For zarr output (default), metadata should contain incremental write indicator
             assert len(results[0]["metadata"]) == 1
             assert results[0]["metadata"][0]["source_id"] == "written_incrementally"
+            # The cutouts are gone once zarr has them, so the marker carries the real
+            # written count: it is the only number the orchestrator can hold a
+            # disk-mode worker to, and assuming len(source_batch) hid dropped sources.
+            assert results[0]["metadata"][0]["n_extracted"] == len(source_batch)
             # FITS loading should be called once per FITS file in the set
             mock_load_fits.assert_called()
             # FITS set-based processing should be called once per source
@@ -284,8 +288,15 @@ class TestCutoutProcessFunctions:
             # Should call vectorized batch processing once per FITS set (all sources share the same FITS file)
             assert mock_process.call_count == 1
 
-    def test_error_handling_in_batch_processing(self, cutout_config, mock_job_tracker):
-        """Test error handling in batch processing."""
+    def test_a_batch_that_extracts_nothing_still_returns_rather_than_raises(
+        self, cutout_config, mock_job_tracker
+    ):
+        """A batch whose sources are all unextractable is a result, not a failure.
+
+        The counterpart to ``test_a_fatal_error_reaches_the_caller_instead_of_an_empty_batch``:
+        the #425 fix is only worth anything if the two outcomes stay distinguishable,
+        so both halves are pinned.
+        """
         source_batch = [
             {
                 "SourceID": "ErrorSource_001",
@@ -1040,7 +1051,7 @@ class TestCutoutProcessFunctions:
 
         # Test channel combination with different weights
         channel_weights = {"VIS": [0.5], "NIR-H": [0.3], "NIR-Y": [0.2]}
-        combined = combine_channels(batch_cutouts, channel_weights)
+        combined = combine_channels(batch_cutouts, channel_weights, list(channel_weights))
 
         # Combined output should be (N_sources, H, W, N_output_channels)
         assert combined.shape[0] == 1  # 1 source
@@ -1050,3 +1061,75 @@ class TestCutoutProcessFunctions:
 
         # Verify the combined result is not all zeros (contains actual data)
         assert combined.max() > 0, "Combined cutout should contain actual data"
+
+    def test_a_fatal_error_reaches_the_caller_instead_of_an_empty_batch(
+        self, cutout_config, mock_job_tracker
+    ):
+        """A failure covering the whole batch must not look like a finished batch.
+
+        Regression test for #425. The fatal handler used to log and return
+        ``[{"metadata": []}]``, so the worker exited 0 reporting
+        ``processed_count: 0`` and the orchestrator booked the loss as sources
+        that produced no cutout.
+        """
+        source_batch = [
+            {
+                "SourceID": "FatalSource_001",
+                "RA": 150.0,
+                "Dec": 2.0,
+                "diameter_arcsec": 10.0,
+                "diameter_pixel": 20,
+                "fits_file_paths": "['/nonexistent/file.fits']",
+            }
+        ]
+
+        with patch(
+            "cutana.cutout_process.FITSDataset.prepare_sub_batch",
+            side_effect=OSError("simulated FITS read failure covering the whole batch"),
+        ):
+            with pytest.raises(OSError, match="covering the whole batch"):
+                create_cutouts_batch(source_batch, cutout_config, mock_job_tracker)
+
+    def test_the_worker_exits_non_zero_and_names_the_cause(self, tmp_path, cutout_config):
+        """The raise has to become an exit code, since that is all the parent sees.
+
+        This pins the second half of the chain: given that the fatal handler now
+        propagates, the worker's top-level handler turns it into exit 1 with the
+        cause attached. The failure is injected at ``create_cutouts_batch``
+        because the real ``JobTracker`` this entry point builds needs a live
+        session; the first half is covered by the test above.
+        """
+        source_batch = [
+            {
+                "SourceID": "FatalSource_001",
+                "RA": 150.0,
+                "Dec": 2.0,
+                "diameter_pixel": 20,
+                "fits_file_paths": "['/nonexistent/file.fits']",
+            }
+        ]
+        cutout_config.output_dir = str(tmp_path)
+
+        source_path = tmp_path / "sources.json"
+        source_path.write_text(json.dumps(source_batch))
+        config_path = save_config_toml(cutout_config, str(tmp_path / "config.toml"))
+
+        original_argv = sys.argv[:]
+        try:
+            sys.argv = ["cutout_process.py", str(source_path), str(config_path)]
+            with (
+                patch(
+                    "cutana.cutout_process.create_cutouts_batch",
+                    side_effect=OSError("simulated FITS read failure"),
+                ),
+                patch("builtins.print") as mock_print,
+            ):
+                with pytest.raises(SystemExit) as exit_info:
+                    create_cutouts_main()
+
+            assert exit_info.value.code == 1
+            output = json.loads(mock_print.call_args[0][0])
+            assert output["processed_count"] == 0
+            assert "simulated FITS read failure" in output["error"]
+        finally:
+            sys.argv = original_argv

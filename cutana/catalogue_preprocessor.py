@@ -11,7 +11,6 @@ Provides functionality to validate, preprocess, and analyze source catalogues,
 including comprehensive data validation, FITS file checking, and metadata extraction.
 """
 
-import ast
 import os
 import random
 import re
@@ -26,11 +25,19 @@ from astropy.table import Table
 from astropy.wcs import WCS
 from loguru import logger
 
+from .catalogue_sample import read_catalogue_sample
+from .catalogue_validation import CatalogueValidationError
+from .fits_paths import parse_fits_file_paths
+from .source_footprint import check_sources_in_products
+from .validation_sampling import sample_for_validation
 
-class CatalogueValidationError(Exception):
-    """Exception raised when catalogue validation fails."""
+# Catalogue size at or above which the duplicate-SourceID check is skipped: the check
+# is O(n) over the frame, and Cutana must stay usable on billion-source catalogues.
+# StreamingOrchestrator sizes its internal batches to stay below this.
+DUPLICATE_CHECK_THRESHOLD = 100_000
 
-    pass
+
+__all__ = ["CatalogueValidationError"]  # re-exported: the historical import site
 
 
 def extract_fits_sets(
@@ -46,7 +53,11 @@ def extract_fits_sets(
     Returns:
         Tuple of (fits_set_dict, resolution_ratios) where:
         - fits_set_dict: Dict mapping fits_set tuples to list of fits files
-        - resolution_ratios: Dict mapping filter names to pixel scale ratios
+        - resolution_ratios: Dict mapping each FITS path to its pixel scale ratio
+          against the first path's scale. Keyed by path, not by filter: two tiles
+          the recogniser cannot classify share the label ``UNKNOWN``, so a
+          filter-keyed dict silently kept whichever the row happened to list last
+          and the check's outcome depended on file order.
     """
     fits_set_dict = {}
     resolution_ratios = {}
@@ -62,10 +73,6 @@ def extract_fits_sets(
 
         for fits_path in normalized_paths:
             try:
-                filter_name = extract_filter_name(fits_path)
-                if filter_name == "UNKNOWN":
-                    continue
-
                 # Get pixel scale from WCS
                 with fits.open(fits_path) as hdul:
                     # Try PRIMARY extension first, then first extension with WCS.
@@ -94,7 +101,10 @@ def extract_fits_sets(
                             f"unexpected pixel scale matrix. Expected pixel scale {pixel_scale_deg} from [0,0] of {pixel_scale_matrix}"
                         )
                         pixel_scale_arcsec = pixel_scale_deg * 3600.0
-                        pixel_scales[filter_name] = pixel_scale_arcsec
+                        # Keyed by path: an unrecognised product has a pixel scale worth
+                        # comparing like any other, but every one of them is labelled
+                        # UNKNOWN, so keying by filter compared only the last of them.
+                        pixel_scales[fits_path] = pixel_scale_arcsec
 
             except Exception as e:
                 logger.warning(f"Could not determine resolution for {fits_path}: {e}")
@@ -103,10 +113,34 @@ def extract_fits_sets(
         # Calculate resolution ratios relative to first filter
         if len(pixel_scales) > 1:
             reference_scale = list(pixel_scales.values())[0]
-            for filter_name, scale in pixel_scales.items():
-                resolution_ratios[filter_name] = scale / reference_scale
+            for scaled_path, scale in pixel_scales.items():
+                resolution_ratios[scaled_path] = scale / reference_scale
 
     return fits_set_dict, resolution_ratios
+
+
+#: Euclid filename -> band patterns. Order matters: more specific patterns first.
+_FILTER_PATTERNS = [
+    (r"VIS", "VIS"),
+    (r"NIR-?Y", "NIR-Y"),
+    (r"NIR-?H", "NIR-H"),
+    (r"NIR-?J", "NIR-J"),
+    # More specific patterns for NIR variations
+    (r"NIR_H", "NIR-H"),
+    (r"NIR_Y", "NIR-Y"),
+    (r"NIR_J", "NIR-J"),
+    # Single letter patterns - match at word boundaries, underscores, or start of word
+    (r"(?:^|[^A-Z])Y(?:[^A-Z]|$)", "Y"),
+    (r"(?:^|[^A-Z])J(?:[^A-Z]|$)", "J"),
+    (r"(?:^|[^A-Z])H(?:[^A-Z]|$)", "H"),
+]
+
+#: Every band `extract_filter_name` can name, so a caller can ask whether a string is a
+#: band at all. Derived from the pattern table rather than written out again: the two
+#: drifting apart is what would make `selected_extensions` look like an HDU-name list and
+#: silently skip band selection. `"UNKNOWN"` is deliberately absent -- it is the answer for
+#: a filename that names no band, never something a user selects.
+SELECTABLE_BAND_NAMES = frozenset(band for _, band in _FILTER_PATTERNS)
 
 
 def extract_filter_name(filename: str) -> str:
@@ -117,27 +151,24 @@ def extract_filter_name(filename: str) -> str:
         filename: FITS file path or name
 
     Returns:
-        Filter name (e.g., 'VIS', 'NIR-Y', 'NIR-H') or 'UNKNOWN'
+        Filter name (e.g., 'VIS', 'NIR-Y', 'NIR-H'), or 'UNKNOWN' when no Euclid pattern
+        matches.
+
+        'UNKNOWN' is deliberately a constant. `channel_weights` is one dictionary for the
+        whole run, so a channel label has to mean the same thing in every row; anything
+        derived from the filename of an unrecognised tile is a *tile* identity and
+        changes row to row, which makes the catalogue's rows disagree about their own
+        channels. A band token is the only per-file thing that is stable across a survey,
+        and recognising one is exactly what this function does or fails to do.
+
+        One 'UNKNOWN' channel in a row is workable: it is a single channel, so
+        `validate_channel_order_consistency` pairs it without consulting its name. Two
+        collapse onto the same label and are refused, because they are genuinely
+        indistinguishable to weights and to the WCS lookup.
     """
     filename_upper = Path(filename).name.upper()
 
-    # Common Euclid filter patterns - order matters! More specific patterns first
-    filter_patterns = [
-        (r"VIS", "VIS"),
-        (r"NIR-?Y", "NIR-Y"),
-        (r"NIR-?H", "NIR-H"),
-        (r"NIR-?J", "NIR-J"),
-        # More specific patterns for NIR variations
-        (r"NIR_H", "NIR-H"),
-        (r"NIR_Y", "NIR-Y"),
-        (r"NIR_J", "NIR-J"),
-        # Single letter patterns - match at word boundaries, underscores, or start of word
-        (r"(?:^|[^A-Z])Y(?:[^A-Z]|$)", "Y"),
-        (r"(?:^|[^A-Z])J(?:[^A-Z]|$)", "J"),
-        (r"(?:^|[^A-Z])H(?:[^A-Z]|$)", "H"),
-    ]
-
-    for pattern, filter_name in filter_patterns:
+    for pattern, filter_name in _FILTER_PATTERNS:
         if re.search(pattern, filename_upper):
             return filter_name
 
@@ -173,7 +204,7 @@ def analyze_fits_file(fits_path: str) -> Dict[str, Any]:
                     "index": i,
                     "name": hdu.name if hasattr(hdu, "name") else f"HDU{i}",
                     "type": type(hdu).__name__,
-                    "has_data": hdu.data is not None,
+                    "has_data": hdu.header["NAXIS"] > 0,
                 }
                 extensions.append(ext_info)
 
@@ -196,51 +227,6 @@ def analyze_fits_file(fits_path: str) -> Dict[str, Any]:
             "num_extensions": 0,
             "error": str(e),
         }
-
-
-def parse_fits_file_paths(fits_paths_str: str, normalize: bool = True) -> List[str]:
-    """
-    Parse the fits_file_paths column which may be in string representation of list.
-
-    Args:
-        fits_paths_str: String representation of FITS file paths
-        normalize: Whether to normalize paths using os.path.normpath (default: True)
-
-    Returns:
-        List of FITS file paths (normalized if normalize=True)
-
-    Raises:
-        ValueError: If the input is malformed (e.g., unbalanced brackets or invalid syntax)
-    """
-    fits_paths = []
-
-    # Handle different formats
-    if isinstance(fits_paths_str, str):
-        # Remove any extra whitespace
-        fits_paths_str = fits_paths_str.strip()
-
-        # Check for malformed list syntax (unbalanced brackets)
-        starts_with_bracket = fits_paths_str.startswith("[")
-        ends_with_bracket = fits_paths_str.endswith("]")
-        if starts_with_bracket != ends_with_bracket:
-            raise ValueError(f"Malformed FITS paths string (unbalanced brackets): {fits_paths_str}")
-
-        # Try to evaluate as Python literal (list)
-        if starts_with_bracket and ends_with_bracket:
-            fits_paths = ast.literal_eval(fits_paths_str)
-        # If it's a single path without brackets
-        elif fits_paths_str:
-            fits_paths = [fits_paths_str]
-
-    # If it's already a list
-    elif isinstance(fits_paths_str, list):
-        fits_paths = fits_paths_str
-
-    # Normalize paths if requested
-    if normalize and fits_paths:
-        fits_paths = [os.path.normpath(path) for path in fits_paths]
-
-    return fits_paths
 
 
 def validate_catalogue_columns(catalogue_df: pd.DataFrame) -> List[str]:
@@ -312,14 +298,7 @@ def validate_coordinate_ranges(catalogue_df: pd.DataFrame) -> List[str]:
     """
     errors = []
 
-    # For large catalogues (>10K), only check 10K subset
-    if len(catalogue_df) > 10001:
-        logger.info(
-            f"Large catalogue ({len(catalogue_df)} sources), spot-checking 10000 random sources"
-        )
-        check_df = catalogue_df.sample(n=10000, random_state=42)
-    else:
-        check_df = catalogue_df
+    check_df = sample_for_validation(catalogue_df, 10000, "coordinate ranges")
 
     try:
         # Validate RA range (0-360 degrees)
@@ -390,14 +369,15 @@ def validate_resolution_ratios(catalogue_df: pd.DataFrame) -> List[str]:
                     _, resolution_ratios = extract_fits_sets(fits_paths, filters)
 
                     # Check if any resolution ratio differs by more than 0.1%
-                    for filter_name, ratio in resolution_ratios.items():
+                    for scaled_path, ratio in resolution_ratios.items():
                         deviation = abs(ratio - 1.0)
                         if deviation > 0.0001:  # 0.01% = 0.0001
                             errors.append(
                                 f"Resolution ratio difference of {deviation * 100:.2f}% detected between filters."
                                 f"When using multiple filters with different resolutions, you must specify 'diameter_arcsec'"
                                 f"instead of 'diameter_pixel' to avoid ambiguity about which filter's pixel scale to"
-                                f"reference. Found resolution ratio {ratio:.4f} for filter {filter_name}."
+                                f"reference. Found resolution ratio {ratio:.4f} for "
+                                f"{os.path.basename(scaled_path)}."
                             )
                             return errors  # Return immediately after first error
 
@@ -433,14 +413,14 @@ def check_fits_files_exist(catalogue_df: pd.DataFrame) -> Tuple[List[str], List[
     unique_fits_files = set()
     parse_errors = []
 
-    for idx, row in catalogue_df.iterrows():
+    for _, row in catalogue_df.iterrows():
         try:
             fits_paths = parse_fits_file_paths(row["fits_file_paths"])
             for fits_path in fits_paths:
                 if fits_path:  # Skip empty strings
                     unique_fits_files.add(fits_path)
         except Exception as e:
-            parse_errors.append(f"Row {idx}: {e}")
+            parse_errors.append(f"Source {row['SourceID']}: {e}")
         if len(unique_fits_files) > 100:
             # fix to save time not going thorugh the entire cat
             logger.info("More than 100 unique FITS files found, stopping further parsing")
@@ -495,6 +475,10 @@ def preprocess_catalogue(catalogue_df: pd.DataFrame) -> pd.DataFrame:
 
     Returns:
         Preprocessed DataFrame with reset index and string SourceID
+
+    Raises:
+        CatalogueValidationError: If rows share both SourceID and position, leaving
+            no way to key them apart during cutout extraction.
     """
     logger.info(f"Preprocessing catalogue with {len(catalogue_df)} sources")
 
@@ -506,28 +490,53 @@ def preprocess_catalogue(catalogue_df: pd.DataFrame) -> pd.DataFrame:
         logger.info("Reset non-contiguous catalogue index")
 
     # Check for duplicate SourceIDs in small catalogues. For large catalogues the
-    # check is skipped as it would require loading all IDs into memory at once.
-    _DUPLICATE_CHECK_THRESHOLD = 100_000
+    # check is skipped: unique SourceIDs are the caller's responsibility (#283), and
+    # Cutana must stay usable on billion-source catalogues, which rules out any
+    # whole-catalogue scan or accumulation of seen IDs.
+    #
+    # Streaming callers pass one internal batch at a time, so the check effectively
+    # always runs for them; only a single-shot load of a >=100k catalogue skips it.
+    # StreamingOrchestrator keeps its internal batches under DUPLICATE_CHECK_THRESHOLD
+    # so that stays true at survey scale.
     if "SourceID" in processed_df.columns:
-        try:
-            processed_df["SourceID"] = processed_df["SourceID"].astype(str)
-        except Exception as e:
-            logger.warning(f"Could not convert SourceID to string: {e}")
+        processed_df["SourceID"] = processed_df["SourceID"].astype(str)
 
-        if len(processed_df) < _DUPLICATE_CHECK_THRESHOLD:
-            if processed_df["SourceID"].duplicated().any():
-                n_duplicates = processed_df["SourceID"].duplicated().sum()
+        if len(processed_df) < DUPLICATE_CHECK_THRESHOLD:
+            duplicated_ids = processed_df["SourceID"].duplicated()
+            if duplicated_ids.any():
                 logger.warning(
-                    f"Duplicate SourceIDs detected ({n_duplicates} duplicates). "
+                    f"Duplicate SourceIDs detected ({int(duplicated_ids.sum())} duplicates). "
                     "Reformatting all SourceIDs as SourceID_RA_Dec to prevent silent data loss."
                 )
+                # Keep the originals: the reformatted IDs appear nowhere in the
+                # caller's file, so quoting them in an error would send the user
+                # looking for rows that do not exist.
+                original_ids = processed_df["SourceID"]
                 processed_df["SourceID"] = (
-                    processed_df["SourceID"].astype(str)
+                    processed_df["SourceID"]
                     + "_"
                     + processed_df["RA"].map("{:.10f}".format)
                     + "_"
                     + processed_df["Dec"].map("{:.10f}".format)
                 )
+
+                # Rows identical in ID *and* position survive the reformat unchanged —
+                # typically exact duplicate catalogue rows. There is no attribute left
+                # to tell them apart, so keying by SourceID would silently keep one
+                # cutout per group and leave the caller expecting more batches than can
+                # ever be produced. Refuse the input instead of guessing.
+                still_colliding = processed_df["SourceID"].duplicated()
+                if still_colliding.any():
+                    n_exact = int(still_colliding.sum())
+                    examples = original_ids[still_colliding].head(3).tolist()
+                    raise CatalogueValidationError(
+                        f"{n_exact} catalogue rows are exact duplicates (identical SourceID, "
+                        f"RA and Dec) and cannot be distinguished; e.g. {examples}. Cutout "
+                        "extraction is keyed by SourceID, so these rows would collapse into "
+                        "one cutout per group and the run would produce fewer cutouts than "
+                        "the catalogue has sources. Deduplicate the catalogue first, e.g. "
+                        "df.drop_duplicates(subset=['SourceID', 'RA', 'Dec'])."
+                    )
         else:
             logger.info(
                 f"Large catalogue ({len(processed_df):,} sources) detected — "
@@ -685,6 +694,15 @@ def validate_catalogue_sample(
             fits_errors, _ = check_fits_files_exist(sample_df)
             errors.extend(fits_errors)
 
+            # And that the sources are actually inside them. Behind the same flag, because it is
+            # the same cost -- opening FITS files -- and the check means nothing without them.
+            position_errors, position_warnings = check_sources_in_products(sample_df)
+            errors.extend(position_errors)
+            for warning in position_warnings:
+                # Warnings do not fail a run, so they have to be logged or they are lost -- and a
+                # cutout that will be silently half-trimmed is exactly what someone wants told.
+                logger.warning(warning)
+
     return errors
 
 
@@ -734,6 +752,18 @@ def load_and_validate_catalogue(catalogue_path: str, skip_fits_check: bool = Fal
         for warning in fits_warnings:
             logger.warning(warning)
 
+        # And that the sources are inside the files they name. Same gate, same reason: it
+        # opens FITS files. Without it a catalogue whose sources sit outside their products
+        # is accepted and yields a full-size, all-trim cutout. `analyse_source_catalogue`
+        # runs the same check itself for the UI, which does not come through here.
+        position_errors, position_warnings = check_sources_in_products(catalogue_df)
+        if position_errors:
+            raise CatalogueValidationError(
+                f"Source position validation failed: {'; '.join(position_errors)}"
+            )
+        for warning in position_warnings:
+            logger.warning(warning)
+
     # Preprocess catalogue
     processed_df = preprocess_catalogue(catalogue_df)
 
@@ -759,80 +789,97 @@ def analyse_source_catalogue(catalogue_path: str) -> Dict[str, Any]:
     """
     logger.info(f"Starting analysis of catalogue: {catalogue_path}")
 
-    # Load and validate catalogue
-    catalogue_df = load_and_validate_catalogue(catalogue_path)
-    num_sources = len(catalogue_df)
-    logger.info(f"Found {num_sources} sources in catalogue")
+    catalogue_df, num_sources, count_estimated, sampling_scope = read_catalogue_sample(
+        catalogue_path
+    )
+    if catalogue_df.empty:
+        raise CatalogueValidationError("Catalogue is empty")
+    errors = validate_catalogue_columns(catalogue_df)
+    if not errors:
+        errors.extend(validate_coordinate_ranges(catalogue_df))
+        errors.extend(validate_resolution_ratios(catalogue_df))
+    if errors:
+        raise CatalogueValidationError("; ".join(errors))
 
-    # Analyze FITS files per source (sample from first few rows)
-    sample_size = min(5, len(catalogue_df))
-    unique_fits_files = {}  # initialise as dict to use as an "ordered" set
-
-    logger.info(f"Analysing FITS files from first {sample_size} sources...")
-
-    for idx in range(sample_size):
-        row = catalogue_df.iloc[idx]
-
-        # Get FITS file paths for this source
-        fits_paths_raw = row.get("fits_file_paths", [])
-        fits_paths = parse_fits_file_paths(fits_paths_raw)
-
-        for fits_path in fits_paths:
-            unique_fits_files[fits_path] = None  # like an ordered set
-
-    # Convert to list for consistent ordering
-    unique_fits_files = list(unique_fits_files.keys())
-
-    # Analyze each unique FITS file for extensions
-    logger.info(f"Analysing {len(unique_fits_files)} unique FITS files...")
-
-    fits_analysis_results = []
+    # Cache headers only for this bounded sample; never accumulate whole-catalogue state.
+    fits_by_path = {}
+    expected_filters = None
     extensions_by_filter = {}
-
-    for fits_path in unique_fits_files:
-        fits_info = analyze_fits_file(fits_path)
-        fits_analysis_results.append(fits_info)
-
-        if fits_info["exists"] and fits_info["extensions"]:
-            filter_name = fits_info["filter"]
-            ext_types = [ext["type"] for ext in fits_info["extensions"]]
-
-            if filter_name not in extensions_by_filter:
-                extensions_by_filter[filter_name] = set()
-
-            extensions_by_filter[filter_name].update(ext_types)
-
-    # Create extensions summary for UI display
-    extensions_display = []
-    for filter_name, ext_types in extensions_by_filter.items():
-        ext_list = list(ext_types)
-        extensions_display.append({"name": filter_name, "ext": ", ".join(ext_list)})
-
-    # No sorting
-
-    # Calculate average FITS files per source
     total_fits_entries = 0
-    valid_sources = 0
+    for _, row in catalogue_df.iterrows():
+        # The sample's index is positional within the sample, not a catalogue row number
+        # (see `read_catalogue_sample`), so name the source instead: it is unique and the
+        # user can find it in their own file.
+        source = row["SourceID"]
+        paths = parse_fits_file_paths(row["fits_file_paths"])
+        filters = [extract_filter_name(path) for path in paths]
+        # Two tiles in a row sharing a label cannot work: weights and WCS are both looked
+        # up by name, so the bands would be indistinguishable — two Euclid tiles of the
+        # same band, or two files this recogniser cannot classify, which both come back
+        # as UNKNOWN.
+        if not filters or len(set(filters)) != len(filters):
+            raise CatalogueValidationError(
+                f"Source {source}: FITS paths do not map to distinct channels: {filters}. "
+                "Rename the files so each band is identifiable, or use the Python API "
+                "with explicit channel labels."
+            )
+        if expected_filters is None:
+            expected_filters = filters
+        elif set(filters) != set(expected_filters):
+            # The *set*, not the sequence: weights resolve by name now, and the WCS check
+            # reads each row's own path order, so a row listing its bands in a different
+            # order is processed correctly. A row carrying different bands is not — the
+            # tensor would have a different width from the one `channel_weights` describes.
+            missing = sorted(set(expected_filters) - set(filters))
+            extra = sorted(set(filters) - set(expected_filters))
+            raise CatalogueValidationError(
+                f"Source {source}: bands {sorted(filters)} differ from the sampled "
+                f"catalogue's "
+                f"{sorted(expected_filters)}"
+                + (f"; missing {missing}" if missing else "")
+                + (f"; unexpected {extra}" if extra else "")
+            )
+        total_fits_entries += len(paths)
+        for path, filter_name in zip(paths, filters):
+            if path not in fits_by_path:
+                info = analyze_fits_file(path)
+                if not info["exists"] or info["error"]:
+                    raise CatalogueValidationError(f"Cannot analyze {path}: {info['error']}")
+                fits_by_path[path] = info
+            info = fits_by_path[path]
+            layout = [
+                (ext["index"], ext["name"], ext["type"], ext["has_data"])
+                for ext in info["extensions"]
+            ]
+            if filter_name in extensions_by_filter and extensions_by_filter[filter_name] != layout:
+                raise CatalogueValidationError(
+                    f"Inconsistent HDU order/layout for filter {filter_name}: {path}"
+                )
+            extensions_by_filter[filter_name] = layout
 
-    # Test checking a random sample of 100 sources
-    sample_size_2 = min(100, len(catalogue_df))
-    sample_indices = random.sample(range(len(catalogue_df)), sample_size_2)
-    for idx in sample_indices:
-        row = catalogue_df.iloc[idx]
-        fits_paths_raw = row.get("fits_file_paths", [])
-        fits_paths = parse_fits_file_paths(fits_paths_raw)
+    position_errors, position_warnings = check_sources_in_products(catalogue_df)
+    if position_errors:
+        raise CatalogueValidationError("; ".join(position_errors))
+    for warning in position_warnings:
+        logger.warning(warning)
 
-        if fits_paths:
-            total_fits_entries += len(fits_paths)
-            valid_sources += 1
-    if sample_size_2 < len(catalogue_df):
-        logger.info(f"Sampled {sample_size_2} sources for average FITS per source calculation")
-        valid_sources = len(catalogue_df)
-        total_fits_entries = int(total_fits_entries * (len(catalogue_df) / sample_size_2))
-    avg_fits_per_source = total_fits_entries / valid_sources if valid_sources > 0 else 0
+    sample_size = len(catalogue_df)
+    unique_fits_files = list(fits_by_path)
+    fits_analysis_results = list(fits_by_path.values())
+    extensions_display = [
+        {"name": name, "ext": ", ".join(dict.fromkeys(ext[2] for ext in layout))}
+        for name, layout in extensions_by_filter.items()
+    ]
+    avg_fits_per_source = total_fits_entries / sample_size
+    logger.info(
+        f"Channel discovery checked {sample_size} rows from {sampling_scope}; "
+        "unsampled rows have not been validated"
+    )
 
     result = {
         "num_sources": num_sources,
+        "num_sources_estimated": count_estimated,
+        "sampling_scope": sampling_scope,
         "fits_files": unique_fits_files,
         "num_unique_fits_files": len(unique_fits_files),
         "avg_fits_per_source": avg_fits_per_source,
@@ -843,8 +890,6 @@ def analyse_source_catalogue(catalogue_path: str) -> Dict[str, Any]:
         ),  # Convert sets to lists for JSON serialization
         "catalogue_columns": list(catalogue_df.columns),
         "sample_analysis_size": sample_size,
-        "validated": True,
-        "preprocessed": True,
     }
 
     logger.info(

@@ -30,4 +30,4 @@ jobs:
         env:
           TWINE_USERNAME: "__token__"
           TWINE_PASSWORD: ${{ secrets.TEST_PYPI_TOKEN }}
-        run: uvx twine upload -r testpypi dist/*
+        run: uvx twine upload --verbose -r testpypi dist/*

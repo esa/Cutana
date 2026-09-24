@@ -1,0 +1,68 @@
+{
+  "cutana_version": "0.4.0",
+  "created": "2026-09-11 16:57:36 UTC",
+  "machine": "Linux (x86_64)",
+  "note": "Transcribed from the 0.4.0 benchmark of record (issue #399, comment 5638407118) rather than written by a matrix run: the generated file lived under /tmp and was cleaned up before it was promoted. Throughput is exactly as published, and each value reproduces the published delta against the 0.3.2 baseline. Elapsed carries the report's single decimal and is informational only. Measured with --max-workers 8; max_workers is what the shipped code records per backend under that pin: disk records 7 (the orchestrator applies the N-1 cap), the streaming backends and direct record 8.",
+  "runs": {
+    "small|disk|4visnisp3|none|fits|float32|64": {
+      "throughput": 272.6,
+      "elapsed": 36.7,
+      "max_workers": 7
+    },
+    "small|disk-streaming|4visnisp3|asinh|zarr|uint8|150": {
+      "throughput": 594.5,
+      "elapsed": 16.8,
+      "max_workers": 8
+    },
+    "small|disk-streaming|3nisp3|log|fits|float32|224": {
+      "throughput": 302.3,
+      "elapsed": 33.1,
+      "max_workers": 8
+    },
+    "small|mem-streaming|1vis1|log|zarr|uint8|64": {
+      "throughput": 1147.6,
+      "elapsed": 8.7,
+      "max_workers": 8
+    },
+    "small|direct|1vis1|none|zarr|float32|150": {
+      "throughput": 717.2,
+      "elapsed": 13.9,
+      "max_workers": 8
+    },
+    "small|mem-streaming|3nisp3|none|zarr|uint8|224": {
+      "throughput": 788.5,
+      "elapsed": 12.7,
+      "max_workers": 8
+    },
+    "small|direct|3nisp3|asinh|zarr|uint8|64": {
+      "throughput": 195.4,
+      "elapsed": 51.2,
+      "max_workers": 8
+    },
+    "small|disk|1vis1|asinh|fits|uint8|224": {
+      "throughput": 408.3,
+      "elapsed": 24.5,
+      "max_workers": 7
+    },
+    "small|disk|3nisp3|log|zarr|float32|150": {
+      "throughput": 480.1,
+      "elapsed": 20.8,
+      "max_workers": 7
+    },
+    "small|direct|4visnisp3|log|zarr|uint8|224": {
+      "throughput": 196.0,
+      "elapsed": 51.0,
+      "max_workers": 8
+    },
+    "small|mem-streaming|4visnisp3|asinh|zarr|float32|150": {
+      "throughput": 587.7,
+      "elapsed": 17.0,
+      "max_workers": 8
+    },
+    "small|disk-streaming|1vis1|none|zarr|float32|64": {
+      "throughput": 966.4,
+      "elapsed": 10.3,
+      "max_workers": 8
+    }
+  }
+}

@@ -19,9 +19,11 @@ from astropy.wcs import WCS
 from dotmap import DotMap
 from loguru import logger
 
-from .catalogue_preprocessor import extract_filter_name, extract_fits_sets, parse_fits_file_paths
+from .catalogue_preprocessor import SELECTABLE_BAND_NAMES, extract_filter_name, extract_fits_sets
+from .fits_paths import parse_fits_file_paths
 from .fits_reader import load_fits_file
 from .performance_profiler import ContextProfiler, PerformanceProfiler
+from .profiling_types import Stage
 
 
 def load_fits_sets(
@@ -44,7 +46,7 @@ def load_fits_sets(
     """
     loaded_fits_data = {}
 
-    with ContextProfiler(profiler, "FitsLoading"):
+    with ContextProfiler(profiler, Stage.FITS_LOADING):
         for fits_set in fits_sets:
             for fits_path in fits_set:
                 if fits_path not in loaded_fits_data:
@@ -99,6 +101,121 @@ def prepare_fits_sets_and_sources(
     return fits_set_to_sources
 
 
+#: Selections already reported as "not band selection", so the notice is emitted once per
+#: process instead of once per call. `_load_missing_fits_files` calls this per sub-batch, so
+#: a long run produced thousands of copies of a one-off configuration message -- in the same
+#: stream operators are asked to search for "Skipping FITS set".
+_BAND_SELECTION_OFF_REPORTED: Set[frozenset] = set()
+
+
+def _log_band_selection_off(band_names: Set[str]) -> None:
+    """Say once that the selection named no band, and is therefore narrowing nothing.
+
+    Said at all because the silent version of this is a typo: ``selected_extensions =
+    ["NIRH"]`` loads every file in every set, and for a one-file set nothing downstream
+    notices. ``UNKNOWN`` is the expected, non-typo case and reads as such.
+    """
+    key = frozenset(band_names)
+    if key in _BAND_SELECTION_OFF_REPORTED:
+        return
+    _BAND_SELECTION_OFF_REPORTED.add(key)
+    if band_names == {"UNKNOWN"}:
+        logger.info(
+            "Band selection off: the catalogue's filenames carry no band this recogniser "
+            f"knows ({sorted(SELECTABLE_BAND_NAMES)}), so every file in each set is loaded."
+        )
+    else:
+        logger.info(
+            f"Band selection off: selected_extensions {sorted(band_names)} names none of "
+            f"the bands {sorted(SELECTABLE_BAND_NAMES)}, so every file in each set is "
+            "loaded. Check the spelling if you meant to select bands."
+        )
+
+
+def get_selected_band_names(config: DotMap) -> Optional[Set[str]]:
+    """Band names named by ``selected_extensions``, or None to load every file.
+
+    Shared by the orchestrator's dataset loading and by ``create_cutouts_direct``:
+    both have to narrow a FITS set the same way, and when they disagree the tensor
+    ends up with more channels than ``channel_weights`` has entries, which
+    ``combine_channels`` then applies positionally.
+
+    A selection naming no band ``extract_filter_name`` can produce is not band
+    selection, so narrowing is off. In practice that is the UI on non-Euclid data:
+    it fills ``selected_extensions`` from ``analyse_source_catalogue``, whose ``name``
+    is ``extract_filter_name``'s own output, so a file the recogniser cannot classify
+    arrives as ``UNKNOWN`` — a label with no band behind it to narrow on. A Python
+    caller can put anything there, HDU names included, and it is read the same way.
+
+    Decided from the selection rather than from the match result, which would conflate
+    "this names no band" with "this names a band the set does not have"; the second
+    case would then load whatever the set happens to contain.
+
+    Args:
+        config: Cutana configuration DotMap.
+
+    Returns:
+        Set of band names (e.g. ``{"VIS"}``), or None when no filtering applies.
+    """
+    selected = config.selected_extensions
+    if not selected:
+        return None
+    band_names = set()
+    for ext in selected:
+        if isinstance(ext, dict) and "name" in ext:
+            band_names.add(ext["name"])
+        elif isinstance(ext, str):
+            band_names.add(ext)
+    # "PRIMARY" as a band name means "use all files" (no band filtering)
+    if not band_names or band_names == {"PRIMARY"}:
+        return None
+    if not band_names & SELECTABLE_BAND_NAMES:
+        _log_band_selection_off(band_names)
+        return None
+    return band_names
+
+
+def select_fits_set_bands(fits_set: tuple, band_names: Optional[Set[str]]) -> tuple:
+    """Narrow a FITS set to the requested bands, preserving the catalogue order.
+
+    Order is preserved because ``channel_weights`` is applied positionally against
+    the loaded channels; reordering here would silently pair weights with the
+    wrong bands.
+
+    Whether the selection is band selection at all is decided once, by
+    ``get_selected_band_names``; ``band_names`` is None when it is not.
+
+    Args:
+        fits_set: FITS file paths forming one set (one tile's channels).
+        band_names: Bands to keep, from ``get_selected_band_names``, or None to keep
+            the set unchanged.
+
+    Returns:
+        The filtered set, in catalogue order.
+
+    Raises:
+        ValueError: If the selection names bands but matches no file in the set.
+            The configuration asks for data this set does not contain, and loading
+            the set whole would hand ``combine_channels`` the wrong bands under the
+            requested names. What a miss costs is the caller's decision: the direct
+            path lets it out, while ``FITSDataset._load_missing_fits_files`` skips
+            that set, having already refused a selection that misses every set.
+    """
+    if not band_names:
+        return fits_set
+
+    filter_names = [extract_filter_name(path) for path in fits_set]
+    selected = tuple(path for path, name in zip(fits_set, filter_names) if name in band_names)
+    if not selected:
+        raise ValueError(
+            f"selected_extensions names the band(s) {sorted(band_names)}, which match none "
+            f"of the bands {filter_names} in the FITS set "
+            f"[{', '.join(os.path.basename(path) for path in fits_set)}]. Use band names "
+            f"from the catalogue's fits_file_paths, or 'PRIMARY' to disable band selection."
+        )
+    return selected
+
+
 class FITSDataset:
     """
     Manages process-level FITS file caching to avoid reloading same files across sub-batches.
@@ -136,6 +253,42 @@ class FITSDataset:
         self.total_sources = len(source_batch)
         self.fits_set_to_sources = prepare_fits_sets_and_sources(source_batch)
         logger.info(f"Found {len(self.fits_set_to_sources)} unique FITS sets")
+        self._require_a_satisfiable_band_selection()
+
+    def _require_a_satisfiable_band_selection(self) -> None:
+        """Refuse a band selection that no FITS set this process holds can satisfy.
+
+        A single set the selection misses is heterogeneity, and
+        ``_load_missing_fits_files`` skips it so the tiles around it survive. A
+        selection that misses every set is a misspelled or inapplicable
+        ``selected_extensions``: every set would be skipped and the process would
+        finish having extracted nothing, which since #425 is a result the parent
+        believes.
+
+        Checked here because it is the only place that sees all the sets at once,
+        and because failing before the first sub-batch means failing before
+        anything has been written.
+
+        Raises:
+            ValueError: If band selection is on and matches no set.
+        """
+        band_names = get_selected_band_names(self.config)
+        if not band_names or not self.fits_set_to_sources:
+            return
+
+        fits_sets = list(self.fits_set_to_sources)
+        for fits_set in fits_sets:
+            if any(extract_filter_name(path) in band_names for path in fits_set):
+                return
+
+        present = sorted({extract_filter_name(path) for fits_set in fits_sets for path in fits_set})
+        raise ValueError(
+            f"selected_extensions names the band(s) {sorted(band_names)}, which none of the "
+            f"{len(fits_sets)} FITS set(s) this process holds carries -- the bands present are "
+            f"{present}. Every set would be skipped, so this run would extract nothing. Check "
+            f"selected_extensions against the band names in the catalogue's fits_file_paths, "
+            f"or use 'PRIMARY' to disable band selection."
+        )
 
     def prepare_sub_batch(
         self, sub_batch: List[Dict[str, Any]]
@@ -226,46 +379,43 @@ class FITSDataset:
 
         return needed_fits_sets
 
-    def _get_selected_band_names(self) -> Optional[Set[str]]:
-        """Get the set of band names from selected_extensions config.
-
-        Returns None if all bands should be loaded (no filtering), or a set of
-        band names (e.g. {"VIS"}) when only specific bands are needed.
-        """
-        selected = self.config.selected_extensions
-        if not selected:
-            return None
-        band_names = set()
-        for ext in selected:
-            if isinstance(ext, dict) and "name" in ext:
-                band_names.add(ext["name"])
-            elif isinstance(ext, str):
-                band_names.add(ext)
-        # "PRIMARY" as a band name means "use all files" (no band filtering)
-        if not band_names or band_names == {"PRIMARY"}:
-            return None
-        return band_names
-
-    def _fits_path_matches_bands(self, fits_path: str, band_names: Set[str]) -> bool:
-        """Check if a FITS file path matches any of the requested band names."""
-        filter_name = extract_filter_name(fits_path)
-        return filter_name in band_names
-
     def _load_missing_fits_files(self, fits_sets: List[tuple]) -> None:
         """Load FITS files that are not yet in the cache.
 
         When selected_extensions specifies specific bands (e.g. ["VIS"]),
         only FITS files matching those bands are loaded, skipping unneeded ones.
+
+        A set the selection matches nothing in costs that set, not the batch: it
+        loads no files, and ``_process_source_sub_batch`` skips it with an error
+        the same way it always has for a set that could not be read. This is the
+        behaviour the worker path had before band selection could raise at all,
+        when it filtered per file and a set with no wanted band simply
+        contributed none, and heterogeneous catalogues depend on it: one tile
+        that lacks the selected bands must not cost the tiles around it. Letting
+        the raise out would drop every source the worker holds, including
+        sub-batches already written to zarr, whose incremental-write receipt is
+        only issued on the success path.
+
+        A selection that matches *nothing the worker holds* is a different thing,
+        and ``initialize_from_sources`` refuses it before any sub-batch runs. It
+        has to be decided there: this method is called once per sub-batch, and a
+        sub-batch is one FITS set, so nothing here can tell a lone heterogeneous
+        tile from a selection that fits no tile at all.
         """
-        band_names = self._get_selected_band_names()
+        band_names = get_selected_band_names(self.config)
         skipped = 0
         files_to_load = []
         for fits_set in fits_sets:
-            for fits_path in fits_set:
+            # Same narrowing as the direct path, so the two cannot drift apart; only
+            # what a miss costs differs, for the reason in the docstring above.
+            try:
+                wanted = select_fits_set_bands(fits_set, band_names)
+            except ValueError as e:
+                logger.error(f"Skipping FITS set, no requested band present: {e}")
+                continue
+            skipped += len(fits_set) - len(wanted)
+            for fits_path in wanted:
                 if fits_path in self.fits_cache:
-                    continue
-                if band_names and not self._fits_path_matches_bands(fits_path, band_names):
-                    skipped += 1
                     continue
                 files_to_load.append(fits_path)
 
@@ -287,7 +437,7 @@ class FITSDataset:
                 self.process_name, f"Loading {len(files_to_load)} FITS files", self.job_tracker
             )
 
-        with ContextProfiler(self.profiler, "FitsLoading"):
+        with ContextProfiler(self.profiler, Stage.FITS_LOADING):
             for idx, fits_path in enumerate(files_to_load):
                 try:
                     # Report progress for each file if many files

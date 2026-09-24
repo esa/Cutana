@@ -17,8 +17,16 @@ import pytest
 from astropy.io import fits
 from astropy.wcs import WCS
 from dotmap import DotMap
+from loguru import logger
 
-from cutana.fits_dataset import FITSDataset, prepare_fits_sets_and_sources
+from cutana import fits_dataset
+from cutana.catalogue_preprocessor import SELECTABLE_BAND_NAMES, extract_filter_name
+from cutana.fits_dataset import (
+    FITSDataset,
+    get_selected_band_names,
+    prepare_fits_sets_and_sources,
+    select_fits_set_bands,
+)
 from cutana.performance_profiler import PerformanceProfiler
 
 
@@ -391,3 +399,254 @@ class TestPrepareFitsSetsAndSources:
 
         # Should return empty result for sources with no FITS files
         assert result == {}
+
+
+class TestBandSelection:
+    """Band narrowing shared by FITSDataset and create_cutouts_direct (#420, #426)."""
+
+    # A Euclid set is ordered VIS, NIR-H, NIR-Y, NIR-J. channel_weights is applied
+    # positionally, so which files survive AND their order both matter.
+    EUCLID_SET = (
+        "/d/EUC_MER_BGSUB-MOSAIC-VIS_TILE1-A_2024.fits",
+        "/d/EUC_MER_BGSUB-MOSAIC-NIR-H_TILE1-B_2024.fits",
+        "/d/EUC_MER_BGSUB-MOSAIC-NIR-Y_TILE1-C_2024.fits",
+        "/d/EUC_MER_BGSUB-MOSAIC-NIR-J_TILE1-D_2024.fits",
+    )
+
+    @pytest.mark.parametrize(
+        "selected, expected",
+        [
+            (None, None),
+            ([], None),
+            ([{"name": "PRIMARY", "ext": "PRIMARY"}], None),
+            ([{"name": "VIS", "ext": "PRIMARY"}], {"VIS"}),
+            (["VIS", "NIR-H"], {"VIS", "NIR-H"}),
+        ],
+    )
+    def test_get_selected_band_names(self, selected, expected):
+        """PRIMARY-only and empty selections mean 'no filtering', not 'no bands'."""
+        assert get_selected_band_names(DotMap({"selected_extensions": selected})) == expected
+
+    def test_select_bands_keeps_catalogue_order(self):
+        """3nisp3 must yield NIR-H, NIR-Y, NIR-J — not the first three files.
+
+        This is the #420 failure: without narrowing, positional weighting paired
+        the three NISP weights with VIS, NIR-H, NIR-Y.
+        """
+        selected = select_fits_set_bands(self.EUCLID_SET, {"NIR-H", "NIR-Y", "NIR-J"})
+
+        assert [extract_filter_name(p) for p in selected] == ["NIR-H", "NIR-Y", "NIR-J"]
+
+    def test_select_bands_single_band(self):
+        """1vis1 narrows to exactly the VIS file."""
+        assert select_fits_set_bands(self.EUCLID_SET, {"VIS"}) == (self.EUCLID_SET[0],)
+
+    def test_select_bands_without_filter_is_identity(self):
+        """No selection leaves the set untouched, so 4visnisp3 is unaffected."""
+        assert select_fits_set_bands(self.EUCLID_SET, None) is self.EUCLID_SET
+
+    @pytest.mark.parametrize("selection", [["SCI", "IMAGE"], ["NIR-Q"]])
+    def test_hdu_names_and_unknown_names_switch_band_selection_off(self, selection):
+        """A selection naming no band ``extract_filter_name`` can produce is not band selection.
+
+        ``SCI``/``IMAGE`` come from the UI's ``analyze_fits_file()`` path; ``NIR-Q`` is
+        simply not a band this codebase knows. Both must leave every set alone rather
+        than read as "a band that happens to be absent" and raise.
+        """
+        config = DotMap({"selected_extensions": selection, "fits_extensions": ["PRIMARY"]})
+
+        assert get_selected_band_names(config) is None
+
+    @pytest.fixture(autouse=True)
+    def _forget_reported_selections(self):
+        """The notice is deduplicated per process, so tests must not inherit each other's.
+
+        Without this the assertions depend on execution order: whichever test reaches a
+        given selection first sees the line and the rest see silence.
+        """
+        fits_dataset._BAND_SELECTION_OFF_REPORTED.clear()
+        yield
+        fits_dataset._BAND_SELECTION_OFF_REPORTED.clear()
+
+    @staticmethod
+    def _captured_info(action):
+        """Run `action` with the cutana logger captured, and return the INFO lines."""
+        messages = []
+        logger.enable("cutana")
+        sink_id = logger.add(lambda m: messages.append(str(m)), level="INFO")
+        try:
+            action()
+        finally:
+            logger.remove(sink_id)
+            logger.disable("cutana")
+        return messages
+
+    def test_a_typo_that_narrows_nothing_says_so(self):
+        """A misspelt band silently loads every file in every set, and for a one-file set
+        nothing downstream notices, so the log line is the only signal the user gets."""
+        config = DotMap({"selected_extensions": ["NIRH"], "fits_extensions": ["PRIMARY"]})
+
+        messages = self._captured_info(lambda: get_selected_band_names(config))
+
+        assert any("Band selection off" in m and "NIRH" in m for m in messages)
+        assert any("Check the spelling" in m for m in messages)
+
+    def test_the_unknown_case_is_not_described_as_a_typo(self):
+        """`UNKNOWN` is what the UI produces for non-Euclid filenames, and is expected.
+
+        It reaches here through `analyse_source_catalogue`, whose extension `name` is
+        `extract_filter_name`'s own output -- so this is the common path on non-Euclid
+        data, not a mistake, and the notice must not read like one.
+        """
+        config = DotMap(
+            {"selected_extensions": [{"name": "UNKNOWN", "ext": "PrimaryHDU"}]},
+        )
+
+        messages = self._captured_info(lambda: get_selected_band_names(config))
+
+        assert any("carry no band this recogniser knows" in m for m in messages)
+        assert not any("Check the spelling" in m for m in messages)
+
+    def test_the_notice_is_said_once_per_process_not_once_per_sub_batch(self):
+        """`_load_missing_fits_files` runs per sub-batch, per worker.
+
+        A one-off configuration message repeated per sub-batch buries the `Skipping FITS
+        set` errors operators are told to search for in the same stream.
+        """
+        config = DotMap({"selected_extensions": ["NIRH"], "fits_extensions": ["PRIMARY"]})
+        dataset = FITSDataset(config)
+
+        def five_sub_batches():
+            with patch("cutana.fits_dataset.load_fits_file", return_value=(Mock(), {})):
+                for index in range(5):
+                    dataset._load_missing_fits_files([(f"/d/tile_{index}.fits",)])
+
+        messages = self._captured_info(five_sub_batches)
+
+        assert len([m for m in messages if "Band selection off" in m]) == 1
+
+    def test_a_euclid_set_under_an_hdu_name_selection_is_left_alone(self):
+        """Deciding from the match result instead of the selection would raise here."""
+        config = DotMap({"selected_extensions": ["SCI"], "fits_extensions": ["PRIMARY"]})
+
+        band_names = get_selected_band_names(config)
+
+        assert select_fits_set_bands(self.EUCLID_SET, band_names) is self.EUCLID_SET
+
+    def test_select_bands_narrows_a_single_file_set(self):
+        """A one-file set is narrowed like any other: it has a band, and it can be wrong."""
+        vis_only = (self.EUCLID_SET[0],)
+
+        assert select_fits_set_bands(vis_only, {"VIS"}) == vis_only
+
+    def test_select_bands_raises_when_a_named_band_is_absent(self):
+        """A selection that names bands and matches nothing is a broken configuration.
+
+        Loading the set whole instead would hand ``combine_channels`` the wrong
+        bands under the requested names.
+        """
+        vis_and_h = self.EUCLID_SET[:2]
+
+        with pytest.raises(ValueError, match="match none of the bands"):
+            select_fits_set_bands(vis_and_h, {"NIR-J"})
+
+    def test_select_bands_raises_for_a_single_file_set_of_the_wrong_band(self):
+        """A one-file set is the case nothing downstream reliably catches.
+
+        ``combine_channels`` has to be given ``channel_names`` to catch a band loaded
+        under the wrong label, so a row listing only NIR-H under
+        ``selected_extensions=["VIS"]`` must not get as far as being weighted as VIS.
+        """
+        nir_h_only = (self.EUCLID_SET[1],)
+
+        with pytest.raises(ValueError, match="match none of the bands"):
+            select_fits_set_bands(nir_h_only, {"VIS"})
+
+    VIS_ONLY_SET = ("/d/EUC_MER_BGSUB-MOSAIC-VIS_TILE2-A_2024.fits",)
+
+    @staticmethod
+    def _sources(*fits_sets):
+        """One source per FITS set, in the shape ``initialize_from_sources`` parses."""
+        return [
+            {"SourceID": f"source_{index}", "fits_file_paths": str(list(fits_set))}
+            for index, fits_set in enumerate(fits_sets)
+        ]
+
+    def _dataset_over(self, selected, *fits_sets):
+        """Drive the real entry point: a worker calls this before any sub-batch."""
+        config = DotMap({"selected_extensions": selected, "fits_extensions": ["PRIMARY"]})
+        dataset = FITSDataset(config)
+        dataset.initialize_from_sources(self._sources(*fits_sets))
+        return dataset
+
+    def test_a_set_with_no_requested_band_costs_that_set_and_not_the_batch(self):
+        """One heterogeneous tile must not cost the sets around it (#425).
+
+        Driven through ``initialize_from_sources`` and one ``prepare_sub_batch``
+        per FITS set, because that is what a worker does: sub-batches are built
+        one per set, so a call holding two sets never happens in production and a
+        test that passes two proves nothing about the skip.
+        """
+        dataset = self._dataset_over(
+            ["NIR-H", "NIR-Y", "NIR-J"], self.EUCLID_SET[1:], self.VIS_ONLY_SET
+        )
+
+        with patch("cutana.fits_dataset.load_fits_file", return_value=(Mock(), {})) as load:
+            for sub_batch in ([{"SourceID": "source_0"}], [{"SourceID": "source_1"}]):
+                dataset.prepare_sub_batch(sub_batch)
+
+        assert [call.args[0] for call in load.call_args_list] == list(self.EUCLID_SET[1:])
+
+    def test_a_selection_matching_nothing_anywhere_fails_instead_of_extracting_nothing(self):
+        """A selection no set can satisfy is a configuration error, not heterogeneity.
+
+        Skipping every set would load nothing and finish, which since #425 is a
+        result the parent believes. It has to fail before the first sub-batch, or
+        it fails after cutouts are already in the zarr. The message names what was
+        asked for and what is there, because that is the whole diagnosis.
+        """
+        with patch("cutana.fits_dataset.load_fits_file", return_value=(Mock(), {})) as load:
+            with pytest.raises(ValueError, match="none of the 1 FITS set") as excinfo:
+                self._dataset_over(["NIR-J"], self.EUCLID_SET[:2])
+
+        assert "['NIR-J']" in str(excinfo.value)
+        assert "['NIR-H', 'VIS']" in str(excinfo.value)
+        load.assert_not_called()
+
+    def test_the_whole_batch_check_does_not_fire_on_a_partial_miss(self):
+        """One set short of the selected bands is heterogeneity, and must survive init.
+
+        The boundary between the two behaviours: the worker filtered per file
+        before band selection could raise, so a set carrying none of the wanted
+        bands contributed nothing and the rest of the batch went on.
+        """
+        dataset = self._dataset_over(["NIR-J"], self.EUCLID_SET, self.VIS_ONLY_SET)
+
+        with patch("cutana.fits_dataset.load_fits_file", return_value=(Mock(), {})) as load:
+            for sub_batch in ([{"SourceID": "source_0"}], [{"SourceID": "source_1"}]):
+                dataset.prepare_sub_batch(sub_batch)
+
+        assert [call.args[0] for call in load.call_args_list] == [self.EUCLID_SET[3]]
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            *EUCLID_SET,
+            "/d/EUC_MER_BGSUB-MOSAIC-NIR_J_TILE1-E_2024.fits",
+            "/d/survey_H_band.fits",
+            "/d/survey_Y_band.fits",
+            "/d/survey_tile_0_sci.fits",
+            "/d/random.fits",
+        ],
+    )
+    def test_selectable_band_names_cannot_drift_from_the_extractor(self, path):
+        """Everything the extractor returns is a selectable band, or exactly UNKNOWN.
+
+        That is the invariant "names no known band, so it is not band selection" rests
+        on. A Euclid-only fixture would keep passing if the fallback started returning
+        something else -- a basename stem, say -- while the set stopped being exhaustive
+        over the extractor's range and the rule quietly lost its meaning.
+        """
+        assert "UNKNOWN" not in SELECTABLE_BAND_NAMES
+        name = extract_filter_name(path)
+        assert name in SELECTABLE_BAND_NAMES or name == "UNKNOWN"

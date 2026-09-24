@@ -79,6 +79,7 @@ class TestMainScreen:
         config = get_default_config()
         config.num_sources = 25
         config.available_extensions = [{"name": "VIS", "ext": "IMAGE"}]
+        config.channel_weights = {"VIS": [1.0]}
 
         screen = MainScreen(config=config)
         assert hasattr(screen.config_panel.shared_config, "_config_change_callback")

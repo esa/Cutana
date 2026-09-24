@@ -167,10 +167,10 @@ margin: 10px 0 5px 0; border-bottom: 1px solid #335E6E; padding-bottom: 3px;">No
             layout=widgets.Layout(height="32px", width="100%"),
         )
         self.interpolation_dropdown = widgets.Dropdown(
-            options=["nearest", "bilinear", "biquadratic", "bicubic"],
+            options=["nearest", "bilinear", "bicubic", "lanczos"],
             value=getattr(self.config, "interpolation", "bilinear"),
             layout=widgets.Layout(width="120px", height="32px"),
-            tooltip="Interpolation method for image resizing (nearest, bilinear, biquadratic, bicubic)",
+            tooltip="Interpolation method for image resizing (nearest, bilinear, bicubic, lanczos)",
         )
 
         # Set initial visibility
@@ -387,7 +387,14 @@ margin: 10px 0 5px 0; border-bottom: 1px solid #335E6E; padding-bottom: 3px;">No
         self._update_parameter_visibility()
 
     def get_normalisation_config(self):
-        """Get current normalisation configuration."""
+        """Get current normalisation configuration.
+
+        The block is seeded from the config this widget was given, not built from
+        nothing, because the widget renders only part of it. Returning just the rendered
+        fields let the caller assign a block with `asinh_n_samples` missing, and a dot
+        access on the dynamic copy that reached fitsbolt then invented an empty DotMap
+        for it rather than failing.
+        """
         # Use the same size for both height and width (square crop)
         crop_size = self.crop_size_input.value
         flux_conserved = self.flux_conserved_checkbox.value
@@ -395,7 +402,7 @@ margin: 10px 0 5px 0; border-bottom: 1px solid #335E6E; padding-bottom: 3px;">No
         config.flux_conserved_resizing = flux_conserved
         config.normalisation_method = self.normalisation_dropdown.value
         config.interpolation = self.interpolation_dropdown.value
-        config.normalisation = DotMap(_dynamic=False)
+        config.normalisation = DotMap(self.config.normalisation.toDict(), _dynamic=False)
         config.normalisation.percentile = self.percentile_input.value
         config.normalisation.a = self.a_input.value
         config.normalisation.n_samples = self.n_samples_input.value

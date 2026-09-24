@@ -222,14 +222,31 @@ def collect_performance_statistics(output_dir: Path) -> Dict[str, Any]:
         aggregate_stats = {
             "total_processes": len(stderr_files),
             "steps": {
-                "FitsLoading": {"times": [], "count": 0},
-                "CutoutExtraction": {"times": [], "count": 0},
-                "ImageResizing": {"times": [], "count": 0},
-                "ChannelMixing": {"times": [], "count": 0},
-                "Normalisation": {"times": [], "count": 0},
-                "DataTypeConversion": {"times": [], "count": 0},
-                "MetaDataPostprocessing": {"times": [], "count": 0},
-                "ZarrFitsSaving": {"times": [], "count": 0},
+                # times: per-worker wall seconds; cpu_times / read_bytes_list:
+                # the lazy-safe CPU-vs-I/O split emitted by PerformanceProfiler.
+                "FitsLoading": {"times": [], "count": 0, "cpu_times": [], "read_bytes_list": []},
+                "CutoutExtraction": {
+                    "times": [],
+                    "count": 0,
+                    "cpu_times": [],
+                    "read_bytes_list": [],
+                },
+                "ImageResizing": {"times": [], "count": 0, "cpu_times": [], "read_bytes_list": []},
+                "ChannelMixing": {"times": [], "count": 0, "cpu_times": [], "read_bytes_list": []},
+                "Normalisation": {"times": [], "count": 0, "cpu_times": [], "read_bytes_list": []},
+                "DataTypeConversion": {
+                    "times": [],
+                    "count": 0,
+                    "cpu_times": [],
+                    "read_bytes_list": [],
+                },
+                "MetaDataPostprocessing": {
+                    "times": [],
+                    "count": 0,
+                    "cpu_times": [],
+                    "read_bytes_list": [],
+                },
+                "ZarrFitsSaving": {"times": [], "count": 0, "cpu_times": [], "read_bytes_list": []},
             },
             "total_sources_processed": 0,
             "total_runtime": 0.0,
@@ -318,12 +335,18 @@ def collect_performance_statistics(output_dir: Path) -> Dict[str, Any]:
                                             total_time = step_data.get("total_time", 0)
                                             count = step_data.get("count", 0)
                                             if total_time > 0 and count > 0:
-                                                aggregate_stats["steps"][step_name]["times"].append(
-                                                    total_time
-                                                )
-                                                aggregate_stats["steps"][step_name]["count"] += (
-                                                    count
-                                                )
+                                                step_agg = aggregate_stats["steps"][step_name]
+                                                step_agg["times"].append(total_time)
+                                                step_agg["count"] += count
+                                                # New lazy-safe split (additive;
+                                                # absent in older logs → skipped).
+                                                if "cpu_time" in step_data:
+                                                    step_agg["cpu_times"].append(
+                                                        step_data["cpu_time"]
+                                                    )
+                                                read_bytes = step_data.get("read_bytes")
+                                                if read_bytes is not None:
+                                                    step_agg["read_bytes_list"].append(read_bytes)
 
                                     aggregate_stats["total_sources_processed"] += perf_data.get(
                                         "total_sources", 0

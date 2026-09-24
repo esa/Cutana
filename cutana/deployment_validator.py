@@ -141,7 +141,7 @@ class DeploymentValidator:
         import_name_mapping = {
             "astropy": [("astropy.io.fits", None), ("astropy.wcs", None)],
             "pillow": [("PIL", None)],
-            "scikit_image": [("skimage", None)],
+            "opencv_python_headless": [("cv2", None)],
         }
 
         # Build list of dependencies to check

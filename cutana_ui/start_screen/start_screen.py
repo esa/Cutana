@@ -259,6 +259,7 @@ class StartScreen(widgets.VBox):
             self.config_data.update(
                 {
                     "num_sources": result.get("num_sources", 0),
+                    "num_sources_estimated": result.get("num_sources_estimated", False),
                     "fits_files": result.get("fits_files", []),
                     "available_extensions": result.get("extensions", []),
                 }
@@ -331,9 +332,6 @@ class StartScreen(widgets.VBox):
                 elif key == "channel_matrix":
                     # Ensure channel matrix is properly transferred
                     full_config.channel_matrix = value
-                elif key == "num_channels":
-                    # Ensure num_channels is properly transferred
-                    full_config.num_channels = value
                 elif hasattr(full_config, key):
                     setattr(full_config, key, value)
 

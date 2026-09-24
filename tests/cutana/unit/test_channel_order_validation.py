@@ -4,153 +4,109 @@
 #   is part of this source code package. No part of the package, including
 #   this file, may be copied, modified, propagated, or distributed except according to
 #   the terms contained in the file 'LICENCE.txt'.
-"""
-Unit tests for channel order validation functionality.
+"""Name resolution must not depend on dictionary or catalogue insertion order."""
 
-Tests the validate_channel_order_consistency function to ensure it properly
-catches channel order mismatches between data tensor and channel weights.
-"""
-
+import numpy as np
 import pytest
 
+from cutana.image_processor import combine_channels
 from cutana.validate_config import validate_channel_order_consistency
 
 
-class TestChannelOrderValidation:
-    """Unit tests for channel order validation."""
+@pytest.mark.parametrize("names", [["VIS", "NIR-H"], ["NIR-H", "VIS"]])
+def test_reordered_weights_preserve_pixels(names):
+    values = {"VIS": 2.0, "NIR-H": 7.0}
+    tensor = np.array([values[name] for name in names], dtype=np.float32).reshape(1, 1, 1, 2)
+    weights = {"NIR-H": [0.0, 3.0, 1.0], "VIS": [4.0, 0.0, 2.0]}
+    result = combine_channels(tensor, weights, names)
+    np.testing.assert_array_equal(result, np.array([8.0, 21.0, 11.0]).reshape(1, 1, 1, 3))
 
-    def test_matching_channel_order_passes(self):
-        """Test that matching channel orders pass validation."""
-        tensor_channel_names = ["channel_a", "channel_b", "channel_c"]
-        channel_weights = {
-            "channel_a": [1.0, 0.0],
-            "channel_b": [0.0, 1.0],
-            "channel_c": [0.5, 0.5],
-        }
 
-        # This should not raise any exception
-        validate_channel_order_consistency(tensor_channel_names, channel_weights)
+@pytest.mark.parametrize(
+    "names, weights",
+    [
+        ([], {}),
+        (["VIS", "NIR-H"], {"VIS": [1.0]}),
+        (["VIS"], {"VIS": [1.0], "NIR-H": [1.0]}),
+        (["tile_H2"], {"H": [1.0]}),
+        (["tile_VIS", "other_VIS"], {"VIS": [1.0], "NIR-H": [1.0]}),
+        (["tile_NIR-H", "tile_VIS"], {"H": [1.0], "NIR-H": [1.0]}),
+        (["OTHER"], {"VIS": [1.0]}),
+    ],
+)
+def test_invalid_mapping_fails(names, weights):
+    with pytest.raises(ValueError, match="Channel mapping"):
+        validate_channel_order_consistency(names, weights)
 
-    def test_different_channel_sets_fails(self):
-        """Test that different channel sets fail validation."""
-        tensor_channel_names = ["channel_a", "channel_b", "channel_c"]
-        channel_weights = {
-            "channel_a": [1.0, 0.0],
-            "channel_b": [0.0, 1.0],
-            "channel_d": [0.5, 0.5],  # Different channel name
-        }
 
-        with pytest.raises(AssertionError) as exc_info:
-            validate_channel_order_consistency(tensor_channel_names, channel_weights)
+def test_filename_tokens_and_normalized_filter_separator():
+    assert validate_channel_order_consistency(
+        ["tile_NIR_H_IMAGE", "tile_VIS_IMAGE"], {"VIS": [1.0], "NIR-H": [2.0]}
+    ) == ["NIR-H", "VIS"]
 
-        assert "Channel mapping incomplete." in str(exc_info.value)
 
-    def test_missing_channels_in_weights_fails(self):
-        """Tensor extensions absent from channel_weights are rejected (#315):
-        ``combine_channels`` would zero them out positionally."""
-        tensor_channel_names = ["channel_a", "channel_b", "channel_c"]
-        channel_weights = {
-            "channel_a": [1.0, 0.0],
-            "channel_b": [0.0, 1.0],
-            # Missing channel_c
-        }
-        with pytest.raises(AssertionError, match="silently drop tensor extensions"):
-            validate_channel_order_consistency(tensor_channel_names, channel_weights)
+def test_exact_names_take_precedence():
+    assert validate_channel_order_consistency(["NIR-H", "H"], {"H": [1.0], "NIR-H": [2.0]}) == [
+        "NIR-H",
+        "H",
+    ]
 
-    def test_extra_channels_in_weights_fails(self):
-        """Test that extra channels in weights fail validation."""
-        tensor_channel_names = ["channel_a", "channel_b"]
-        channel_weights = {
-            "channel_a": [1.0, 0.0],
-            "channel_b": [0.0, 1.0],
-            "channel_c": [0.5, 0.5],  # Extra channel
-        }
 
-        with pytest.raises(AssertionError) as exc_info:
-            validate_channel_order_consistency(tensor_channel_names, channel_weights)
+def test_names_are_required():
+    with pytest.raises(ValueError, match="channel_names is required"):
+        combine_channels(np.ones((1, 1, 1, 1)), {"VIS": [1.0]})
 
-        error_message = str(exc_info.value)
-        assert "Channel mapping incomplete" in error_message
-        assert "Missing:" in error_message
 
-    def test_wrong_channel_order_fails(self):
-        """Test that wrong channel order fails validation."""
-        tensor_channel_names = ["channel_a", "channel_b", "channel_c"]
-        channel_weights = {
-            "channel_c": [1.0, 0.0],  # Wrong order
-            "channel_b": [0.0, 1.0],
-            "channel_a": [0.5, 0.5],
-        }
+@pytest.mark.parametrize("name", ["VIS", "PRIMARY", "tile_NIR_H_IMAGE"])
+def test_default_primary_key_accepts_any_single_channel(name):
+    """One channel against the `get_default_config` key pairs unambiguously.
 
-        with pytest.raises(AssertionError) as exc_info:
-            validate_channel_order_consistency(tensor_channel_names, channel_weights)
+    The name is deliberately not checked here: with a single weight entry and a single
+    channel there is no other pairing to pick, so there is no order to get wrong.
+    """
+    assert validate_channel_order_consistency([name], {"PRIMARY": [1.0]}) == ["PRIMARY"]
 
-        error_message = str(exc_info.value)
-        assert "Channel order mismatch!" in error_message
-        assert "Data tensor maps to channels in order:" in error_message
-        assert "channel_weights expects:" in error_message
 
-    def test_single_channel_passes(self):
-        """Test that single channel validation passes."""
-        tensor_channel_names = ["single_channel"]
-        channel_weights = {"single_channel": [1.0]}
+def test_primary_escape_hatch_does_not_extend_to_multiple_channels():
+    with pytest.raises(ValueError, match="one weight entry per tensor channel"):
+        validate_channel_order_consistency(["VIS", "NIR-H"], {"PRIMARY": [1.0]})
 
-        # This should not raise any exception
-        validate_channel_order_consistency(tensor_channel_names, channel_weights)
 
-    def test_empty_channels_fails(self):
-        """Test that empty channel lists fail validation."""
-        tensor_channel_names = []
-        channel_weights = {}
+@pytest.mark.parametrize("name", ["VIS", "UNKNOWN", "survey_tile_0_sci"])
+def test_unknown_key_accepts_any_single_channel(name):
+    """`UNKNOWN` is what the UI offers for a tile the recogniser cannot classify.
 
-        # This should pass since both are empty (though probably not a real use case)
-        with pytest.raises(AssertionError) as exc_info:
-            validate_channel_order_consistency(tensor_channel_names, channel_weights)
+    It has to pair positionally for the same reason `PRIMARY` does: the label names no
+    band, so there is nothing in the channel's own name to check it against. Discovery
+    already refuses a row with two of them, which is the case where a wrong pairing
+    could silently mis-weight pixels.
+    """
+    assert validate_channel_order_consistency([name], {"UNKNOWN": [1.0]}) == ["UNKNOWN"]
 
-        assert "do not contain any config channel name." in str(exc_info.value)
 
-    def test_alphabetical_vs_insertion_order(self):
-        """Test the specific case that caused the original issue."""
-        # This simulates the case where FITS files are processed alphabetically
-        # but channel weights are defined in a different order
-        tensor_channel_names = ["AAA_extension", "BBB_extension", "CCC_extension"]  # Alphabetical
-        channel_weights = {
-            "CCC_extension": [1.0, 0.0],  # Different order
-            "BBB_extension": [0.0, 1.0],
-            "AAA_extension": [0.5, 0.5],
-        }
+def test_a_real_band_key_must_still_match_its_channel():
+    """The escape is for keys that name no band, not for single channels in general.
 
-        with pytest.raises(AssertionError) as exc_info:
-            validate_channel_order_consistency(tensor_channel_names, channel_weights)
+    Widening it to any lone key would drop the check that catches a tile loaded under
+    the wrong band label -- the one thing `select_fits_set_bands` relies on downstream.
+    """
+    with pytest.raises(ValueError, match="missing or ambiguous"):
+        validate_channel_order_consistency(["EUC_MER_BGSUB-MOSAIC-NIR-H_T1"], {"VIS": [1.0]})
 
-        error_message = str(exc_info.value)
-        assert "Channel order mismatch!" in error_message
 
-    def test_extra_tensor_channels_silent_drop_fails(self):
-        """Regression test for issue #315 (scenario B).
+@pytest.mark.parametrize(
+    "name, key",
+    [
+        ("EUC_MER_BGSUB-MOSAIC-NIR_H_TILE1", "NIR-H"),
+        ("EUC_MER_BGSUB-MOSAIC-NIR-H_TILE1", "NIR_H"),
+        ("EUC_MER_BGSUB-MOSAIC-NIR-H_TILE1", "NIR-H"),
+        ("EUC_MER_BGSUB-MOSAIC-NIR_H_TILE1", "NIR_H"),
+    ],
+)
+def test_separators_are_interchangeable_in_both_directions(name, key):
+    """`re.escape` escapes `-` but not `_`, so matching on the escaped key rewrote one.
 
-        ``combine_channels`` applies ``channel_weights`` positionally to tensor
-        extensions. With one weight and a multi-channel tensor whose first
-        extension is unrelated to the weight key, the weight binds to extension
-        0 and the named extension's data is dropped — silent corruption. The
-        validator must reject this configuration.
-        """
-        tensor_channel_names = ["tile_VIS", "tile_NIR-H"]
-        channel_weights = {"NIR-H": [1.0]}
-
-        with pytest.raises(AssertionError):
-            validate_channel_order_consistency(tensor_channel_names, channel_weights)
-
-    def test_corrected_alphabetical_order_passes(self):
-        """Test that corrected alphabetical order passes."""
-        # This simulates the corrected case where channel weights match
-        # the alphabetical processing order
-        tensor_channel_names = ["AAA_extension", "BBB_extension", "CCC_extension"]  # Alphabetical
-        channel_weights = {
-            "AAA_extension": [1.0, 0.0],  # Matching order
-            "BBB_extension": [0.0, 1.0],
-            "CCC_extension": [0.5, 0.5],
-        }
-
-        # This should not raise any exception
-        validate_channel_order_consistency(tensor_channel_names, channel_weights)
+    The hyphen-key-against-underscore-name direction worked and the reverse did not,
+    while the documentation promised both.
+    """
+    assert validate_channel_order_consistency([name], {key: [1.0]}) == [key]

@@ -20,6 +20,7 @@ The Cutana UI guides you through a simple 3-step process to generate cutouts:
 ### Launch the Interface
 ```python
 import cutana_ui
+
 cutana_ui.start(ui_scale=0.75)
 ```
 You can vary the UI scale to fit your screen if necessary.
