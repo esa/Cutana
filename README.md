@@ -15,6 +15,8 @@
 
 **Cutana** is a high-performance Python pipeline for creating astronomical image cutouts from large FITS datasets. It provides both an interactive **Jupyter-based UI** and a **programmatic API** for efficient processing of astronomical survey data like ESA Euclid observations.
 
+**Documentation:** https://esa.github.io/Cutana/
+
 ![Cutana Demo](assets/cutana_demo_2x.gif)
 
 > **Note:** Cutana is currently optimised for **Euclid Q1/IDR1 data**. Some defaults and assumptions are Euclid-specific:
@@ -185,7 +187,7 @@ Cutana automatically handles sources with multiple FITS files and allows channel
 
 The `channel_weights` parameter controls how multiple FITS files are combined into output channels. Each key represents a FITS extension name, and the corresponding value is a list of weights for image channels respectively.
 
-Use channel names as `channel_weights` keys; dictionary order does not matter. Weights are not normalised. The UI discovers channel order from a bounded catalogue sample. See [channel mapping and sampling](docs/user_guide/channel_mapping.md) for matching rules and sampling limits.
+Use channel names as `channel_weights` keys; dictionary order does not matter. Weights are not normalised. The UI discovers channel order from a bounded catalogue sample. See [channel mapping and sampling](https://esa.github.io/Cutana/stable/explanation/channel_mapping/) for matching rules and sampling limits.
 
 ```python
 # Map each input band to output channel weights
@@ -228,8 +230,6 @@ config.normalisation.contrast = 0.25  # ZScale contrast
 
 **Image stretching is powered by [fitsbolt](https://github.com/Lasloruhberg/fitsbolt) for consistent processing.**
 
-config_path = save_config_toml(config, f"{config.output_dir}/cutana_config.toml")
-
 ### Output
 In the case of zarr files the output will be organised in batches.
 Per batch one folder is created each with an `images.zarr` and an `images_metadata.parquet`.
@@ -241,7 +241,7 @@ This is currently incompatible with zarr output. The flux conversion will still 
 
 #### Metadata
 With the output zarr files, a metadata parquet file is created containing the following information: 
-`source_id`, `ra`, `dec`, `idx_in_zarr`, `diameter_arcsec`, `diameter_pixel`, `processing_timestap`.
+`source_id`, `ra`, `dec`, `diameter_arcsec`, `diameter_pixel`, `tile`, `processing_timestamp` and the extraction geometry.
 
 This can be read with:
 ```
@@ -249,10 +249,8 @@ import pandas as pd
 
 metadata=pd.read_parquet("output_path/batch_cutout_process_*/images_metadata.parquet", engine='pyarrow')
 ```
-This parquet provides a direct mapping between the individual images within the .zarr files and the Source
-IDs and the cutouts. Note: No source IDs will be stored in the .zarr files!
-
-`idx_in_zarr` is the index position of the source cutout within the .zarr file.
+Row *i* of this parquet describes image *i* of the `.zarr` file in the same folder, which is how you map
+Source IDs to cutouts. Note: No source IDs will be stored in the .zarr files!
 
 #### Images 
 To open the .zarr files and look at example images, the following code can be used:
@@ -448,7 +446,7 @@ The following table describes all configuration parameters available in Cutana:
 | `skip_catalogue_validation` | bool | False | - | If True, catalogue validation is skipped during the preprocessing step
 | `skip_fits_check` | bool | False | - | If True, the validation checks that open FITS files are skipped: that each row's tiles exist and are readable, and that the source falls inside them. Much faster on a short run, at the cost of those two failures going undetected
 | **Processing Configuration**                  |
-| `max_workers`                                 | int      | 16                        | 1-1024                                       | Maximum number of worker processes                      |
+| `max_workers`                                 | int      | effective CPU count       | 1-1024                                       | Maximum number of worker processes                      |
 | `N_batch_cutout_process`                      | int      | 1000                      | 10-10000                                     | Batch size within each process                          |
 | `max_workflow_time_seconds`                   | int      | 1354571                   | 600-5000000                                  | Maximum total workflow time (~2 weeks default)          |
 | **Cutout Processing Parameters**              |

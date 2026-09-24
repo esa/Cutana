@@ -17,8 +17,12 @@ api_dir.mkdir(parents=True, exist_ok=True)
 
 PACKAGES = ["cutana", "cutana_ui"]
 
+# The nav points at docs/api/ as a single entry, so it needs an index listing every module
+index_lines = ["# API reference\n"]
+
 for package in PACKAGES:
     package_path = Path(package)
+    index_lines.append(f"\n## `{package}`\n\n")
     for path in sorted(package_path.rglob("*.py")):
         if (
             path.name == "__init__.py"
@@ -39,3 +43,8 @@ for package in PACKAGES:
         # Write the API reference page
         with open(full_doc_path, "w", encoding="utf-8") as fd:
             fd.write(f"::: {'.'.join(parts)}\n")
+
+        index_lines.append(f"- [`{'.'.join(parts)}`]({doc_path.as_posix()})\n")
+
+with open(api_dir / "index.md", "w", encoding="utf-8") as fd:
+    fd.writelines(index_lines)
