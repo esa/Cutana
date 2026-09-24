@@ -37,27 +37,27 @@ Preview selection uses the same bounded reader, returning at most 10,000 rows.
 It does not load the full catalogue before sampling. Repeated discovery uses a
 fixed seed so that validation reports are reproducible.
 
-> [!NOTE]
-> CSV and Parquet discovery are not uniform samples of the entire catalogue.
-> Uniform CSV sampling needs a scan or an index. Sampling cannot certify all
-> rows. Runtime weight resolution uses the channel labels already in memory,
-> protecting later batches without an additional catalogue scan or FITS open.
+!!! note
+    CSV and Parquet discovery are not uniform samples of the entire catalogue.
+    Uniform CSV sampling needs a scan or an index. Sampling cannot certify all
+    rows. Runtime weight resolution uses the channel labels already in memory,
+    protecting later batches without an additional catalogue scan or FITS open.
 
 These bounds apply to discovery and previews. The existing processing
 `CatalogueBatchReader` still preloads the Parquet table, and `CatalogueIndex`
 stores row IDs for the full catalogue. Those processing components require
 separate changes before you can rely on bounded memory for a billion-row run.
 
-> [!NOTE]
-> Automatic UI filter discovery uses the Euclid filename recognizer. A file it
-> cannot classify is labelled `UNKNOWN`. One `UNKNOWN` tile per row works
-> end to end: it is a single channel, so its weight pairs with it positionally
-> and its name is never consulted. **Two or more do not** — they collapse onto
-> one label, and weights and WCS are both looked up by name, so discovery
-> refuses the catalogue. Rename the files so each band is identifiable, or use
-> the Python API, where you pass channel labels explicitly.
->
-> The label has to be a constant. `channel_weights` is one dictionary for the
-> whole run, so a channel's name must mean the same thing in every row; anything
-> read off an unrecognised tile's filename identifies that *tile* and changes
-> from row to row.
+!!! note
+    Automatic UI filter discovery uses the Euclid filename recognizer. A file it
+    cannot classify is labelled `UNKNOWN`. One `UNKNOWN` tile per row works
+    end to end: it is a single channel, so its weight pairs with it positionally
+    and its name is never consulted. **Two or more do not** — they collapse onto
+    one label, and weights and WCS are both looked up by name, so discovery
+    refuses the catalogue. Rename the files so each band is identifiable, or use
+    the Python API, where you pass channel labels explicitly.
+
+    The label has to be a constant. `channel_weights` is one dictionary for the
+    whole run, so a channel's name must mean the same thing in every row; anything
+    read off an unrecognised tile's filename identifies that *tile* and changes
+    from row to row.
