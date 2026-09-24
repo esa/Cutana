@@ -1,0 +1,42 @@
+#   Copyright (c) European Space Agency, 2025.
+#
+#   This file is subject to the terms and conditions defined in file 'LICENCE.txt', which
+#   is part of this source code package. No part of the package, including
+#   this file, may be copied, modified, propagated, or distributed except according to
+#   the terms contained in the file 'LICENCE.txt'.
+
+[project]
+site_name = "Cutana"
+site_description = "Cutout extraction from astronomical FITS tiles"
+repo_url = "https://github.com/ESA/Cutana"
+repo_name = "ESA/Cutana"
+extra_css = ["stylesheets/extra.css"]
+
+# Navigation is derived automatically from the docs directory structure.
+
+[project.theme]
+name = "material"
+logo = "assets/esa_logo.svg"
+favicon = "assets/esa_logo.svg"
+features = [
+    "navigation.sections",
+    "content.code.copy"
+]
+
+[[project.theme.palette]]
+scheme = "slate"
+primary = "custom"
+accent = "custom"
+
+[project.extra]
+version = { provider = "mike" }
+
+[project.plugins]
+search = {}
+mkdocstrings = { handlers = { python = { paths = ["."], options = { allow_inspection = false, docstring_style = "google", show_source = false, show_root_heading = true, members_order = "source", merge_init_into_class = true, show_if_no_docstring = false } } } }
+
+[project.markdown_extensions]
+admonition = {}
+"pymdownx.superfences" = {}
+"pymdownx.highlight" = { anchor_linenums = true }
+toc = { permalink = true }

@@ -45,7 +45,13 @@ class TestSystemMonitor:
     @patch("psutil.virtual_memory")
     @patch("psutil.disk_usage")
     def test_get_system_resources(self, mock_disk, mock_memory, mock_cpu, system_monitor):
-        """Test system resource monitoring."""
+        """Test system resource monitoring off Kubernetes, where psutil is the source.
+
+        The environment is pinned rather than inherited: on a real pod the pod-limit
+        branch replaces these psutil numbers, so without this the test asserts the
+        runner's cgroup limit against its own mock and fails.
+        """
+        system_monitor._is_datalabs_environment = lambda: False
         # Setup mocks
         mock_cpu.return_value = 75.5
         mock_memory.return_value.total = 16 * 1024**3  # 16GB
@@ -62,7 +68,39 @@ class TestSystemMonitor:
         assert resources["memory_percent"] == 37.5
         assert resources["disk_free"] == 500 * 1024**3
         assert "timestamp" in resources
-        assert "resource_source" in resources
+        assert resources["resource_source"] == "system"
+
+    @patch("psutil.cpu_percent")
+    @patch("psutil.virtual_memory")
+    @patch("psutil.disk_usage")
+    def test_get_system_resources_prefers_the_pod_limit(
+        self, mock_disk, mock_memory, mock_cpu, system_monitor
+    ):
+        """On a pod the cgroup memory limit wins over the node's psutil total.
+
+        This is the branch that actually runs on Euclid Datalab, and nothing covered
+        it: the node total (64 GB here) must not be reported as the pod's memory.
+        """
+        mock_cpu.return_value = 10.0
+        mock_memory.return_value.total = 64 * 1024**3  # node
+        mock_memory.return_value.available = 60 * 1024**3
+        mock_memory.return_value.percent = 6.25
+        mock_disk.return_value.free = 500 * 1024**3
+        mock_disk.return_value.total = 1000 * 1024**3
+
+        pod_limit = 8 * 1024**3
+        with (
+            patch.object(system_monitor, "_is_datalabs_environment", return_value=True),
+            patch.object(
+                system_monitor, "_get_kubernetes_pod_limits", return_value=(pod_limit, 8000)
+            ),
+        ):
+            resources = system_monitor.get_system_resources()
+
+        assert resources["resource_source"] == "kubernetes_pod"
+        assert resources["memory_total"] == pod_limit
+        assert resources["memory_available"] <= pod_limit
+        assert 0 <= resources["memory_percent"] <= 100
 
     @patch("psutil.cpu_count")
     def test_get_cpu_count(self, mock_cpu_count, system_monitor):
@@ -139,7 +177,8 @@ class TestSystemMonitor:
 
     @patch("psutil.virtual_memory")
     def test_memory_pressure_detection(self, mock_memory, system_monitor):
-        """Test memory pressure detection."""
+        """Test memory pressure detection off Kubernetes, where psutil is the source."""
+        system_monitor._is_datalabs_environment = lambda: False
         # High memory usage scenario - Mock complete memory object
         mock_mem = MagicMock()
         mock_mem.total = 10 * 1024**3  # 10GB total

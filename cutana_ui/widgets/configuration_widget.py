@@ -38,8 +38,7 @@ class SharedConfigurationWidget(widgets.VBox):
         self.channel_matrices = []
         # Initialize channels based on mode and selected extensions
         if show_matrix and config.selected_extensions:
-            # For main screen: number of channels equals number of selected extensions
-            self.current_channels = len(config.selected_extensions)
+            self.current_channels = len(next(iter(config.channel_weights.values())))
         else:
             # Default to 1 channel for start screen or when no extensions selected
             self.current_channels = 1
@@ -147,9 +146,9 @@ class SharedConfigurationWidget(widgets.VBox):
         # Apply custom styling to the slider readout
         self.padding_slider.add_class("cutana-slider-compact")
 
-        # Raw cutout only checkbox - disables all processing when checked
+        # Raw cutout only checkbox - disables all processing when checked.
         self.do_only_cutout_label = widgets.HTML(
-            value=f'<div style="color: {TEXT_COLOR_LIGHT}; font-weight: 500; font-size: 11px; display: flex; align-items: center; height: 100%;white-space: nowrap;overflow: visible;">Raw cutout [Jy]:</div>',
+            value=self._raw_cutout_label_html(),
             layout=widgets.Layout(height="28px", width="100%"),
         )
         self.do_only_cutout_checkbox = widgets.Checkbox(
@@ -578,33 +577,36 @@ font-size: 8px; font-weight: bold; white-space: nowrap; overflow: hidden; text-o
         channel_weights = config.channel_weights
         selected_extensions = config.selected_extensions
 
-        if isinstance(channel_weights, dict):
-            # Dictionary format: {"VIS": [1.0, 0.0, 0.5], "NIR": [0.0, 1.0, 0.5]}
-            extension_names = [
-                ext_info.get("name", f"EXT_{i}") if isinstance(ext_info, dict) else str(ext_info)
-                for i, ext_info in enumerate(selected_extensions)
-            ]
+        extension_names = [
+            ext_info["name"] if isinstance(ext_info, dict) else str(ext_info)
+            for ext_info in selected_extensions
+        ]
+        for output_idx, row in enumerate(self.channel_matrices):
+            for input_idx, ext_name in enumerate(extension_names):
+                row[input_idx].value = channel_weights[ext_name][output_idx]
 
-            for i, (row, ext_name) in enumerate(zip(self.channel_matrices, extension_names)):
-                if ext_name in channel_weights:
-                    weights = channel_weights[ext_name]
-                    for widget, weight in zip(row, weights):
-                        widget.value = weight
+    def _raw_cutout_label_html(self):
+        """Build the raw-cutout label, annotated with the unit it actually produces.
 
-        elif isinstance(channel_weights, (list, tuple)):
-            # Legacy list format: [[1.0, 0.0], [0.0, 1.0]] - backward compatibility
-            for row, row_weights in zip(self.channel_matrices, channel_weights):
-                if isinstance(row_weights, (list, tuple)):
-                    for widget, weight in zip(row, row_weights):
-                        widget.value = weight
+        With ``apply_flux_conversion`` off the raw cutout keeps the parent tile's
+        units, so claiming Jy would be wrong.
+        """
+        text = "Raw cutout [Jy]:" if self.config.apply_flux_conversion else "Raw cutout:"
+        return (
+            f'<div style="color: {TEXT_COLOR_LIGHT}; font-weight: 500; font-size: 11px; '
+            f"display: flex; align-items: center; height: 100%;white-space: nowrap;"
+            f'overflow: visible;">{text}</div>'
+        )
 
     def update_config(self, config):
         """Update configuration from external source."""
         self.config = config
         self.num_sources = config.num_sources
+        # The label depends on the config, so a config swap must refresh it.
+        self.do_only_cutout_label.value = self._raw_cutout_label_html()
 
         # Restore channel count BEFORE setting extensions
-        self.current_channels = getattr(config, "num_channels", 1)
+        self.current_channels = len(next(iter(config.channel_weights.values())))
 
         if config.available_extensions:
             self.set_extensions(config.available_extensions)
@@ -696,6 +698,17 @@ font-size: 8px; font-weight: bold; white-space: nowrap; overflow: hidden; text-o
         # Check for do_only_cutout_extraction mode first (takes precedence)
         do_only_cutout = self.do_only_cutout_checkbox.value
 
+        # Read the widget once, and set the two fields every mode below took from it in
+        # the same way. They used to be assigned in three branches that had to be kept in
+        # step, which is how the normalisation block came to be replaced rather than
+        # updated in all three at once. Only the mode-specific fields differ below.
+        # `show_advanced_params` is what decides whether the widget exists at all.
+        normalisation_config = None
+        if self.show_advanced_params:
+            normalisation_config = self.normalisation_widget.get_normalisation_config()
+            current_config.normalisation = normalisation_config.normalisation
+            current_config.interpolation = normalisation_config.interpolation
+
         if do_only_cutout:
             # Raw cutout extraction mode - force FITS output, float32, none normalisation
             current_config.do_only_cutout_extraction = True
@@ -703,31 +716,19 @@ font-size: 8px; font-weight: bold; white-space: nowrap; overflow: hidden; text-o
             current_config.data_type = "float32"
             current_config.normalisation_method = "none"
             current_config.flux_conserved_resizing = False
-            # Set default normalisation params for config completeness
-            if self.show_advanced_params and self.normalisation_widget:
-                normalisation_config = self.normalisation_widget.get_normalisation_config()
-                current_config.normalisation = normalisation_config.normalisation
-                current_config.interpolation = normalisation_config.interpolation
             current_config.target_resolution = self.resolution_input.value
             current_config.padding_factor = self.padding_slider.value
         elif self.show_advanced_params:
-            # Get normalisation configuration from the dedicated widget
-            normalisation_config = self.normalisation_widget.get_normalisation_config()
             current_config.do_only_cutout_extraction = False
 
             if normalisation_config.flux_conserved_resizing:
                 # Flux conserved workflow - force float32 and none normalisation
                 current_config.data_type = "float32"
                 current_config.normalisation_method = "none"
-                # Still need to set normalisation params and interpolation for preview workaround
-                current_config.normalisation = normalisation_config.normalisation
-                current_config.interpolation = normalisation_config.interpolation
             else:
                 # Normal workflow
                 current_config.data_type = self.format_dropdown.value
                 current_config.normalisation_method = normalisation_config.normalisation_method
-                current_config.normalisation = normalisation_config.normalisation
-                current_config.interpolation = normalisation_config.interpolation
             # get normalisation params
             current_config.flux_conserved_resizing = normalisation_config.flux_conserved_resizing
             current_config.target_resolution = self.resolution_input.value
@@ -735,20 +736,9 @@ font-size: 8px; font-weight: bold; white-space: nowrap; overflow: hidden; text-o
         else:
             # Use default values when advanced params are hidden
             current_config.do_only_cutout_extraction = False
-            normalisation_config = {}
 
         current_config.selected_extensions = selected_extensions
         current_config.channel_weights = channel_weights
-        # Set num_channels based on context
-        if self.show_matrix:
-            # Main screen: use current matrix channel count
-            current_config.num_channels = self.current_channels
-        else:
-            # Start screen: use selected extensions count
-            current_config.num_channels = len(selected_extensions) if selected_extensions else 1
-
-        # Update normalisation configuration from UI
-        current_config.update(normalisation_config)
 
         # Add output format for main screen (compact mode)
         if self.compact and self.output_format_dropdown:

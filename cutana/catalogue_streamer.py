@@ -26,8 +26,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from loguru import logger
 
-from .catalogue_preprocessor import parse_fits_file_paths
 from .constants import DEFAULT_CATALOGUE_CHUNK_SIZE
+from .fits_paths import parse_fits_file_paths
 
 
 @dataclass

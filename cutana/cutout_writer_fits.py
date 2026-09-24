@@ -16,13 +16,24 @@ This module provides static functions for:
 """
 
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
 from dotmap import DotMap
 from loguru import logger
+
+from cutana.constants import (
+    UNIT_APPROX_PREFIX,
+    UNIT_JANSKY,
+    UNIT_NORMALISED,
+    UNIT_ORIGINAL,
+    UNIT_USER_CONVERSION,
+)
+from cutana.normalisation_parameters import preserves_physical_scale
 
 # Cache for WCS header conversions - key is id(wcs_object)
 _wcs_header_cache: Dict[int, Tuple[fits.Header, Any]] = {}
@@ -304,6 +315,86 @@ def create_wcs_header(
         return fits.Header()
 
 
+@dataclass(frozen=True)
+class CutoutUnits:
+    """Pixel-unit description of a cutout, derived from the processing config.
+
+    Attributes:
+        unit: Value of the deprecated descriptive ``UNIT`` primary-header keyword.
+        bunit: Value of the standard ``BUNIT`` image-HDU keyword, or ``None`` when
+            the unit is dimensionless or not known to the writer.
+        conserved_flux: Whether flux-conserving resizing was used.
+        flux_approximate: Whether the values only approximate the stated unit.
+            Written to ``FLUXAPPX`` only when ``bunit`` is set, since it qualifies
+            ``bunit``; it is always False for dimensionless (normalised) pixels,
+            where approximation to a unit is meaningless.
+    """
+
+    unit: str
+    bunit: Optional[str]
+    conserved_flux: bool
+    flux_approximate: bool
+
+
+def resolve_cutout_units(config: DotMap) -> CutoutUnits:
+    """Derive the pixel-unit description of a cutout from the processing config.
+
+    The unit depends on normalisation as well as on flux handling: normalisation
+    stretches pixels into the ``data_type`` range and therefore destroys the
+    physical scale, so a normalised cutout is dimensionless no matter what the
+    flux-conversion settings say. ``do_only_cutout_extraction`` bypasses
+    normalisation entirely; otherwise the scale only survives the cases
+    ``preserves_physical_scale`` allows.
+
+    Args:
+        config: Processing configuration.
+
+    Returns:
+        The resolved :class:`CutoutUnits`.
+
+    Raises:
+        AttributeError: If a required configuration key is missing (DotMap
+            attribute access on a non-dynamic config).
+    """
+    # do_only_cutout_extraction bypasses resizing and normalisation alike, so it
+    # conserves flux trivially and keeps the input dtype.
+    raw_cutout = config.do_only_cutout_extraction
+    conserved_flux = config.flux_conserved_resizing or raw_cutout
+
+    if not raw_cutout and not preserves_physical_scale(config):
+        # Dimensionless: no BUNIT, and "approximate" does not apply to a unit that
+        # no longer exists.
+        return CutoutUnits(UNIT_NORMALISED, None, conserved_flux, False)
+
+    flux_approximate = not conserved_flux
+    if not config.apply_flux_conversion:
+        # Pixels keep the parent tile's unit, which the writer cannot name.
+        return CutoutUnits(
+            _approx(UNIT_ORIGINAL, flux_approximate), None, conserved_flux, flux_approximate
+        )
+
+    if config.user_flux_conversion_function is not None:
+        # A user hook replaces the AB-zeropoint maths entirely. The pixels were
+        # converted, just not by cutana and not necessarily to Jy, so they are
+        # neither "original" nor nameable here — only the user knows the unit.
+        return CutoutUnits(
+            _approx(UNIT_USER_CONVERSION, flux_approximate), None, conserved_flux, flux_approximate
+        )
+
+    # Only Jy is a parseable FITS unit string, so it is the only value written to
+    # BUNIT; every other case signals "unknown" by omitting the keyword. BUNIT is
+    # still written when the resize did not conserve flux: the unit is Jy either
+    # way, and FLUXAPPX carries the caveat that the values only approximate it.
+    return CutoutUnits(
+        _approx(UNIT_JANSKY, flux_approximate), UNIT_JANSKY, conserved_flux, flux_approximate
+    )
+
+
+def _approx(unit: str, flux_approximate: bool) -> str:
+    """Prefix a unit with ``approx`` when the resize did not conserve flux."""
+    return f"{UNIT_APPROX_PREFIX}{unit}" if flux_approximate else unit
+
+
 def write_single_fits_cutout(
     cutout_data: Dict[str, Any],
     output_path: str,
@@ -323,7 +414,20 @@ def write_single_fits_cutout(
 
     Returns:
         True if successful, False otherwise
+
+    Raises:
+        KeyError: If ``cutout_data`` is missing the mandatory unit metadata.
     """
+    # Read the unit metadata outside the try below: a caller that forgets it has a
+    # bug, and must not have it downgraded to a logged line and a dropped file the
+    # way a genuine per-file write failure is.
+    units = CutoutUnits(
+        unit=cutout_data["unit"],
+        bunit=cutout_data["bunit"],
+        conserved_flux=cutout_data["conserved_flux"],
+        flux_approximate=cutout_data["flux_approximate"],
+    )
+
     try:
         # Extract data
         source_id = cutout_data["source_id"]
@@ -358,9 +462,11 @@ def write_single_fits_cutout(
             "DTYPE": metadata.get("data_type", "float32"),
             "PIXSCALE": metadata.get("pixel_scale_arcsec_per_pixel"),
             "TILE": metadata.get("tile"),
-            "UNIT": (cutout_data.get("unit", "---"), "Data unit, 'approx' = non-flux conserved"),
+            # Legacy descriptive unit, kept for 0.3.2-era readers. New consumers
+            # should read BUNIT on the image HDUs instead.
+            "UNIT": (units.unit, "Deprecated, see BUNIT on image HDUs"),
             "CONSVFLX": (
-                cutout_data.get("conserved_flux", False),
+                units.conserved_flux,
                 "F: Flux not conserved in resizing, T: conserved",
             ),
         }
@@ -380,6 +486,18 @@ def write_single_fits_cutout(
                 image_hdu.header["COMPRESS"] = compression
             else:
                 image_hdu = fits.ImageHDU(data=cutout, name=channel)
+
+            # BUNIT belongs on the HDU carrying the pixels, and must be a parseable
+            # unit string — so it is written only when the unit is actually known.
+            # Dimensionless (normalised) and unknown (original tile) units are
+            # signalled by its absence rather than by a placeholder value. FLUXAPPX
+            # qualifies BUNIT, so it is meaningless without it.
+            if units.bunit is not None:
+                image_hdu.header["BUNIT"] = (units.bunit, "Physical unit of the array values")
+                image_hdu.header["FLUXAPPX"] = (
+                    units.flux_approximate,
+                    "T: values only approximate BUNIT",
+                )
 
             # Add WCS information if available and requested
             if preserve_wcs:
@@ -495,7 +613,6 @@ def write_fits_batch(
         compression: Optional compression method
         create_subdirs: Whether to create subdirectories for organization
         overwrite: Whether to overwrite existing files
-        multi_extension: Whether to write as single multi-extension file
         modifier: None
 
     Returns:
@@ -505,11 +622,40 @@ def write_fits_batch(
 
     if file_naming_template is None:
         file_naming_template = "{modifier}{source_id}_{ra:.6f}_{dec:.6f}_cutout.fits"
+
+    # Raw extraction keeps the input labels; a combined output has no bands left to name
+    # and uses channel_1..N. Losing the labels would silently write generic names over
+    # named inputs -- the mislabelling this path exists to avoid, and invisible in the
+    # output. Checked here rather than in the write loop below, whose broad handler would
+    # turn it into a logged empty result instead of a failure.
+    if config.do_only_cutout_extraction:
+        for batch_result in batch_data:
+            # Direct access: a batch result without these keys is a broken contract, not
+            # a shape to tolerate. Defaulting `channel_names` to [] in particular turned a
+            # missing key into a count mismatch, which reads as a channel-configuration
+            # problem and sends the reader to the wrong place entirely.
+            cutouts = batch_result["cutouts"]
+            if len(cutouts) == 0:
+                continue
+            # Unresized extraction hands back a list of per-source (H, W, C) arrays;
+            # a resized batch is one (N, H, W, C) array. Both put C last on a source.
+            n_channels = np.shape(cutouts[0])[-1]
+            names = batch_result["channel_names"]
+            if len(names) != n_channels:
+                raise ValueError(
+                    f"Extraction-only output needs one channel name per tensor channel: "
+                    f"got {len(names)} names {names} for {n_channels} channels"
+                )
+
     try:
         output_path = Path(output_directory)
         ensure_output_directory(output_path)
 
         written_files = []
+
+        # Units depend only on config, so resolve them once rather than per source
+        # (this loop runs once per catalogue row — millions in production).
+        units = resolve_cutout_units(config)
 
         # Handle the correct data structure: batch_data is a list of batch results
         # Each batch result contains "cutouts" tensor, "metadata" list, "wcs_info" list, and "channel_names"
@@ -526,11 +672,6 @@ def write_fits_batch(
             if cutouts_tensor is None or len(metadata_list) == 0:
                 logger.warning("No cutout data or metadata in batch result")
                 continue
-
-            # Pre-compute channel weight keys to avoid repeated list() calls
-            channel_weight_keys = (
-                list(config.channel_weights.keys()) if config.do_only_cutout_extraction else None
-            )
 
             # Process each source in the batch
             for source_idx, metadata in enumerate(metadata_list):
@@ -553,8 +694,8 @@ def write_fits_batch(
                 source_wcs_info = {}
                 source_wcs_dict = wcs_list[source_idx] if source_idx < len(wcs_list) else {}
                 for ij in range(source_cutout.shape[2]):
-                    if channel_weight_keys:
-                        channel_name = channel_weight_keys[ij]
+                    if config.do_only_cutout_extraction:
+                        channel_name = channel_names[ij]
                     else:
                         channel_name = f"channel_{ij + 1}"  # Generic output channel names
                     processed_cutouts[channel_name] = source_cutout[:, :, ij]
@@ -571,22 +712,11 @@ def write_fits_batch(
                     "metadata": metadata,
                     "processed_cutouts": processed_cutouts,
                     "wcs_info": source_wcs_info,  # Use properly mapped WCS info
-                    "unit": "OriginalUnit",
-                    "conserved_flux": False,
+                    "unit": units.unit,
+                    "bunit": units.bunit,
+                    "conserved_flux": units.conserved_flux,
+                    "flux_approximate": units.flux_approximate,
                 }
-
-                if config.flux_conserved_resizing or config.do_only_cutout_extraction:
-                    cutout_data["conserved_flux"] = True
-                    if config.apply_flux_conversion:
-                        cutout_data["unit"] = (
-                            "Jy"  # Example unit after flux conversion, adjust as needed
-                        )
-
-                else:
-                    if config.apply_flux_conversion:
-                        cutout_data["unit"] = "approx Jy"
-                    else:
-                        cutout_data["unit"] = "approx OriginalUnit"
 
                 # Determine output directory for this source
                 if create_subdirs:

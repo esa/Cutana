@@ -211,6 +211,10 @@ class TestNormalisationCrop:
                         "a": 0.1,
                         "n_samples": 1000,
                         "contrast": 0.25,
+                        # Not used by the crop assertion, but the asinh branch reads it and
+                        # refuses a block that omits it. fitsbolt is mocked here, so a
+                        # partial config used to reach it unchecked.
+                        "asinh_n_samples": None,
                         "crop_enable": True,
                         "crop_height": 64,
                         "crop_width": 64,

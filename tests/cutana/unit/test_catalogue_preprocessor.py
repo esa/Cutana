@@ -18,25 +18,27 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pandas as pd
 import pytest
+from astropy.io import fits
+from astropy.wcs import WCS
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cutana.catalogue_preprocessor import (  # noqa: E402
     CatalogueValidationError,
-    analyse_source_catalogue,
     analyze_fits_file,
     check_fits_files_exist,
     extract_filter_name,
     extract_fits_sets,
     load_and_validate_catalogue,
-    parse_fits_file_paths,
     preprocess_catalogue,
     validate_catalogue_columns,
     validate_coordinate_ranges,
     validate_resolution_ratios,
 )
+from cutana.fits_paths import parse_fits_file_paths
 
 
 class TestFilterNameExtraction:
@@ -55,9 +57,13 @@ class TestFilterNameExtraction:
             ("H_band.fits", "H"),
             ("Y_filter.fits", "Y"),
             ("J_observation.fits", "J"),
+            # No Euclid pattern: the basename stem is the channel label, so two
+            # unrecognised tiles stay distinct and still resolve against the tensor,
+            # whose channel names are these same stems.
             ("unknown_filter.fits", "UNKNOWN"),
             ("random_data.fits", "UNKNOWN"),
             ("no_filter_info.fits", "UNKNOWN"),
+            ("/path/to/tile_mystery.fits", "UNKNOWN"),
         ],
     )
     def test_extract_filter(self, filename, expected):
@@ -85,10 +91,12 @@ class TestFITSAnalysis:
         mock_hdu1 = MagicMock()
         mock_hdu1.name = "PRIMARY"
         mock_hdu1.data = None
+        mock_hdu1.header = {"NAXIS": 0}
 
         mock_hdu2 = MagicMock()
         mock_hdu2.name = "IMAGE"
         mock_hdu2.data = MagicMock()
+        mock_hdu2.header = {"NAXIS": 2}
 
         mock_hdul = [mock_hdu1, mock_hdu2]
         mock_fits.open.return_value.__enter__.return_value = mock_hdul
@@ -168,156 +176,6 @@ class TestFITSPathParsing:
         """Test parsing malformed string raises ValueError."""
         with pytest.raises(ValueError, match="unbalanced brackets"):
             parse_fits_file_paths("[malformed string")
-
-
-class TestCatalogueAnalysis:
-    """Test complete catalogue analysis functionality."""
-
-    def _create_mock_csv(self, num_sources=10):
-        """Create a mock CSV file for testing."""
-        temp_file = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False)
-        temp_file.write("SourceID,RA,Dec,diameter_pixel,fits_file_paths\n")
-        for i in range(num_sources):
-            source_id = f"MockSource_{i:03d}"
-            ra = 150.0 + i * 0.01
-            dec = 2.0 + i * 0.01
-            fits_paths = f"['/mock/vis_tile_{i:03d}.fits', '/mock/nir_h_tile_{i:03d}.fits']"
-            temp_file.write(f'{source_id},{ra},{dec},128,"{fits_paths}"\n')
-        temp_file.close()
-        return temp_file.name
-
-    @pytest.mark.parametrize("num_sources", [25, 1000])
-    def test_analyze_catalogue_sizes(self, num_sources):
-        """Test catalogue analysis with different dataset sizes."""
-        csv_path = self._create_mock_csv(num_sources=num_sources)
-        try:
-            with (
-                patch("cutana.catalogue_preprocessor.analyze_fits_file") as mock_analyze,
-                patch("cutana.catalogue_preprocessor.load_and_validate_catalogue") as mock_load,
-            ):
-                mock_df = pd.DataFrame(
-                    {
-                        "SourceID": [f"MockSource_{i:03d}" for i in range(num_sources)],
-                        "RA": [150.0 + i * 0.01 for i in range(num_sources)],
-                        "Dec": [2.0 + i * 0.01 for i in range(num_sources)],
-                        "diameter_pixel": [128] * num_sources,
-                        "fits_file_paths": [
-                            f"['/mock/vis_tile_{i:03d}.fits', '/mock/nir_h_tile_{i:03d}.fits']"
-                            for i in range(num_sources)
-                        ],
-                    }
-                )
-                mock_load.return_value = mock_df
-                mock_analyze.return_value = {
-                    "path": "/mock/file.fits",
-                    "exists": True,
-                    "filter": "VIS",
-                    "extensions": [{"name": "PRIMARY", "type": "PrimaryHDU"}],
-                    "num_extensions": 1,
-                    "error": None,
-                }
-                result = analyse_source_catalogue(csv_path)
-
-            assert result["num_sources"] == num_sources
-            assert result["sample_analysis_size"] == 5
-            assert isinstance(result["fits_files"], list)
-            assert isinstance(result["extensions"], list)
-            assert "catalogue_columns" in result
-            assert "SourceID" in result["catalogue_columns"]
-            assert "fits_file_paths" in result["catalogue_columns"]
-        finally:
-            os.unlink(csv_path)
-
-    def test_analyze_catalogue_nonexistent(self):
-        """Test analysis of non-existent catalogue."""
-        with pytest.raises(Exception):
-            analyse_source_catalogue("/nonexistent/catalogue.csv")
-
-    def test_analyze_catalogue_multi_channel(self):
-        """Test analysis of multi-channel catalogue."""
-        temp_file = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False)
-        temp_file.write("SourceID,RA,Dec,diameter_pixel,fits_file_paths\n")
-        temp_file.write("Source1,150.0,2.0,128,\"['/data/vis.fits']\"\n")
-        temp_file.write("Source2,150.1,2.1,128,\"['/data/vis.fits', '/data/nir_h.fits']\"\n")
-        temp_file.write(
-            "Source3,150.2,2.2,128,\"['/data/vis.fits', '/data/nir_h.fits', '/data/nir_y.fits']\"\n"
-        )
-        temp_file.close()
-        csv_path = temp_file.name
-
-        try:
-            with (
-                patch("cutana.catalogue_preprocessor.analyze_fits_file") as mock_analyze,
-                patch("cutana.catalogue_preprocessor.load_and_validate_catalogue") as mock_load,
-            ):
-                mock_df = pd.DataFrame(
-                    {
-                        "SourceID": ["Source1", "Source2", "Source3"],
-                        "RA": [150.0, 150.1, 150.2],
-                        "Dec": [2.0, 2.1, 2.2],
-                        "diameter_pixel": [128, 128, 128],
-                        "fits_file_paths": [
-                            "['/data/vis.fits']",
-                            "['/data/vis.fits', '/data/nir_h.fits']",
-                            "['/data/vis.fits', '/data/nir_h.fits', '/data/nir_y.fits']",
-                        ],
-                    }
-                )
-                mock_load.return_value = mock_df
-
-                def mock_fits_analysis(path):
-                    if "vis" in path:
-                        filter_name = "VIS"
-                    elif "nir_h" in path:
-                        filter_name = "NIR-H"
-                    else:
-                        filter_name = "NIR-Y"
-                    return {
-                        "path": path,
-                        "exists": True,
-                        "filter": filter_name,
-                        "extensions": [{"name": "IMAGE", "type": "ImageHDU"}],
-                        "num_extensions": 1,
-                        "error": None,
-                    }
-
-                mock_analyze.side_effect = mock_fits_analysis
-                result = analyse_source_catalogue(csv_path)
-
-            assert result["num_sources"] == 3
-            assert len(result["fits_files"]) >= 3
-            extension_names = [ext["name"] for ext in result["extensions"]]
-            assert len(extension_names) >= 2
-        finally:
-            os.unlink(csv_path)
-
-    def test_analyze_catalogue_empty(self):
-        """Test analysis of empty catalogue."""
-        temp_file = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False)
-        temp_file.write("SourceID,RA,Dec,diameter_pixel,fits_file_paths\n")
-        temp_file.close()
-        csv_path = temp_file.name
-
-        try:
-            with patch("cutana.catalogue_preprocessor.load_and_validate_catalogue") as mock_load:
-                mock_df = pd.DataFrame(
-                    {
-                        "SourceID": [],
-                        "RA": [],
-                        "Dec": [],
-                        "diameter_pixel": [],
-                        "fits_file_paths": [],
-                    }
-                )
-                mock_load.return_value = mock_df
-                result = analyse_source_catalogue(csv_path)
-
-            assert result["num_sources"] == 0
-            assert result["sample_analysis_size"] == 0
-            assert result["fits_files"] == []
-            assert result["extensions"] == []
-        finally:
-            os.unlink(csv_path)
 
 
 class TestColumnValidation:
@@ -535,7 +393,13 @@ class TestPreprocessing:
             )
 
     def test_preprocess_catalogue_large_catalogue_duplicates_not_reformatted(self):
-        """Test that duplicate SourceIDs in a large catalogue are not reformatted."""
+        """Catalogues at or above the threshold are left alone by design.
+
+        Unique SourceIDs are the caller's responsibility (#283); Cutana must stay
+        usable on billion-source catalogues, so it does no whole-catalogue scan.
+        Streaming callers are unaffected — they pass one small internal batch at a
+        time, so the check still runs for them.
+        """
         n = 100_000
         source_ids = [f"SOURCE_{i % 10}" for i in range(n)]
         df = pd.DataFrame(
@@ -548,6 +412,39 @@ class TestPreprocessing:
         )
         processed_df = preprocess_catalogue(df)
         assert processed_df["SourceID"].tolist() == source_ids
+
+    def test_preprocess_catalogue_exact_duplicate_rows_raise(self):
+        """Rows identical in SourceID *and* position must be refused, not collapsed.
+
+        Regression for a reported streaming failure: a catalogue whose SourceIDs
+        already embedded RA/Dec survived the reformat unchanged, so ~half the rows
+        collapsed into shared dict keys during extraction and the run died much
+        later with "no cutouts remain for the expected batch".
+        """
+        df = pd.DataFrame(
+            {
+                "SourceID": ["NEG1_43.365314_-60.861573"] * 3 + ["NEG2_43.472532_-60.804334"],
+                "RA": [43.365257] * 3 + [43.472475],
+                "Dec": [-60.861545] * 3 + [-60.804306],
+                "diameter_arcsec": [10.0] * 4,
+            }
+        )
+        with pytest.raises(CatalogueValidationError, match="exact duplicates"):
+            preprocess_catalogue(df)
+
+    def test_preprocess_catalogue_same_id_distinct_positions_still_works(self):
+        """Distinct sources that merely share an ID are separated, not refused."""
+        df = pd.DataFrame(
+            {
+                "SourceID": ["SHARED", "SHARED"],
+                "RA": [43.365257, 43.472475],
+                "Dec": [-60.861545, -60.804306],
+                "diameter_arcsec": [10.0, 10.0],
+            }
+        )
+        processed_df = preprocess_catalogue(df)
+        assert processed_df["SourceID"].nunique() == 2
+        assert len(processed_df) == 2
 
 
 class TestLoadAndValidate:
@@ -717,6 +614,49 @@ class TestExtractFitsSets:
 
 class TestResolutionValidation:
     """Test resolution ratio validation for diameter_pixel usage."""
+
+    @staticmethod
+    def _tile(directory, name, scale_arcsec):
+        """A one-HDU tile with a known pixel scale."""
+        wcs = WCS(naxis=2)
+        wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+        wcs.wcs.crval = [180.0, 0.0]
+        wcs.wcs.crpix = [64, 64]
+        wcs.wcs.cd = [[-scale_arcsec / 3600.0, 0.0], [0.0, scale_arcsec / 3600.0]]
+        path = directory / name
+        fits.PrimaryHDU(np.zeros((128, 128), np.float32), header=wcs.to_header()).writeto(path)
+        return path.as_posix()
+
+    @pytest.mark.parametrize("order", [(1, 2), (2, 1)])
+    def test_two_unclassifiable_tiles_are_both_compared(self, tmp_path, order):
+        """Every tile the recogniser cannot classify is `UNKNOWN`, so a filter-keyed dict
+        kept only the last of them and the check's answer depended on file order.
+
+        The row here is a mixed-resolution set sized with `diameter_pixel`, which is
+        exactly what this validation exists to refuse -- and it must refuse it whichever
+        way the row lists its files.
+        """
+        scales = {1: 0.1, 2: 0.3}
+        paths = [
+            self._tile(tmp_path, "EUC_MER_BGSUB-MOSAIC-VIS_T1.fits", 0.1),
+            *(self._tile(tmp_path, f"survey_{i}.fits", scales[i]) for i in order),
+        ]
+        df = pd.DataFrame(
+            [
+                {
+                    "SourceID": "S0",
+                    "RA": 180.0,
+                    "Dec": 0.0,
+                    "diameter_pixel": 64,
+                    "fits_file_paths": str(paths),
+                }
+            ]
+        )
+
+        errors = validate_resolution_ratios(df)
+
+        assert errors, "a 3x pixel-scale difference must be reported in either order"
+        assert "survey_2.fits" in errors[0]
 
     @pytest.mark.parametrize(
         "columns, expected_no_errors",

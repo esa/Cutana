@@ -43,6 +43,7 @@ class TestImageProcessor:
                     "a": NormalisationDefaults.ASINH_A,
                     "percentile": NormalisationDefaults.PERCENTILE,
                     "n_samples": NormalisationDefaults.N_SAMPLES,
+                    "asinh_n_samples": NormalisationDefaults.ASINH_N_SAMPLES,
                     "contrast": NormalisationDefaults.CONTRAST,
                     "crop_enable": False,
                 },
@@ -198,7 +199,7 @@ class TestImageProcessor:
         for i, ext in enumerate(extension_names):
             batch_cutouts[0, :, :, i] = mock_cutout_data[ext]
 
-        combined = combine_channels(batch_cutouts, channel_weights)
+        combined = combine_channels(batch_cutouts, channel_weights, list(channel_weights))
 
         assert combined.shape == (1, H, W, 3)
         assert combined.dtype == np.float32
@@ -223,7 +224,7 @@ class TestImageProcessor:
         for i, ext in enumerate(extension_names):
             batch_cutouts[0, :, :, i] = cutouts[ext]
 
-        combined = combine_channels(batch_cutouts, channel_weights)
+        combined = combine_channels(batch_cutouts, channel_weights, list(channel_weights))
         assert combined.shape == (1, 32, 32, 3)
         assert isinstance(combined, np.ndarray)
 
@@ -325,12 +326,10 @@ class TestImageProcessor:
 
     def test_batch_processing_consistency(self, mock_cutout_data, mock_config):
         """Test that batch processing produces consistent results."""
-        source_cutouts = {}
-        pixel_scales_dict = {}
-        for idx, (channel, cutout) in enumerate(mock_cutout_data.items()):
-            source_id = f"source_{idx}"
-            source_cutouts[source_id] = {channel: cutout}
-            pixel_scales_dict[channel] = 0.1
+        # Every source carries the full band set (the pipeline invariant), so
+        # the tensor has one column per band shared across all sources.
+        pixel_scales_dict = {channel: 0.1 for channel in mock_cutout_data}
+        source_cutouts = {f"source_{idx}": dict(mock_cutout_data) for idx in range(3)}
 
         resized1 = resize_batch_tensor(
             source_cutouts,
@@ -412,7 +411,12 @@ class TestImageProcessor:
         assert resized[0, :, :, 0] is not image
         assert np.allclose(resized[0, :, :, 0], image)
 
-        for method in ["nearest", "bilinear", "biquadratic", "bicubic", "invalid_method"]:
+        for method in [
+            "nearest",
+            "bilinear",
+            "bicubic",
+            "lanczos",
+        ]:
             resized = resize_batch_tensor(
                 source_cutouts,
                 target_resolution=(32, 32),
@@ -422,7 +426,18 @@ class TestImageProcessor:
             )
             assert resized.shape == (1, 32, 32, 1)
 
-        with patch("skimage.transform.resize", side_effect=Exception("Resize failed")):
+        # Unknown interpolation values are rejected by validate_config, so
+        # reaching resize with one is a bug -> fail hard rather than default.
+        with pytest.raises(KeyError):
+            resize_batch_tensor(
+                source_cutouts,
+                target_resolution=(32, 32),
+                interpolation="invalid_method",
+                flux_conserved_resizing=False,
+                pixel_scales_dict={"VIS": 0.1},
+            )
+
+        with patch("cv2.resize", side_effect=Exception("Resize failed")):
             resized = resize_batch_tensor(
                 source_cutouts,
                 target_resolution=(128, 128),
@@ -432,6 +447,74 @@ class TestImageProcessor:
             )
             assert resized.shape == (1, 128, 128, 1)
             assert np.allclose(resized, 0)
+
+    def test_resize_preserves_big_endian_fits_structure(self):
+        """Resizing a big-endian (>f4) FITS cutout must preserve image structure.
+
+        astropy returns FITS data in big-endian order; cv2.resize decodes raw
+        bytes in native order, so a missing byte-order cast silently produces
+        garbage that normalises to a flat field. This guards both the common
+        upscale and the INTER_AREA downscale path.
+        """
+        gradient = np.tile(np.linspace(0.0, 100.0, 64, dtype=np.float32), (64, 1))
+        big_endian = gradient.astype(">f4")
+        assert big_endian.dtype.byteorder == ">"
+
+        for target in [(32, 32), (128, 128)]:  # downscale (INTER_AREA) and upscale
+            resized = resize_batch_tensor(
+                {"src": {"VIS": big_endian}},
+                target_resolution=target,
+                interpolation="bilinear",
+                flux_conserved_resizing=False,
+                pixel_scales_dict={"VIS": 0.1},
+            )[0, :, :, 0]
+            assert np.all(np.isfinite(resized))
+            left = resized[:, : target[1] // 4].mean()
+            right = resized[:, -target[1] // 4 :].mean()
+            assert right - left > 40.0, f"gradient lost for target {target}: {left}->{right}"
+
+    def test_resize_batch_tensor_multi_source_band_alignment(self):
+        """Each band must land in the same tensor column for every source.
+
+        The first source defines the extension->column order; accessing later
+        sources by name keeps every band in its fixed column regardless of the
+        per-source dict ordering.
+        """
+        vis = np.full((16, 16), 1.0, dtype=np.float32)
+        nir = np.full((16, 16), 2.0, dtype=np.float32)
+        source_cutouts = {
+            "source_0": {"VIS": vis, "NIR-H": nir},
+            "source_1": {"VIS": vis, "NIR-H": nir},
+        }
+        resized = resize_batch_tensor(
+            source_cutouts,
+            target_resolution=(16, 16),
+            interpolation="bilinear",
+            flux_conserved_resizing=False,
+            pixel_scales_dict={"VIS": 0.1, "NIR-H": 0.3},
+        )
+        assert resized.shape == (2, 16, 16, 2)
+        # Column 0 is VIS (==1.0), column 1 is NIR-H (==2.0) for both sources.
+        assert np.allclose(resized[:, :, :, 0], 1.0)
+        assert np.allclose(resized[:, :, :, 1], 2.0)
+
+    def test_resize_batch_tensor_missing_band_fails_hard(self):
+        """A source missing a band breaks the all-sources-same-extensions
+        invariant and must fail hard rather than silently mis-aligning columns."""
+        vis = np.full((16, 16), 1.0, dtype=np.float32)
+        nir = np.full((16, 16), 2.0, dtype=np.float32)
+        source_cutouts = {
+            "source_0": {"VIS": vis, "NIR-H": nir},
+            "source_1": {"VIS": vis},  # missing NIR-H
+        }
+        with pytest.raises(KeyError):
+            resize_batch_tensor(
+                source_cutouts,
+                target_resolution=(16, 16),
+                interpolation="bilinear",
+                flux_conserved_resizing=False,
+                pixel_scales_dict={"VIS": 0.1, "NIR-H": 0.3},
+            )
 
     def test_flux_conserved_resizing_single_scale(self):
         """Test that flux-conserved resizing preserves total flux for different scales."""

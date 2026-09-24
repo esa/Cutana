@@ -13,11 +13,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Pin the ruff version so a new upstream release cannot break CI on
+      # unrelated PRs (0.16 started formatting Python blocks inside Markdown).
       - uses: astral-sh/ruff-action@v3
         with:
+          version: "0.16.0"
           args: "check"
           src: "."
       - uses: astral-sh/ruff-action@v3
         with:
+          version: "0.16.0"
           args: "format --check"
           src: "."
