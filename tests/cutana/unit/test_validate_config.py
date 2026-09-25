@@ -43,12 +43,25 @@ def _make_valid_config(**overrides):
         ("output_dir", 123, "must be a string/directory path"),
         ("source_catalogue", 999, "must be a string/file path"),
         ("max_workers", "four", "must be an integer"),
+        ("max_workers", True, "must be an integer"),
         ("padding_factor", "big", "must be a number"),
+        ("padding_factor", True, "must be a number"),
         ("write_to_disk", 1, "must be a boolean"),
         ("available_extensions", "not_a_list", "must be a list"),
         ("loadbalancer", {"memory_safety_margin": 0.1}, "must be a DotMap"),
     ],
-    ids=["str", "directory", "file", "int", "float", "bool", "list", "dotmap"],
+    ids=[
+        "str",
+        "directory",
+        "file",
+        "int",
+        "bool_as_int",
+        "float",
+        "bool_as_float",
+        "bool",
+        "list",
+        "dotmap",
+    ],
 )
 def test_wrong_type_rejected(override_key, bad_value, match_pattern):
     cfg = _make_valid_config(**{override_key: bad_value})
