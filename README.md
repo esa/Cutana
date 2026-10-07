@@ -221,7 +221,7 @@ config = get_default_config()
 # Set normalisation method
 config.normalisation_method = "asinh"  # "linear", "log", "asinh", "zscale", "midtones"
 
-# Configure normalisation parameters (method-specific defaults applied automatically)
+# Configure normalisation parameters (method-specific defaults applied automatically in UI)
 config.normalisation.percentile = 99.8  # Data clipping percentile
 config.normalisation.a = 0.7  # Transition parameter (asinh/log)
 config.normalisation.n_samples = 1000  # ZScale samples
@@ -307,6 +307,7 @@ All normalisation parameters are now stored in the `config.normalisation` DotMap
 
 - **`config.normalisation.percentile`**: Percentile for data clipping, applied to all stretch methods (default: 99.8, range: 0-100)
 - **`config.normalisation.a`**: Unified transition parameter with method-specific defaults:
+  - These defaults must be applied manually when not using the UI
   - ASINH: 0.7 (controls linear-to-logarithmic transition, range: 0.001-3.0)
   - Log: 1000.0 (scale factor for transition point, range: 0.01-10000.0)
   - Midtones: 0.2 (desired mean brightness after normalisation, range: 0.01-0.99)

@@ -19,7 +19,7 @@ from dotmap import DotMap
 from fitsbolt import NormalisationMethod
 from loguru import logger
 
-from .normalisation_parameters import NormalisationRanges
+from .normalisation_parameters import NormalisationRanges, get_method_specific_a_range
 
 #: Parameters that must be present but may still hold `None`, because `None` is a real
 #: setting for them rather than an unset key. They cannot simply be marked optional: an
@@ -541,6 +541,16 @@ def validate_config(cfg: DotMap, check_paths: bool = True) -> None:
     # special correlation checks
     if cfg.do_only_cutout_extraction and cfg.output_format not in ["fits"]:
         raise ValueError("When do_only_cutout_extraction is True, output_format must be 'fits'")
+
+    # normalisation.a above is only checked against the union of all method ranges
+    method = cfg.normalisation_method
+    a = cfg.normalisation.a if "normalisation" in cfg and "a" in cfg.normalisation else None
+    if method in ("asinh", "log", "midtones") and a is not None:
+        a_min, a_max = get_method_specific_a_range(method)
+        if not a_min <= a <= a_max:
+            raise ValueError(
+                f"normalisation.a must be in [{a_min}, {a_max}] for {method} normalisation, got {a}"
+            )
 
     # Check for unexpected keys (warn only)
     actual_keys = _get_all_keys(cfg)

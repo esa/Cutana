@@ -120,6 +120,7 @@ class TestImageProcessor:
             ("log", (0.1, 1)),
             ("asinh", (-1, 1)),
             ("zscale", (0.01, 1)),
+            ("midtones", (0, 1)),
         ],
     )
     def test_apply_normalisation_methods(self, mock_config, method, input_range):
@@ -136,7 +137,7 @@ class TestImageProcessor:
 
     @pytest.mark.parametrize(
         "method",
-        ["linear", "log", "asinh", "zscale"],
+        ["linear", "log", "asinh", "zscale", "midtones"],
     )
     def test_apply_normalisation_batch_methods(self, mock_config, method):
         """Test batch normalisation with each stretch method on multi-image batches."""

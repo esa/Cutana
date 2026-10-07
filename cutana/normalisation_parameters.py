@@ -284,15 +284,14 @@ def build_fitsbolt_params_from_external_cfg(
             fitsbolt_params["norm_asinh_n_samples"] = norm_cfg.asinh_n_samples
 
     elif method == fitsbolt.NormalisationMethod.MIDTONES:
-        raise ValueError(
-            "MIDTONES normalisation method is not supported in Cutana streaming mode. "
-            "Please use CONVERSION_ONLY, LOG, ZSCALE, or ASINH."
-        )
+        fitsbolt_params["norm_midtones_percentile"] = norm_cfg.midtones.percentile
+        fitsbolt_params["norm_midtones_desired_mean"] = norm_cfg.midtones.desired_mean
+        fitsbolt_params["norm_midtones_crop"] = norm_cfg.midtones.crop
 
     else:
         raise ValueError(
             f"Unsupported normalisation method in external config: {method}. "
-            "Supported methods: CONVERSION_ONLY, LOG, ZSCALE, ASINH."
+            "Supported methods: CONVERSION_ONLY, LOG, ZSCALE, ASINH, MIDTONES."
         )
 
     # `crop_for_maximum_value` is optional on the externally-provided fitsbolt
