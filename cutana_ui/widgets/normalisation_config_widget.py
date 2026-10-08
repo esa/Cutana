@@ -80,7 +80,7 @@ margin: 10px 0 5px 0; border-bottom: 1px solid #335E6E; padding-bottom: 3px;">No
             layout=widgets.Layout(height="32px", width="100%"),
         )
         self.normalisation_dropdown = widgets.Dropdown(
-            options=["none", "linear", "log", "asinh", "zscale"],
+            options=["none", "linear", "log", "asinh", "zscale", "midtones"],
             value=normalisation_value,
             layout=widgets.Layout(width="120px", height="32px"),
             tooltip="Normalisation method (none = no normalisation applied)",
@@ -299,8 +299,8 @@ margin: 10px 0 5px 0; border-bottom: 1px solid #335E6E; padding-bottom: 3px;">No
         self.percentile_label.layout.display = "none" if is_none else ""
         self.percentile_input.layout.display = "none" if is_none else ""
 
-        # Show or hide unified 'a' parameter for ASINH and LOG (but not for "none")
-        needs_a_param = normalisation_method in ["asinh", "log"]
+        # Show or hide unified 'a' parameter for ASINH, LOG, MIDTONES (but not for "none")
+        needs_a_param = normalisation_method in ["asinh", "log", "midtones"]
         self.a_label.layout.display = "" if needs_a_param else "none"
         self.a_input.layout.display = "" if needs_a_param else "none"
 
@@ -323,14 +323,7 @@ margin: 10px 0 5px 0; border-bottom: 1px solid #335E6E; padding-bottom: 3px;">No
             min_val, max_val = get_method_specific_a_range(normalisation_method)
             step_val = get_method_specific_a_step(normalisation_method)
             tooltip = get_method_tooltip(normalisation_method)
-
-            # Use custom default values based on normalisation method
-            if normalisation_method == "log":
-                default_val = 1000.0
-            elif normalisation_method == "asinh":
-                default_val = 0.1
-            else:
-                default_val = get_method_specific_a_default(normalisation_method)
+            default_val = get_method_specific_a_default(normalisation_method)
 
             # Update widget parameters
             self.a_input.min = min_val

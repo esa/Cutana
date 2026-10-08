@@ -201,7 +201,9 @@ class TestE2EPreviewGenerator:
             # Verify normalization applied (values should be 0-255)
             assert cutout_array.min() >= 0 and cutout_array.max() <= 255
 
-    @pytest.mark.parametrize("norm_method", ["linear", "log", "asinh", "zscale", "none"])
+    @pytest.mark.parametrize(
+        "norm_method", ["linear", "log", "asinh", "zscale", "midtones", "none"]
+    )
     @pytest.mark.asyncio
     async def test_preview_generator_normalizations(self, norm_method):
         """Test preview generation with different normalization methods."""

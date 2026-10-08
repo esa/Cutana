@@ -44,6 +44,7 @@ class NormalisationDefaults:
     # Method-specific defaults for unified 'a' parameter
     ASINH_A = 0.1  # Default ASINH transition parameter. Default value from Astropy documentation.
     LOG_A = 1000.0  # Default LOG scale factor. Default value from Astropy Documentation.
+    MIDTONES_A = 0.2  # Default MIDTONES desired mean parameter. Default value from fitsbolt.
 
     # Crop parameters for norm_crop_for_maximum_value
     CROP_ENABLE = False  # Whether to enable crop for maximum value computation
@@ -65,6 +66,10 @@ class NormalisationRanges:
     # LOG scale factor
     LOG_A_MIN = 0.01
     LOG_A_MAX = 10000.0  # LOG 'a' max value chosen as function becomes linear beyond this point.
+
+    # MIDTONES desired mean parameter
+    MIDTONES_A_MIN = 0.01
+    MIDTONES_A_MAX = 0.99  # Must be in (0, 1) range
 
     # ZScale parameters
     N_SAMPLES_MIN = 100
@@ -91,6 +96,7 @@ class NormalisationSteps:
     PERCENTILE_STEP = 0.1
     ASINH_A_STEP = 0.001
     LOG_A_STEP = 0.01
+    MIDTONES_A_STEP = 0.01
     N_SAMPLES_STEP = 100
     CONTRAST_STEP = 0.05
 
@@ -108,7 +114,7 @@ def get_method_specific_a_default(method: str) -> float:
     """Get the default 'a' parameter value for a specific normalization method.
 
     Args:
-        method: Normalization method ('asinh', 'log', 'linear', 'zscale')
+        method: Normalization method ('asinh', 'log', 'midtones', 'linear', 'zscale')
 
     Returns:
         Default 'a' parameter value for the method
@@ -118,6 +124,8 @@ def get_method_specific_a_default(method: str) -> float:
         return NormalisationDefaults.ASINH_A
     elif method_lower == "log":
         return NormalisationDefaults.LOG_A
+    elif method_lower == "midtones":
+        return NormalisationDefaults.MIDTONES_A
     else:
         # For methods that don't use 'a' parameter, return ASINH default
         return NormalisationDefaults.ASINH_A
@@ -127,7 +135,7 @@ def get_method_specific_a_range(method: str) -> Tuple[float, float]:
     """Get the valid range for 'a' parameter for a specific normalization method.
 
     Args:
-        method: Normalization method ('asinh', 'log', 'linear', 'zscale')
+        method: Normalization method ('asinh', 'log', 'midtones', 'linear', 'zscale')
 
     Returns:
         Tuple of (min_value, max_value) for the method
@@ -137,6 +145,8 @@ def get_method_specific_a_range(method: str) -> Tuple[float, float]:
         return (NormalisationRanges.ASINH_A_MIN, NormalisationRanges.ASINH_A_MAX)
     elif method_lower == "log":
         return (NormalisationRanges.LOG_A_MIN, NormalisationRanges.LOG_A_MAX)
+    elif method_lower == "midtones":
+        return (NormalisationRanges.MIDTONES_A_MIN, NormalisationRanges.MIDTONES_A_MAX)
     else:
         # For methods that don't use 'a' parameter, return ASINH range
         return (NormalisationRanges.ASINH_A_MIN, NormalisationRanges.ASINH_A_MAX)
@@ -146,7 +156,7 @@ def get_method_specific_a_step(method: str) -> float:
     """Get the step size for 'a' parameter for a specific normalization method.
 
     Args:
-        method: Normalization method ('asinh', 'log', 'linear', 'zscale')
+        method: Normalization method ('asinh', 'log', 'midtones', 'linear', 'zscale')
 
     Returns:
         Step size for the method
@@ -156,6 +166,8 @@ def get_method_specific_a_step(method: str) -> float:
         return NormalisationSteps.ASINH_A_STEP
     elif method_lower == "log":
         return NormalisationSteps.LOG_A_STEP
+    elif method_lower == "midtones":
+        return NormalisationSteps.MIDTONES_A_STEP
     else:
         # For methods that don't use 'a' parameter, return ASINH step
         return NormalisationSteps.ASINH_A_STEP
@@ -203,8 +215,11 @@ def get_method_tooltip(method: str) -> str:
     elif method_lower == "log":
         min_val, max_val = get_method_specific_a_range(method)
         return f"Log scale factor ({min_val}-{max_val})"
+    elif method_lower == "midtones":
+        min_val, max_val = get_method_specific_a_range(method)
+        return f"Midtones desired mean brightness ({min_val}-{max_val})"
     else:
-        return "Transition parameter (ASINH: 0.001-3.0, LOG: 0.01-10000)"
+        return "Transition parameter (ASINH: 0.001-3.0, LOG: 0.01-10000, MIDTONES: 0.01-0.99)"
 
 
 # =============================================================================
@@ -269,15 +284,14 @@ def build_fitsbolt_params_from_external_cfg(
             fitsbolt_params["norm_asinh_n_samples"] = norm_cfg.asinh_n_samples
 
     elif method == fitsbolt.NormalisationMethod.MIDTONES:
-        raise ValueError(
-            "MIDTONES normalisation method is not supported in Cutana streaming mode. "
-            "Please use CONVERSION_ONLY, LOG, ZSCALE, or ASINH."
-        )
+        fitsbolt_params["norm_midtones_percentile"] = norm_cfg.midtones.percentile
+        fitsbolt_params["norm_midtones_desired_mean"] = norm_cfg.midtones.desired_mean
+        fitsbolt_params["norm_midtones_crop"] = norm_cfg.midtones.crop
 
     else:
         raise ValueError(
             f"Unsupported normalisation method in external config: {method}. "
-            "Supported methods: CONVERSION_ONLY, LOG, ZSCALE, ASINH."
+            "Supported methods: CONVERSION_ONLY, LOG, ZSCALE, ASINH, MIDTONES."
         )
 
     # `crop_for_maximum_value` is optional on the externally-provided fitsbolt
@@ -363,6 +377,8 @@ def convert_cfg_to_fitsbolt_cfg(config: DotMap, num_channels: int = 1) -> Dict[s
         norm_method = fitsbolt.NormalisationMethod.ASINH
     elif method == "zscale":
         norm_method = fitsbolt.NormalisationMethod.ZSCALE
+    elif method == "midtones":
+        norm_method = fitsbolt.NormalisationMethod.MIDTONES
     else:
         norm_method = fitsbolt.NormalisationMethod.CONVERSION_ONLY
 
@@ -430,6 +446,12 @@ def convert_cfg_to_fitsbolt_cfg(config: DotMap, num_channels: int = 1) -> Dict[s
             f"ASINH normalization: a={a}, percentile={percentile}, channels={num_channels}, "
             f"n_samples={asinh_n_samples}"
         )
+    elif method == "midtones":
+        # Midtones uses 'a' as desired_mean and percentile for clipping
+        fitsbolt_params["norm_midtones_desired_mean"] = a
+        fitsbolt_params["norm_midtones_percentile"] = percentile
+        logger.debug(f"MIDTONES normalization: desired_mean={a}, percentile={percentile}")
+
     fitsbolt_params["num_workers"] = 1  # Single-threaded processing; parallelism handled externally
 
     # Set fitsbolt's output_dtype from cutana's config

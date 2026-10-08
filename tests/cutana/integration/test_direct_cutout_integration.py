@@ -96,7 +96,7 @@ class TestDirectCutoutIntegration:
                 assert result["cutouts"].shape[1] == resolution
                 assert result["cutouts"].shape[2] == resolution
 
-    @pytest.mark.parametrize("norm_method", ["linear", "log", "asinh", "zscale"])
+    @pytest.mark.parametrize("norm_method", ["linear", "log", "asinh", "zscale", "midtones"])
     def test_normalisation_methods(self, small_catalogue, test_config, norm_method):
         """Test that different normalisation methods produce valid output."""
         test_config.normalisation_method = norm_method

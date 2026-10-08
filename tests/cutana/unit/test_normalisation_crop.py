@@ -200,7 +200,7 @@ class TestNormalisationCrop:
     @patch("cutana.image_processor.fitsbolt")
     def test_crop_with_different_normalisation_methods(self, mock_fitsbolt):
         """Test that crop works with different normalisation methods."""
-        methods = ["linear", "log", "asinh", "zscale"]
+        methods = ["linear", "log", "asinh", "zscale", "midtones"]
 
         for method in methods:
             config = DotMap(

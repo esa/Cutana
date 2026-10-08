@@ -237,6 +237,26 @@ def test_cutout_extraction_requires_fits(output_format, should_raise):
         validate_config(cfg, check_paths=False)
 
 
+@pytest.mark.parametrize(
+    "method, a, should_raise",
+    [
+        ("midtones", 1.5, True),
+        ("midtones", 0.2, False),
+        ("asinh", 5.0, True),
+        ("log", 1000.0, False),
+        ("linear", 1000.0, False),
+    ],
+    ids=["midtones_a_too_high", "midtones_ok", "asinh_a_too_high", "log_ok", "linear_ignores_a"],
+)
+def test_normalisation_a_method_specific_range(method, a, should_raise):
+    cfg = _make_valid_config(normalisation_method=method, **{"normalisation.a": a})
+    if should_raise:
+        with pytest.raises(ValueError, match=f"normalisation.a must be in .* for {method}"):
+            validate_config(cfg, check_paths=False)
+    else:
+        validate_config(cfg, check_paths=False)
+
+
 def test_unexpected_keys_does_not_raise():
     cfg = _make_valid_config()
     d = cfg.toDict()

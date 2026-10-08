@@ -107,7 +107,7 @@ class TestDefaultConfig:
         assert config.log_level in ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "TRACE"]
         assert config.output_format in ["zarr", "fits"]
         assert config.data_type in ["float32", "float64", "int32", "int16", "uint16"]
-        assert config.normalisation_method in ["linear", "log", "asinh", "zscale"]
+        assert config.normalisation_method in ["linear", "log", "asinh", "zscale", "midtones"]
         assert config.interpolation in ["bilinear", "nearest", "cubic"]
 
     def test_config_for_processing_requires_additional_fields(self):

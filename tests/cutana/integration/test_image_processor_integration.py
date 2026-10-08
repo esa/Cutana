@@ -183,7 +183,7 @@ class TestImageProcessorEnhanced:
         image_batch = original_image[np.newaxis, :, :]
 
         # Test different normalization methods
-        methods = ["linear", "log", "asinh", "zscale"]
+        methods = ["linear", "log", "asinh", "zscale", "midtones"]
 
         for method in methods:
             mock_config.normalisation_method = method
@@ -291,7 +291,7 @@ class TestImageProcessorEnhanced:
         image_batch = extreme_image[np.newaxis, :, :]
 
         # Test different normalization methods
-        methods = ["linear", "log", "asinh", "zscale"]
+        methods = ["linear", "log", "asinh", "zscale", "midtones"]
 
         for method in methods:
             mock_config.normalisation_method = method
