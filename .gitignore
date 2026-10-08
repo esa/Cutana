@@ -234,3 +234,6 @@ paper_scripts/figures
 paper_scripts/latex
 paper_scripts/catalogues
 demo
+
+# Generated API reference documentation files (built dynamically by scripts/gen_ref_pages.py)
+docs/api/

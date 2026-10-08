@@ -12,6 +12,7 @@ ensuring all required parameters are present and have valid values.
 
 import inspect
 import os
+import re
 
 import numpy as np
 from dotmap import DotMap
@@ -19,6 +20,13 @@ from fitsbolt import NormalisationMethod
 from loguru import logger
 
 from .normalisation_parameters import NormalisationRanges
+
+#: Parameters that must be present but may still hold `None`, because `None` is a real
+#: setting for them rather than an unset key. They cannot simply be marked optional: an
+#: optional parameter that goes missing is skipped, and the key then has to be caught much
+#: later, where it is read. For `normalisation.asinh_n_samples`, `None` means "no
+#: subsample, use every pixel".
+NULLABLE_REQUIRED_PARAMS = frozenset({"normalisation.asinh_n_samples"})
 
 
 def _return_required_and_optional_keys():
@@ -64,6 +72,7 @@ def _return_required_and_optional_keys():
         ],  # Write outputs to disk vs in-memory streaming
         # === Preprocessing Configuration ===
         "skip_catalogue_validation": [bool, None, None, False, None],
+        "skip_fits_check": [bool, None, None, False, None],
         # === Processing Configuration ===
         "max_workers": [int, 1, 1024, False, None],  # 1-1024 workers
         "N_batch_cutout_process": [int, 10, 10000, False, None],  # 10-10k batch size
@@ -86,7 +95,7 @@ def _return_required_and_optional_keys():
             None,
             None,
             False,
-            ["bilinear", "nearest", "bicubic", "biquadratic"],
+            ["bilinear", "nearest", "bicubic", "lanczos"],
         ],
         "flux_conserved_resizing": [bool, None, None, False, None],
         # === FITS File Handling ===
@@ -140,6 +149,13 @@ def _return_required_and_optional_keys():
             True,
             None,
         ],  # Optional, ZScale samples
+        "normalisation.asinh_n_samples": [
+            int,
+            NormalisationRanges.ASINH_N_SAMPLES_MIN,
+            NormalisationRanges.ASINH_N_SAMPLES_MAX,
+            False,
+            None,
+        ],  # Required, may be None; asinh percentile subsample size
         "normalisation.contrast": [
             float,
             NormalisationRanges.CONTRAST_MIN,
@@ -172,6 +188,7 @@ def _return_required_and_optional_keys():
         "config_file": [str, None, None, True, None],  # Optional
         # === Analysis Results (populated during catalogue analysis) ===
         "num_sources": [int, 0, None, True, None],  # Optional, can be 0
+        "num_sources_estimated": [bool, None, None, True, None],  # Optional
         "fits_files": [list, None, None, True, None],  # Optional
         "num_unique_fits_files": [int, 0, None, True, None],  # Optional, can be 0
         # === Memory and Resource Management ===
@@ -276,10 +293,19 @@ def _get_nested_value(cfg: DotMap, key: str):
     """
     current = cfg
     for part in key.split("."):
-        try:
+        if isinstance(current, DotMap):
+            if part not in current:
+                raise ValueError(f"Missing key in config: {key}")
+            current = current._map[part]
+        elif isinstance(current, dict):
+            if part not in current:
+                raise ValueError(f"Missing key in config: {key}")
             current = current[part]
-        except (KeyError, TypeError):
-            raise ValueError(f"Missing key in config: {key}")
+        else:
+            try:
+                current = getattr(current, part)
+            except AttributeError:
+                raise ValueError(f"Missing key in config: {key}")
     return current
 
 
@@ -334,8 +360,9 @@ def validate_config(cfg: DotMap, check_paths: bool = True) -> None:
                     f"(type: {dtype.__name__ if hasattr(dtype, '__name__') else dtype})"
                 )
 
-        # Skip validation for None values on optional parameters
-        if value is None and optional:
+        # Skip validation for None values on optional parameters, and on the required ones
+        # where None is a real setting (see NULLABLE_REQUIRED_PARAMS).
+        if value is None and (optional or param_name in NULLABLE_REQUIRED_PARAMS):
             continue
 
         # Helper function to format constraint info
@@ -612,111 +639,64 @@ def validate_config_for_processing(cfg: DotMap, check_paths: bool = True):
     logger.info("Config: processing validation successful")
 
 
-def validate_channel_order_consistency(tensor_channel_names, channel_weights, weak_check=True):
-    """
-    Validate that channel order in data tensor matches channel_weights order.
+#: Weight keys that name no band. Against a single channel they pair positionally, because
+#: there is only one pairing; they are never allowed to stand in for a real band name.
+UNNAMED_CHANNEL_KEYS = frozenset({"PRIMARY", "UNKNOWN"})
 
-    This critical validation prevents silent data corruption where channel weights
-    are applied to wrong channels due to non-deterministic set() ordering in
-    resize_batch_tensor.
+#: Both separators are interchangeable in a filter token, in either direction: a key may be
+#: written `NIR-H` or `NIR_H` and match a filename spelling it either way. `re.escape`
+#: escapes `-` but not `_`, so matching on the escaped key alone only rewrote one of them.
+_SEPARATORS = re.compile(r"\\-|_")
+
+
+def validate_channel_order_consistency(tensor_channel_names, channel_weights, weak_check=True):
+    """Resolve weight keys in tensor order without catalogue or FITS I/O.
 
     Args:
-        tensor_channel_names (list): Channel names in the order they appear in the tensor
-        channel_weights (dict): Dictionary mapping channel names to weight arrays
-        weak_check (bool): If True, use substring matching for channel names (default: True)
+        tensor_channel_names: Input labels in tensor order.
+        channel_weights: Input labels mapped to output weights.
+        weak_check: Allow complete token matches in full FITS channel labels.
+
+    Returns:
+        Weight keys in tensor order, independent of dictionary insertion order.
 
     Raises:
-        AssertionError: If channel order doesn't match exactly
+        ValueError: If labels are missing, ambiguous, duplicated, or unmatched.
     """
-    # Get channel names from weights (in the order they will be applied)
-    config_channel_names = list(channel_weights.keys())
-
-    # combine_channels applies channel_weights positionally to tensor extensions:
-    # the first weight binds to extension 0, the second to extension 1, etc.
-    # When the tensor has more channels than channel_weights, the surplus
-    # extensions are zero-weighted and silently dropped. Tolerate the lone-weight
-    # substring case (e.g. {"VIS": [1]} over ["VIS_a", "VIS_b"]) which is
-    # consistent with weak-check semantics; reject everything else (issue #315).
-    if len(tensor_channel_names) > len(config_channel_names):
-        tolerated = (
-            len(config_channel_names) == 1 and config_channel_names[0] in tensor_channel_names[0]
-        )
-        if not tolerated:
-            raise AssertionError(
-                f"Configuration would silently drop tensor extensions: "
-                f"{len(tensor_channel_names)} tensor channels "
-                f"({tensor_channel_names}) but channel_weights has "
-                f"{len(config_channel_names)} entry/entries "
-                f"({config_channel_names}). combine_channels applies weights "
-                f"positionally — extra tensor channels are dropped. Add weights "
-                f"for the additional channels or restrict fits_extensions / "
-                f"fits_file_paths."
-            )
-
-    if weak_check:
-        # Weak check: use substring matching for cases where tensor names contain full paths
-        # but config names are just extension identifiers
-        def find_matching_config_channel(tensor_name):
-            """Find config channel name that appears as substring in tensor name."""
-            for config_name in config_channel_names:
-                if config_name in tensor_name:
-                    return config_name
-            return None
-
-        # Map tensor channels to their corresponding config channels
-        mapped_channels = []
-        for tensor_name in tensor_channel_names:
-            matching_config = find_matching_config_channel(tensor_name)
-            # This allows to skip unmatched channels
-            if matching_config is None:
-                logger.warning(
-                    f"Tensor channel '{tensor_name}' does not match any config channel name. "
-                    f"Config channels: {config_channel_names}"
+    keys = list(channel_weights)
+    if not tensor_channel_names or len(tensor_channel_names) != len(keys):
+        raise ValueError("Channel mapping requires one weight entry per tensor channel")
+    resolved = []
+    for name in tensor_channel_names:
+        if name in channel_weights:
+            matches = [name]
+        elif keys[0] in UNNAMED_CHANNEL_KEYS and len(tensor_channel_names) == 1:
+            # A key that names no band, against a single channel: one weight entry and one
+            # channel can only pair one way, so the channel's own name is deliberately not
+            # checked. `PRIMARY` is the `get_default_config` placeholder; `UNKNOWN` is what
+            # `extract_filter_name` reports for a tile it cannot classify, and what the UI
+            # therefore offers as the channel to weight. Only these two skip the check --
+            # a real band name like "VIS" must still match, which is what catches a tile
+            # loaded under the wrong label. Multi-channel runs never take this path, which
+            # is where a wrong pairing would actually silently mis-weight pixels.
+            matches = keys
+        elif weak_check:
+            matches = [
+                key
+                for key in keys
+                if re.search(
+                    r"(?<![A-Za-z0-9])"
+                    + _SEPARATORS.sub("[-_]", re.escape(key))
+                    + r"(?![A-Za-z0-9])",
+                    name,
+                    flags=re.IGNORECASE,
                 )
-            else:
-                mapped_channels.append(matching_config)
-        assert len(mapped_channels) != 0, (
-            f"Tensor channel '{tensor_channel_names}' do not contain any config channel name. "
-            f"Config channels: {config_channel_names}"
-        )
-        # Verify all config channels are represented
-        mapped_set = set(mapped_channels)
-        config_set = set(config_channel_names)
-        assert mapped_set == config_set, (
-            f"Channel mapping incomplete. "
-            f"Mapped channels: {mapped_set}, "
-            f"Config channels: {config_set}. "
-            f"Missing: {config_set - mapped_set}, "
-            f"Extra: {mapped_set - config_set}"
-        )
-
-        # Check order consistency (mapped channels should match config order)
-        assert mapped_channels == config_channel_names, (
-            f"Channel order mismatch! Data tensor maps to channels in order: {mapped_channels}, "
-            f"but channel_weights expects: {config_channel_names}. "
-            f"Tensor channels: {tensor_channel_names}"
-        )
-
-    else:
-        # Original strict check: exact string matching
-        tensor_channels_set = set(tensor_channel_names)
-        config_channels_set = set(config_channel_names)
-
-        assert tensor_channels_set == config_channels_set, (
-            f"Channel mismatch between data and configuration. "
-            f"Data channels: {tensor_channels_set}, "
-            f"Config channels: {config_channels_set}. "
-            f"Missing from config: {tensor_channels_set - config_channels_set}, "
-            f"Extra in config: {config_channels_set - tensor_channels_set}"
-        )
-
-        # Critical validation: channel order must match exactly
-        # This prevents silent data corruption where weights are applied to wrong channels
-        assert tensor_channel_names == config_channel_names, (
-            f"Channel order mismatch! Data tensor has channels in order: {tensor_channel_names}, "
-            f"but channel_weights expects: {config_channel_names}. "
-            f"The extension order in the data tensor is determined by the non-deterministic set() "
-            f"behavior in resize_batch_tensor. To fix this, ensure your channel_weights keys "
-            f"are ordered to match the actual data processing order, or implement deterministic "
-            f"channel ordering in the data processing pipeline."
-        )
+            ]
+        else:
+            matches = []
+        if len(matches) != 1:
+            raise ValueError(f"Channel mapping for {name!r} is missing or ambiguous: {matches}")
+        resolved.append(matches[0])
+    if set(resolved) != set(keys):
+        raise ValueError(f"Channel mapping is not one-to-one: {resolved}; weights: {keys}")
+    return resolved

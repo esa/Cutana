@@ -78,6 +78,14 @@ def merge_coverage(input_files: list[Path], output: Path) -> None:
     total = len(all_lines)
     hit = sum(1 for ln in all_lines if int(ln.get("hits", "0")) > 0)
     build_root.set("line-rate", f"{hit / total:.4f}" if total > 0 else "0")
+    # lines-covered and lines-valid must be rewritten too, not just line-rate.
+    # They are copied verbatim from the build report, so leaving them alone means
+    # they still describe the build job alone. Consumers that trust them (the
+    # pytest-coverage-comment action computes its percentage as
+    # lines-covered / lines-valid, see src/parseXml.ts) then report build-only
+    # coverage no matter how well the merge itself worked.
+    build_root.set("lines-covered", str(hit))
+    build_root.set("lines-valid", str(total))
 
     build_tree.write(str(output), xml_declaration=True)
     print(f"Merged {len(files)} coverage files: {hit}/{total} lines covered")

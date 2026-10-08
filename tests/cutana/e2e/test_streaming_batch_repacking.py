@@ -144,7 +144,10 @@ def streaming_config(three_tile_catalogue):
     config.skip_memory_calibration_wait = True
     config.max_workers = 1
     config.max_workflow_time_seconds = 600
-    config.N_batch_cutout_process = N_BATCH
+    # Pin the internal batch through the knob the load balancer honours. Without this
+    # it would size to ceil(TOTAL_SOURCES / max_workers) and swallow all three tiles
+    # into one batch, leaving no internal-batch boundary for repacking to cross.
+    config.loadbalancer.max_sources_per_process = N_BATCH
     config.source_catalogue = str(three_tile_catalogue)
     return config
 
@@ -163,6 +166,13 @@ class TestStreamingBatchRepacking:
                     write_to_disk=False,
                     max_workers=1,
                     min_workers=1,
+                )
+
+                # The premise of this test: more than one internal batch, so user
+                # batches actually have a boundary to repack across.
+                assert len(orchestrator._batch_ranges) > 1, (
+                    f"expected several internal batches, got "
+                    f"{len(orchestrator._batch_ranges)} — this test would pass vacuously"
                 )
 
                 reported_batches = orchestrator.get_batch_count()

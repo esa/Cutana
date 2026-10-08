@@ -1,0 +1,73 @@
+#   Copyright (c) European Space Agency, 2025.
+#
+#   This file is subject to the terms and conditions defined in file 'LICENCE.txt', which
+#   is part of this source code package. No part of the package, including
+#   this file, may be copied, modified, propagated, or distributed except according to
+#   the terms contained in the file 'LICENCE.txt'.
+
+[project]
+site_name = "Cutana"
+site_description = "Cutout extraction from astronomical FITS tiles"
+site_url = "https://esa.github.io/Cutana/"
+repo_url = "https://github.com/ESA/Cutana"
+repo_name = "ESA/Cutana"
+extra_css = ["stylesheets/extra.css"]
+
+
+# Diataxis order: learn, do, look up, understand; then the generated API reference
+nav = [
+    { "Home" = "index.md" },
+    { "Getting started" = [
+        "getting_started/installation.md",
+        "getting_started/first_cutouts.md",
+    ] },
+    { "How-to guides" = [
+        "how_to/process_a_catalogue.md",
+        "how_to/direct_cutouts.md",
+        "how_to/stream_cutouts.md",
+        "how_to/combine_channels.md",
+        "how_to/normalise_images.md",
+        "how_to/keep_physical_units.md",
+        "how_to/read_outputs.md",
+        "how_to/troubleshoot.md",
+    ] },
+    { "Reference" = [
+        "reference/catalogue_format.md",
+        "reference/configuration.md",
+        "reference/output_formats.md",
+    ] },
+    { "Explanation" = [
+        "explanation/channel_mapping.md",
+        "explanation/band_selection.md",
+        "explanation/wcs.md",
+        "explanation/performance.md",
+    ] },
+    { "API reference" = "api/index.md" },
+]
+
+[project.theme]
+name = "material"
+logo = "assets/esa_logo.svg"
+favicon = "assets/esa_logo.svg"
+features = [
+    "navigation.sections",
+    "content.code.copy"
+]
+
+[[project.theme.palette]]
+scheme = "slate"
+primary = "custom"
+accent = "custom"
+
+[project.extra]
+version = { provider = "mike" }
+
+[project.plugins]
+search = {}
+mkdocstrings = { handlers = { python = { paths = ["."], options = { allow_inspection = false, docstring_style = "google", show_source = false, show_root_heading = true, members_order = "source", merge_init_into_class = true, show_if_no_docstring = false } } } }
+
+[project.markdown_extensions]
+admonition = {}
+"pymdownx.superfences" = {}
+"pymdownx.highlight" = { anchor_linenums = true }
+toc = { permalink = true }

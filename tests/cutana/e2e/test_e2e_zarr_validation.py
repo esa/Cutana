@@ -614,10 +614,8 @@ class TestE2EZarrValidationEnhanced:
         config.target_resolution = 64  # Needs higher resolution for gradient validation
         config.normalisation_method = "linear"
 
-        # Remove the nested normalisation object to avoid validation warnings
-        # Only use normalisation_method which is the main parameter
-        if hasattr(config, "normalisation"):
-            del config.normalisation
+        # The default normalisation block is kept: it validates cleanly, and
+        # `asinh_n_samples` is a required key, so deleting the block now fails validation.
         config.max_workers = 1
         config.interpolation = "bilinear"
         config.log_level = "WARNING"

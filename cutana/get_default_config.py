@@ -60,13 +60,23 @@ def get_default_config():
 
     # === Preprocessing Configuration ===
     cfg.skip_catalogue_validation = False
+    # Skips every validation check that opens FITS files: that each row's tiles exist and
+    # are readable, and that the source falls inside them. Those reads go over the network
+    # and so dominate the run time of a short job. Leaving the checks on is the right
+    # default: a source outside the product its row names produces a full-size, all-trim
+    # cutout and no error anywhere else.
+    cfg.skip_fits_check = False
 
     # === Processing Configuration ===
-    # Default max_workers to available CPU count (will be capped to N-1 by LoadBalancer).
+    # Default max_workers to the CPUs this process may actually use (capped to N-1 by
+    # LoadBalancer). Must be the *effective* count, not the physical one: on a Kubernetes
+    # pod (Euclid Datalab) psutil reports the node's cores, not the pod's cgroup quota, so
+    # a 64-core node behind an 8-core limit would default to 64 workers and oversubscribe
+    # the pod 8x. Off k8s this is the physical count, so nothing changes.
     # Fail hard: if CPU detection fails we must not silently substitute a hardcoded
     # worker count — let the caller see the real failure.
     _monitor = SystemMonitor()
-    cfg.max_workers = _monitor.get_cpu_count()
+    cfg.max_workers = _monitor.get_effective_cpu_count()
     cfg.N_batch_cutout_process = 1000  # Batch size within each process
     cfg.max_workflow_time_seconds = 1354571  # Maximum total workflow time (default ~2 weeks)
     cfg.process_threads = (
@@ -82,7 +92,10 @@ def get_default_config():
     cfg.normalisation_method = (
         "linear"  # Normalisation method: "linear", "log", "asinh", "zscale", "none"
     )
-    cfg.interpolation = "bilinear"  # Interpolation method: "bilinear", "nearest", "cubic"
+    # Resize quality knob (upscaling kernel), low -> high quality/cost:
+    # "nearest", "bilinear" (default), "bicubic", "lanczos". Downscaling always
+    # uses area-averaging (INTER_AREA) regardless of this setting.
+    cfg.interpolation = "bilinear"
     cfg.flux_conserved_resizing = (
         False  # Whether to use flux-conserved resizing (drizzle, much slower)
     )
@@ -119,6 +132,10 @@ def get_default_config():
 
     # === Analysis Results (populated during catalogue analysis) ===
     cfg.num_sources = 0  # Number of sources in catalogue
+    # True when num_sources is extrapolated rather than counted: a CSV over the
+    # discovery prefix is sized from its byte length, and Euclid rows vary in length
+    # with fits_file_paths. Anything that shows the count has to say so.
+    cfg.num_sources_estimated = False
     cfg.fits_files = []  # List of unique FITS files
     cfg.num_unique_fits_files = 0  # Number of unique FITS files
 

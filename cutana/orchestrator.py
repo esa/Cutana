@@ -137,7 +137,7 @@ class Orchestrator:
             validation_errors = validate_catalogue_sample(
                 catalogue_path,
                 sample_size=10000,
-                skip_fits_check=False,
+                skip_fits_check=self.config.skip_fits_check,
             )
             if validation_errors:
                 error_msg = "; ".join(validation_errors[:5])
@@ -742,6 +742,10 @@ class Orchestrator:
         try:
             batch_index = 0
             completed_batches = 0
+            # Workers that exited non-zero. Collected so the run's result can say
+            # so: a failed worker used to leave nothing in the return value, and a
+            # run that wrote nothing still reported "completed" (#425).
+            failed_processes = []
             max_workflow_time = self.config.max_workflow_time_seconds
             workflow_start_time = time.time()
             consecutive_failures = 0
@@ -856,6 +860,12 @@ class Orchestrator:
                         if process_id:
                             self.load_balancer.update_memory_statistics(process_id)
 
+                    failed_processes.extend(
+                        {"process_id": p["process_id"], "reason": p["reason"]}
+                        for p in completed_processes_info
+                        if str(p["reason"]).startswith("exit_code_")
+                    )
+
                     any_success = any(p.get("successful", False) for p in completed_processes_info)
                     if any_success:
                         consecutive_failures = 0
@@ -882,10 +892,21 @@ class Orchestrator:
             output_dir = Path(self.config.output_dir)
             mapping_parquet_path = self._write_source_mapping_parquet(output_dir)
 
-            logger.info(f"Streaming cutout processing completed for {total_sources:,} sources")
+            # A worker that exited non-zero has already logged its cause; what was
+            # missing is that the run itself said so. Reporting "completed" here
+            # made a run that produced nothing indistinguishable from one that
+            # produced everything (#425).
+            if failed_processes:
+                logger.error(
+                    f"Cutout processing finished with {len(failed_processes)} failed worker(s): "
+                    f"{', '.join(p['process_id'] for p in failed_processes)}"
+                )
+            else:
+                logger.info(f"Streaming cutout processing completed for {total_sources:,} sources")
 
             return {
-                "status": "completed",
+                "status": "failed" if failed_processes else "completed",
+                "failed_processes": failed_processes,
                 "total_sources": total_sources,
                 "completed_batches": completed_batches,
                 "mapping_parquet": mapping_parquet_path,

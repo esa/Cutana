@@ -130,21 +130,21 @@ jobs:
         run: python3 scripts/merge_coverage_xml.py
       - name: Merge JUnit XML
         run: python3 scripts/merge_junit_xml.py
-      - name: Merge coverage text
-        run: |
-          echo "===== Combined Coverage Report (build + browser) =====" > combined-coverage.txt
-          if [ -f build-results/pytest-coverage.txt ]; then
-            cat build-results/pytest-coverage.txt >> combined-coverage.txt
-          fi
-          if [ -f browser-results/pytest-browser-coverage.txt ]; then
-            echo "" >> combined-coverage.txt
-            echo "===== Browser Tests =====" >> combined-coverage.txt
-            cat browser-results/pytest-browser-coverage.txt >> combined-coverage.txt
-          fi
       - name: Pytest coverage comment
-        uses: MishaKav/pytest-coverage-comment@main
+        # Pinned: tracking @main meant an action release could silently change what
+        # the badge measures, which is exactly what happened. Between 2026-07-02 and
+        # 2026-07-08 the badge went from the merged build+browser figure to the
+        # build-only one, making coverage look like it had dropped ~3 points when it
+        # had not.
+        uses: MishaKav/pytest-coverage-comment@v1.10.0
         with:
-          pytest-coverage-path: ./combined-coverage.txt
+          # Only the merged XML is passed. The job used to supply pytest-coverage-path
+          # as well, but the action documents the two inputs as alternatives and
+          # defines no precedence, so the badge silently followed whichever the action
+          # happened to prefer. The text file was a plain concatenation whose first
+          # TOTAL is build-only, so whenever it won, browser coverage vanished from
+          # the badge. combined-coverage.xml genuinely merges both jobs
+          # (scripts/merge_coverage_xml.py), so it is now the single source.
           pytest-xml-coverage-path: ./combined-coverage.xml
           title: Coverage Report (build + browser)
           badge-title: Overall Coverage

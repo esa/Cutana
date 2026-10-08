@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cutana"
-version = "0.3.2"
+version = "0.4.0"
 description = "High-performance Python tool for creating astronomical image cutouts"
 readme = "README.md"
 authors = [{ name = "European Space Agency", email = "pablo.gomez@esa.int" }]
@@ -20,7 +20,12 @@ dependencies = [
     "astropy>=5.0",
     "dotmap>=1.3",
     "drizzle>=2.0.1",
-    "fitsbolt==0.3.0",
+    # Needs float32 channel-mix matmul + norm_asinh_n_samples (fitsbolt #41, #42),
+    # released in 0.3.0. Lower bound is 0.3.1 rather than 0.3.0: that release
+    # evaluates len(cfg.fits_extension) before its `is not None` guard, crashing
+    # every load path without FITS extensions. Upper bound keeps a future 0.4
+    # from arriving unreviewed.
+    "fitsbolt>=0.3.1,<0.4",
     "fsspec>=2023.1.0",
     "images-to-zarr>=0.3.5",
     "ipyfilechooser>=0.6",
@@ -29,11 +34,11 @@ dependencies = [
     "loguru>=0.6",
     "matplotlib>=3.5",
     "numpy>=1.20",
+    "opencv-python-headless>=4.5",
     "pandas>=1.3",
     "portalocker>=2.0",
     "psutil>=5.8",
     "pyarrow>=14.0.0",
-    "scikit-image>=0.21",
     "toml>=0.10",
 ]
 
@@ -52,13 +57,34 @@ dev = [
     "tqdm>=4.60",
     "memory-profiler>=0.60",
 ]
-all = ["cutana[ui,dev]"]
+benchmark = [
+    # Deep-profile tools for benchmarking/profile_cutana.py --deep-profile. Optional:
+    # the profiler degrades gracefully with a clear message if they are absent.
+    "py-spy>=0.3",
+    "scalene>=1.5",
+    "memory-profiler>=0.60",
+]
+docs = [
+    "zensical>=0.0.50",
+    "mkdocstrings[python]",
+    # Pinned to a fork below, in [tool.uv.sources]. It cannot be pinned here: PyPI
+    # rejects any distribution whose metadata carries a direct URL dependency, so a
+    # `mike @ git+...` here fails the upload with a 400 for the whole package.
+    "mike",
+]
+all = ["cutana[ui,dev,benchmark,docs]"]
 
 [project.urls]
 Homepage = "https://github.com/ESA/Cutana"
 Repository = "https://github.com/ESA/Cutana"
 Issues = "https://github.com/ESA/Cutana/issues"
 
+
+# uv-only dependency sources. setuptools does not read this table, so it never reaches
+# the published metadata -- which is the point: `uv sync --extra docs` still installs the
+# fork, while the wheel and sdist just require "mike".
+[tool.uv.sources]
+mike = { git = "https://github.com/squidfunk/mike.git", rev = "2d4ad799442f4592db8ad53b179bfb33db8c69ac" }
 
 [tool.setuptools.packages.find]
 include = ["cutana*", "cutana_ui*", "assets"]

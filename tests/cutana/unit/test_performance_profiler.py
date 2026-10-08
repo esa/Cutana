@@ -17,7 +17,12 @@ import re
 
 import pytest
 
-from cutana.performance_profiler import ContextProfiler, PerformanceProfiler
+from cutana import performance_profiler as perf_mod
+from cutana.performance_profiler import (
+    ContextProfiler,
+    PerformanceProfiler,
+    _read_process_io_bytes,
+)
 
 
 class TestPerformanceProfiler:
@@ -40,7 +45,7 @@ class TestPerformanceProfiler:
 
         statistics = profiler.get_statistics()
 
-        assert statistics["total_sources"] == num_sources
+        assert statistics["total_sources_processed"] == num_sources
         assert statistics["total_runtime"] > 0
 
         for step in ["step_1", "step_2", "step_3"]:
@@ -78,3 +83,66 @@ class TestPerformanceProfiler:
 
         bottleneck = profiler.get_bottlenecks(threshold_percent=30.0)[0]
         assert "step_2" in bottleneck
+
+
+class TestCpuStallSplit:
+    """Test the lazy-safe CPU-vs-stall attribution added to the profiler.
+
+    Wall and CPU clocks are mocked so the split is deterministic; the previous
+    sleep/busy-loop tests were timing-dependent and could flip on a busy machine
+    (a sleeping step may be scheduled out, a busy step preempted).
+    """
+
+    def _profiler_with_clocks(self, monkeypatch, wall_values, cpu_values):
+        """Build a profiler whose wall + CPU clocks return fixed sequences.
+
+        wall is consumed at __init__, start_timing, end_timing and get_statistics;
+        CPU (``time.process_time``) at start_timing and end_timing.
+        """
+        wall = iter(wall_values)
+        cpu = iter(cpu_values)
+        monkeypatch.setattr(perf_mod.time, "process_time", lambda: next(cpu))
+        return PerformanceProfiler(timing_function=lambda: next(wall))
+
+    def test_stall_attributed_when_no_cpu(self, monkeypatch):
+        """A step that burns no CPU has all its wall time counted as stall."""
+        # wall: init, start, end, total_runtime ; cpu: start, end
+        profiler = self._profiler_with_clocks(monkeypatch, [0.0, 0.0, 1.0, 1.0], [0.0, 0.0])
+        with ContextProfiler(profiler=profiler, step="stall_step"):
+            pass
+
+        step_stats = profiler.get_statistics()["steps"]["stall_step"]
+        assert step_stats["cpu_time"] == pytest.approx(0.0)
+        assert step_stats["stall_time"] == pytest.approx(1.0)
+
+    def test_cpu_attributed_when_fully_busy(self, monkeypatch):
+        """A step whose CPU time equals its wall time has zero stall."""
+        profiler = self._profiler_with_clocks(monkeypatch, [0.0, 0.0, 1.0, 1.0], [0.0, 1.0])
+        with ContextProfiler(profiler=profiler, step="busy_step"):
+            pass
+
+        step_stats = profiler.get_statistics()["steps"]["busy_step"]
+        assert step_stats["cpu_time"] == pytest.approx(1.0)
+        assert step_stats["stall_time"] == pytest.approx(0.0)
+
+    def test_stall_never_negative_when_cpu_exceeds_wall(self, monkeypatch):
+        """CPU > wall (multithreaded work / clock skew) must clamp stall at 0, not go negative."""
+        profiler = self._profiler_with_clocks(monkeypatch, [0.0, 0.0, 1.0, 1.0], [0.0, 3.0])
+        with ContextProfiler(profiler=profiler, step="multithread_step"):
+            pass
+
+        assert profiler.get_statistics()["steps"]["multithread_step"]["stall_time"] == 0.0
+
+    def test_read_bytes_is_none_or_nonnegative_int(self):
+        """read_bytes is either None (counter unavailable) or a non-negative int."""
+        profiler = PerformanceProfiler()
+        with ContextProfiler(profiler=profiler, step="any_step"):
+            pass
+
+        read_bytes = profiler.get_statistics()["steps"]["any_step"]["read_bytes"]
+        assert read_bytes is None or (isinstance(read_bytes, int) and read_bytes >= 0)
+
+    def test_read_process_io_bytes_probe(self):
+        """The /proc/self/io probe returns None or a non-negative int, never raises."""
+        value = _read_process_io_bytes()
+        assert value is None or (isinstance(value, int) and value >= 0)

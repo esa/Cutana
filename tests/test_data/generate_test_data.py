@@ -7,8 +7,7 @@
 """
 Consolidated Euclid-compliant Mock Test Data Generator for Cutana
 
-This script generates mock astronomical test data following ESA Euclid mission formats
-as documented in docs/euclid_fits.md. It replaces all previous mock data generation scripts.
+This script generates mock astronomical test data following ESA Euclid mission formats. It replaces all previous mock data generation scripts.
 
 Features:
 - Euclid-compliant FITS file formats (catalogs and mosaics)

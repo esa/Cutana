@@ -109,10 +109,10 @@ class TestLoadSourcesForPreviews:
         mock_catalogue_df.to_csv(catalogue_path, index=False)
 
         with (
-            patch("cutana.preview_generator.load_catalogue") as mock_load_cat,
+            patch("cutana.preview_generator.read_catalogue_sample") as mock_load_cat,
             patch("cutana.preview_generator.load_fits_sets") as mock_load_fits,
         ):
-            mock_load_cat.return_value = mock_catalogue_df
+            mock_load_cat.return_value = (mock_catalogue_df, 100, False, "test sample")
             mock_load_fits.return_value = {
                 "tile_001_vis.fits": (MagicMock(), {"PRIMARY": MagicMock()}),
                 "tile_001_nir.fits": (MagicMock(), {"PRIMARY": MagicMock()}),
@@ -140,8 +140,8 @@ class TestLoadSourcesForPreviews:
         empty_df = pd.DataFrame()
         empty_df.to_csv(catalogue_path, index=False)
 
-        with patch("cutana.preview_generator.load_catalogue") as mock_load_cat:
-            mock_load_cat.return_value = empty_df
+        with patch("cutana.preview_generator.read_catalogue_sample") as mock_load_cat:
+            mock_load_cat.return_value = (empty_df, 100, False, "test sample")
 
             with pytest.raises(ValueError, match="Empty catalogue provided"):
                 await load_sources_for_previews(str(catalogue_path), mock_config)
@@ -192,10 +192,10 @@ class TestLoadSourcesForPreviews:
         catalogue_df.to_csv(catalogue_path, index=False)
 
         with (
-            patch("cutana.preview_generator.load_catalogue") as mock_load_cat,
+            patch("cutana.preview_generator.read_catalogue_sample") as mock_load_cat,
             patch("cutana.preview_generator.load_fits_sets") as mock_load_fits,
         ):
-            mock_load_cat.return_value = catalogue_df
+            mock_load_cat.return_value = (catalogue_df, 100, False, "test sample")
             mock_load_fits.return_value = {
                 "set_a_vis.fits": (MagicMock(), {"PRIMARY": MagicMock()}),
                 "set_a_nir.fits": (MagicMock(), {"PRIMARY": MagicMock()}),
@@ -235,10 +235,10 @@ class TestLoadSourcesForPreviews:
         catalogue_df.to_csv(catalogue_path, index=False)
 
         with (
-            patch("cutana.preview_generator.load_catalogue") as mock_load_cat,
+            patch("cutana.preview_generator.read_catalogue_sample") as mock_load_cat,
             patch("cutana.preview_generator.load_fits_sets") as mock_load_fits,
         ):
-            mock_load_cat.return_value = catalogue_df
+            mock_load_cat.return_value = (catalogue_df, 100, False, "test sample")
             mock_load_fits.return_value = {
                 "common_tile.fits": (MagicMock(), {"PRIMARY": MagicMock()}),
             }
@@ -283,10 +283,15 @@ class TestLoadSourcesForPreviews:
 
         for config in test_configs:
             with (
-                patch("cutana.preview_generator.load_catalogue") as mock_load_cat,
+                patch("cutana.preview_generator.read_catalogue_sample") as mock_load_cat,
                 patch("cutana.preview_generator.load_fits_sets") as mock_load_fits,
             ):
-                mock_load_cat.return_value = mock_catalogue_df.head(10)  # Small sample
+                mock_load_cat.return_value = (
+                    mock_catalogue_df.head(10),
+                    100,
+                    False,
+                    "test sample",
+                )  # Small sample
                 mock_load_fits.return_value = {
                     "test_file.fits": (MagicMock(), {"PRIMARY": MagicMock()}),
                 }
@@ -337,10 +342,10 @@ class TestLoadSourcesForPreviews:
         catalogue_df.to_csv(catalogue_path, index=False)
 
         with (
-            patch("cutana.preview_generator.load_catalogue") as mock_load_cat,
+            patch("cutana.preview_generator.read_catalogue_sample") as mock_load_cat,
             patch("cutana.preview_generator.load_fits_sets") as mock_load_fits,
         ):
-            mock_load_cat.return_value = catalogue_df
+            mock_load_cat.return_value = (catalogue_df, 100, False, "test sample")
             mock_load_fits.return_value = {
                 "file1.fits": (MagicMock(), {"PRIMARY": MagicMock()}),
                 "file2.fits": (MagicMock(), {"PRIMARY": MagicMock()}),
@@ -365,10 +370,10 @@ class TestLoadSourcesForPreviews:
         clear_preview_cache()
 
         with (
-            patch("cutana.preview_generator.load_catalogue") as mock_load_cat,
+            patch("cutana.preview_generator.read_catalogue_sample") as mock_load_cat,
             patch("cutana.preview_generator.load_fits_sets") as mock_load_fits,
         ):
-            mock_load_cat.return_value = mock_catalogue_df
+            mock_load_cat.return_value = (mock_catalogue_df, 100, False, "test sample")
             mock_load_fits.return_value = {
                 "test_file.fits": (MagicMock(), {"PRIMARY": MagicMock()}),
             }
@@ -721,12 +726,12 @@ class TestIntegration:
         )
 
         with (
-            patch("cutana.preview_generator.load_catalogue") as mock_load_cat,
+            patch("cutana.preview_generator.read_catalogue_sample") as mock_load_cat,
             patch("cutana.preview_generator.load_fits_sets") as mock_load_fits,
             patch("cutana.preview_generator.create_cutouts_direct") as mock_direct,
         ):
             # Set up mocks
-            mock_load_cat.return_value = catalogue_data
+            mock_load_cat.return_value = (catalogue_data, 100, False, "test sample")
             mock_load_fits.return_value = {
                 "integration_test.fits": (MagicMock(), {"PRIMARY": MagicMock()})
             }
@@ -794,10 +799,10 @@ class TestIntegration:
         config = DotMap({"selected_extensions": [{"name": "VIS", "ext": "PRIMARY"}]})
 
         with (
-            patch("cutana.preview_generator.load_catalogue") as mock_load_cat,
+            patch("cutana.preview_generator.read_catalogue_sample") as mock_load_cat,
             patch("cutana.preview_generator.load_fits_sets") as mock_load_fits,
         ):
-            mock_load_cat.return_value = catalogue_df
+            mock_load_cat.return_value = (catalogue_df, 100, False, "test sample")
             # Mock should only return files for the top 1 selected FITS set
             # Set A has most sources (334 vs 333 each for B and C), so it's selected
             mock_load_fits.return_value = {

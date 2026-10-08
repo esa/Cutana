@@ -66,7 +66,26 @@ _._min_workers  # noqa - set by init_streaming, exposed for external inspection
 init_streaming  # noqa - public API for batch streaming workflow
 next_batch  # noqa - public API for getting next batch of cutouts
 get_batch_count  # noqa - public API for getting total batch count
-get_worker_events  # noqa - public API for Gantt chart generation, used in benchmark scripts
+get_worker_info  # noqa - public API for per-worker batch/timing detail, used in benchmark scripts
+get_delivery_report  # noqa - public API for inspecting per-worker cutout shortfalls
+
+# Eager catalogue API documented in README and exercised by catalogue preprocessor tests.
+# Discovery uses bounded sampling, but external callers can still request a full DataFrame.
+load_and_validate_catalogue  # noqa
+
+# WorkerInfo schema fields (cutana/profiling_types.py) - deliberately defined up front so
+# consumers of get_worker_info() know the full per-worker schema (issue #354/#312), even
+# the fields read only by external benchmark scripts rather than inside cutana/.
+_worker_info_schema = None  # noqa
+_worker_info_schema.pool_slot  # noqa - exposed via get_worker_info() for external consumers
+_worker_info_schema.sources_per_fits_set  # noqa - exposed via get_worker_info()
+_worker_info_schema.batch_index  # noqa - exposed via get_worker_info() for external consumers
+_worker_info_schema.end_time  # noqa - set on completion, read by benchmark scripts (not in cutana/)
+_worker_info_schema.performance  # noqa - per-stage stats, read by benchmark scripts (not in cutana/)
+
+# Canonical stage list (cutana/profiling_types.py) - the benchmark scripts (outside
+# cutana/, so invisible to vulture here) build their STAGE_ORDER from it.
+COMPUTE_STAGES  # noqa - consumed by benchmarking/profile_cutana.py and profile_plots.py
 
 # SystemMonitor utility methods - public API for resource monitoring
 check_memory_constraints  # noqa - utility for checking available memory

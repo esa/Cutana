@@ -279,6 +279,58 @@ class TestOrchestrator:
             except Exception:
                 pass  # Ignore errors during cleanup
 
+    def test_a_worker_that_exits_non_zero_fails_the_run(self, tmp_path):
+        """A failed worker must reach the run's result, not just its own log (#425).
+
+        End to end on purpose, through a real subprocess: the worker raises, exits
+        non-zero, and the orchestrator has to say so. Before this, a run whose every
+        worker died still returned ``status: completed`` with the full source count,
+        identical to a run that wrote everything.
+
+        The failure is induced with a band selection no FITS set carries, which is
+        the cheapest way to make a real worker die for a real reason.
+        """
+        test_data_dir = Path(__file__).parent.parent.parent / "test_data"
+        fits_files = list(test_data_dir.glob("EUC_MER_BGSUB-MOSAIC-VIS_TILE102018211-*.fits"))
+        if not fits_files:
+            pytest.skip("No FITS test data found")
+
+        catalogue_df = pd.DataFrame(
+            [
+                {
+                    "SourceID": "TestSource_001",
+                    "RA": 150.12,
+                    "Dec": 2.32,
+                    "diameter_pixel": 64,
+                    "fits_file_paths": str([str(fits_files[0])]),
+                }
+            ]
+        )
+        catalogue_path = tmp_path / "test_catalogue.parquet"
+        catalogue_df.to_parquet(catalogue_path, index=False)
+
+        config = get_default_config()
+        config.source_catalogue = str(catalogue_path)
+        config.output_dir = str(tmp_path / "output")
+        config.max_sources_per_process = 1000
+        config.N_batch_cutout_process = 100
+        # The tile is VIS; nothing in the catalogue carries NIR-J.
+        config.selected_extensions = [{"name": "NIR-J", "ext": "PRIMARY"}]
+        config.max_workflow_time_seconds = 600
+
+        orchestrator = Orchestrator(config)
+        try:
+            result = orchestrator.start_processing(str(catalogue_path))
+
+            assert result["status"] == "failed"
+            assert result["failed_processes"], "a dead worker has to appear in the result"
+            assert all(p["reason"].startswith("exit_code_") for p in result["failed_processes"])
+        finally:
+            try:
+                orchestrator.stop_processing()
+            except Exception:
+                pass
+
     def test_memory_constraint_handling(self, orchestrator, mock_catalogue_data):
         """Test handling of memory constraints during processing."""
         with patch.object(
@@ -639,3 +691,55 @@ class TestOrchestrator:
 
             # Should have made logging calls
             assert mock_logger.info.called
+
+
+class TestSkipFitsCheckIsHonoured:
+    """The checks that open FITS files must be switchable from the config.
+
+    They read over the network, which is why the knob exists: the check earns its cost
+    on a catalogue nobody has validated, not on one that has been. Both orchestrators
+    share this code path, so a hardcoded value disables the knob for every backend that
+    validates its catalogue at all.
+    """
+
+    @staticmethod
+    def _catalogue(tmp_path):
+        """Write a catalogue that is structurally valid but never opened."""
+        path = tmp_path / "catalogue.parquet"
+        pd.DataFrame(
+            [
+                {
+                    "SourceID": "source_1",
+                    "RA": 150.12,
+                    "Dec": 2.32,
+                    "diameter_pixel": 64,
+                    "fits_file_paths": str(["/nonexistent/VIS.fits"]),
+                }
+            ]
+        ).to_parquet(path, index=False)
+        return path
+
+    def _skip_fits_check_passed_to_validation(self, tmp_path, config):
+        """Run the shared init and report the flag the validator actually received."""
+        catalogue_path = self._catalogue(tmp_path)
+        config.source_catalogue = str(catalogue_path)
+        config.output_dir = str(tmp_path / "output")
+
+        orchestrator = Orchestrator(config)
+        with patch("cutana.orchestrator.validate_catalogue_sample", return_value=[]) as validate:
+            orchestrator._init_catalogue_index_and_reader(str(catalogue_path))
+
+        return validate.call_args.kwargs["skip_fits_check"]
+
+    def test_the_config_flag_reaches_the_check(self, tmp_path):
+        """Setting it had no effect: the call site passed a literal False."""
+        config = get_default_config()
+        config.skip_fits_check = True
+
+        assert self._skip_fits_check_passed_to_validation(tmp_path, config) is True
+
+    def test_the_check_is_on_by_default(self, tmp_path):
+        """Reading the flag must not quietly turn a safety check off."""
+        config = get_default_config()
+
+        assert self._skip_fits_check_passed_to_validation(tmp_path, config) is False

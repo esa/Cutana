@@ -101,11 +101,12 @@ class ConfigurationComponent(widgets.VBox):
 
     def set_analysis_results(self, result):
         """Set analysis results to display in header."""
+        count_label = "Sources (estimated)" if result["num_sources_estimated"] else "Sources"
         stats_html = f"""
         <div style="display: flex; gap: 15px; align-items: center;">
             <div style="text-align: center; font-size: 12px;">
                 <div style="font-size: 14px; font-weight: bold; color: {ESA_BLUE_ACCENT};">{result.get("num_sources", 0)}</div>
-                <div style="color: {TEXT_COLOR_MUTED};">Sources</div>
+                <div style="color: {TEXT_COLOR_MUTED};">{count_label}</div>
             </div>
             <div style="text-align: center; font-size: 12px;">
                 <div style="font-size: 14px; font-weight: bold; \

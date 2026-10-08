@@ -41,6 +41,7 @@ class TestImageProcessorEnhanced:
                     "a": NormalisationDefaults.ASINH_A,
                     "percentile": NormalisationDefaults.PERCENTILE,
                     "n_samples": NormalisationDefaults.N_SAMPLES,
+                    "asinh_n_samples": NormalisationDefaults.ASINH_N_SAMPLES,
                     "contrast": NormalisationDefaults.CONTRAST,
                     "crop_enable": False,
                 },
@@ -334,7 +335,7 @@ class TestImageProcessorEnhanced:
         for i, ext in enumerate(channels):
             batch_cutouts[0, :, :, i] = test_cutout_data[ext]
 
-        combined = combine_channels(batch_cutouts, channel_weights)
+        combined = combine_channels(batch_cutouts, channel_weights, list(channel_weights))
 
         # Should return single-channel output (1, H, W, 1) since only channel 0 has weights
         assert combined.shape == (1, H, W, 1) or combined.shape == (1, H, W, 3)
@@ -363,7 +364,9 @@ class TestImageProcessorEnhanced:
             "NIR_H": [0.5, 2.0],  # NIR_H contributes 0.5 to ch0, 2.0 to ch1
         }
 
-        combined_multi = combine_channels(batch_cutouts, multi_channel_weights)
+        combined_multi = combine_channels(
+            batch_cutouts, multi_channel_weights, list(multi_channel_weights)
+        )
         assert combined_multi.shape == (1, H, W, 2)
 
         # Expected values:

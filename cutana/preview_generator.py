@@ -20,11 +20,8 @@ import pandas as pd
 from dotmap import DotMap
 from loguru import logger
 
-from .catalogue_preprocessor import (
-    CatalogueValidationError,
-    load_catalogue,
-    parse_fits_file_paths,
-)
+from .catalogue_preprocessor import parse_fits_file_paths
+from .catalogue_sample import read_catalogue_sample
 from .direct_cutout import create_cutouts_direct
 from .fits_dataset import load_fits_sets, prepare_fits_sets_and_sources
 
@@ -148,26 +145,12 @@ async def load_sources_for_previews(
     if not catalogue_path or not Path(catalogue_path).exists():
         raise FileNotFoundError(f"No valid catalogue path provided: {catalogue_path}")
 
-    # Load and validate source catalogue, only load do not check (was already done)
-    try:
-        catalogue_df = load_catalogue(catalogue_path)
-        if len(catalogue_df) == 0:
-            raise ValueError("Empty catalogue provided")
-    except CatalogueValidationError as e:
-        raise ValueError(f"Catalogue validation failed: {e}") from e
+    # Load only; the catalogue was already validated before reaching the preview.
+    catalogue_df, _, _, _ = read_catalogue_sample(catalogue_path, sample_size=10000)
+    if len(catalogue_df) == 0:
+        raise ValueError("Empty catalogue provided")
 
     logger.info(f"Loaded catalogue with {len(catalogue_df)} sources")
-
-    # for preview only, considerably shorten the catalogue for speed up:
-    if len(catalogue_df) > 20000:
-        # take first 1k and sample 19k from the rest
-        sample_indices = np.concatenate(
-            [
-                np.arange(1000),
-                np.random.choice(np.arange(1000, len(catalogue_df)), 19000, replace=False),
-            ]
-        )
-        catalogue_df = catalogue_df.iloc[sample_indices]
 
     # Get unique FITS file sets directly from catalogue
     logger.info("Analyzing unique FITS file sets in catalogue...")

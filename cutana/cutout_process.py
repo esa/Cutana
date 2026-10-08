@@ -21,11 +21,11 @@ Usage:
 
 import json
 import os
-import signal
 import sys
 import tempfile
+import traceback
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from dotmap import DotMap
 from loguru import logger
@@ -46,6 +46,7 @@ from .get_default_config import load_config_toml
 from .job_tracker import JobTracker
 from .logging_config import setup_logging
 from .performance_profiler import ContextProfiler, PerformanceProfiler
+from .profiling_types import Stage
 from .shm_pool import (
     ShmPoolConfig,
     attach_pool,
@@ -57,7 +58,10 @@ from .system_monitor import SystemMonitor
 
 
 def create_cutouts_batch(
-    source_batch: List[Dict[str, Any]], config: DotMap, job_tracker: JobTracker
+    source_batch: List[Dict[str, Any]],
+    config: DotMap,
+    job_tracker: JobTracker,
+    batch_info_out: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Create cutouts for a batch of sources with optimized FITS loading and sub-batch processing.
@@ -69,9 +73,18 @@ def create_cutouts_batch(
         source_batch: List of source dictionaries
         config: Configuration DotMap
         job_tracker: JobTracker instance for progress reporting
+        batch_info_out: Optional dict populated in place with this batch's
+            structure and per-stage performance breakdown
+            (``sources_per_fits_set``, ``performance``). Lets the caller surface
+            these via the orchestrator's worker events without parsing stderr
+            logs (issue #354). Ignored when None.
 
     Returns:
         List of results for each source
+
+    Raises:
+        Exception: whatever failed, re-raised after logging. The caller needs a
+            failed batch to be distinguishable from an empty one (#425).
     """
     # Create single SystemMonitor instance for this process
     system_monitor = SystemMonitor()
@@ -101,6 +114,18 @@ def create_cutouts_batch(
 
     # Group sources by FITS sets first to process one set at a time
     fits_set_to_sources = prepare_fits_sets_and_sources(source_batch)
+
+    # Surface this batch's FITS-set composition for the orchestrator's worker
+    # events (issue #354). Recorded early so it is available even if a later
+    # stage raises before the performance summary is filled in. Keyed by the
+    # FITS-set signature (joined to a string for the JSON pipe to the parent) so
+    # the distinct-set count and per-set distribution both derive from it, and so
+    # workers sharing the same FITS sets are comparable.
+    if batch_info_out is not None:
+        batch_info_out["sources_per_fits_set"] = {
+            ", ".join(str(path) for path in fits_set): len(sources)
+            for fits_set, sources in fits_set_to_sources.items()
+        }
 
     # Create sub-batches organized by FITS sets, respecting batch_size limit
     sub_batches = []
@@ -191,7 +216,7 @@ def create_cutouts_batch(
                                 f"Saving sub-batch {batch_idx + 1} to zarr",
                                 job_tracker,
                             )
-                            with ContextProfiler(profiler, "ZarrSaving"):
+                            with ContextProfiler(profiler, Stage.ZARR_SAVING):
                                 if batch_idx == 0:
                                     # Create initial zarr archive
                                     create_process_zarr_archive_initial(
@@ -233,6 +258,8 @@ def create_cutouts_batch(
 
         # Log performance summary
         profiler.log_performance_summary()
+        if batch_info_out is not None:
+            batch_info_out["performance"] = profiler.get_statistics()
         bottlenecks = profiler.get_bottlenecks()
         if bottlenecks:
             logger.warning(f"Performance bottlenecks detected: {bottlenecks}")
@@ -270,26 +297,50 @@ def create_cutouts_batch(
         if config.output_format == "fits":
             return all_batch_results if all_batch_results else [{"metadata": []}]
 
-        # For Zarr output, results are already written incrementally
-        # Only return success indicator if we actually processed sources
+        # For Zarr output, results are already written incrementally. The cutouts are
+        # gone by now, so the marker has to carry the count forward. This is what was
+        # extracted, not what reached the store: it is incremented before the zarr
+        # write and also for sub-batches that carry no cutouts and skip the write. The
+        # parent holds a worker to this number, so do not read it as a write receipt.
         if actual_processed_count > 0:
-            return [{"metadata": [{"source_id": "written_incrementally"}]}]
+            return [
+                {
+                    "metadata": [
+                        {
+                            "source_id": "written_incrementally",
+                            "n_extracted": actual_processed_count,
+                        }
+                    ]
+                }
+            ]
         else:
             return [{"metadata": []}]
 
-    except Exception as e:
-        logger.error(f"Fatal error in {process_name}: {e}")
-        # Still log performance summary on error (best-effort diagnostic; a
-        # secondary failure here must not mask the original fatal error, but
-        # we surface it via warning so it's not silently lost).
+    except Exception:
+        # Not logged here: create_cutouts_main logs the same exception with its
+        # traceback on the way out, and logging it twice buries the one copy that
+        # carries the stack.
+        #
+        # The performance summary is still worth writing (best-effort diagnostic;
+        # a secondary failure here must not mask the original fatal error, but we
+        # surface it via warning so it's not silently lost).
         try:
             profiler.log_performance_summary()
+            if batch_info_out is not None:
+                batch_info_out["performance"] = profiler.get_statistics()
         except Exception as summary_error:
             logger.warning(
                 f"{process_name}: failed to log performance summary after fatal error: "
                 f"{summary_error}"
             )
-        return [{"metadata": []}]
+        # Re-raise rather than returning an empty batch. A successful run that
+        # extracted nothing returns the same value, so swallowing here left the
+        # parent no way to tell a whole-batch failure from an ordinary empty
+        # result: the worker exited 0 reporting processed_count 0 and the
+        # orchestrator recorded the shortfall as un-extractable sources.
+        # create_cutouts_main attaches the cause and exits non-zero, which both
+        # orchestrators already handle as a worker failure (#425).
+        raise
 
 
 def create_cutouts_main():
@@ -360,8 +411,11 @@ def create_cutouts_main():
             progress_dir=tempfile.gettempdir(), session_id=config.job_tracker_session_id
         )
 
-        # Process cutouts
-        results = create_cutouts_batch(source_batch, config, job_tracker)
+        # Process cutouts; batch_info is filled in place with FITS-set
+        # composition and the per-stage performance breakdown so it can be
+        # forwarded to the orchestrator via the completion message (issue #354).
+        batch_info: Dict[str, Any] = {}
+        results = create_cutouts_batch(source_batch, config, job_tracker, batch_info_out=batch_info)
 
         # Calculate actual number of sources processed from batch results
         actual_processed_count = 0
@@ -373,14 +427,14 @@ def create_cutouts_main():
                         len(batch_result["metadata"]) == 1
                         and batch_result["metadata"][0].get("source_id") == "written_incrementally"
                     ):
-                        # For zarr incremental writing, all sources were processed
-                        actual_processed_count = len(source_batch)
+                        # Zarr wrote incrementally; the marker carries the number of
+                        # cutouts that reached the store. Assuming len(source_batch)
+                        # here reported a full batch even when sources were dropped,
+                        # which is the silent loss the parent's accounting exists to
+                        # catch.
+                        actual_processed_count += batch_result["metadata"][0]["n_extracted"]
                     else:
                         actual_processed_count += len(batch_result["metadata"])
-
-        # For zarr format, if we got here without errors, all sources were processed
-        if config.output_format == "zarr" and actual_processed_count == 0:
-            actual_processed_count = len(source_batch)
 
         # Report final completion to job tracker with actual processed count
         # This is the FINAL update that should show 100% completion
@@ -397,27 +451,28 @@ def create_cutouts_main():
         write_to_disk = config.write_to_disk
         if not write_to_disk:
             _report_stage(process_id, "Streaming cutouts via shared memory", job_tracker)
-            try:
-                stream_cutouts_via_shm_pool(results, process_id, config)
-            except Exception as e:
-                logger.error(f"Failed to stream cutouts via shared memory: {e}")
+            # Deliberately unguarded: a streaming failure means cutouts never
+            # reached the orchestrator. Swallowing it here made the worker exit 0
+            # and the parent silently accept a short batch. Let it propagate to
+            # the top-level handler so the process exits non-zero and the
+            # orchestrator can report the real cause.
+            stream_cutouts_via_shm_pool(results, process_id, config, batch_info=batch_info)
 
         # Write output files only for FITS format (Zarr already written incrementally)
         elif results and config.output_format == "fits":
             _report_stage(process_id, "Saving FITS files to disk", job_tracker)
-            with ContextProfiler(main_profiler, "FitsSaving"):
-                try:
-                    output_dir = Path(config.output_dir)
+            with ContextProfiler(main_profiler, Stage.FITS_SAVING):
+                output_dir = Path(config.output_dir)
 
-                    # Write individual FITS files
-                    written_fits_paths = write_fits_batch(
-                        results, str(output_dir), config=config, modifier=process_id
-                    )
-                    logger.info(
-                        f"{process_id}: Created {len(written_fits_paths)} FITS files in {output_dir}"
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to write FITS files: {e}")
+                # Unguarded for the same reason as the streaming branch above:
+                # swallowing a write failure let the worker exit 0 and report a
+                # full processed_count with no FITS on disk.
+                written_fits_paths = write_fits_batch(
+                    results, str(output_dir), config=config, modifier=process_id
+                )
+                logger.info(
+                    f"{process_id}: Created {len(written_fits_paths)} FITS files in {output_dir}"
+                )
 
         # Report final stage as completed BEFORE printing output
         _report_stage(process_id, "Completed", job_tracker)
@@ -429,13 +484,22 @@ def create_cutouts_main():
         print(json.dumps(output))
 
     except Exception as e:
-        logger.error(f"Cutout process failed: {e}")
+        # Write the traceback to both sinks. loguru's file handler puts it in the
+        # shared session log; the raw stderr write puts it in the
+        # <process_id>_stderr.log the parent redirects this process into, which is
+        # the only one of the two that exists when the failure predates
+        # setup_logging(). The parent sees nothing but an exit code, so a
+        # traceback that reaches neither file is unrecoverable.
+        logger.opt(exception=True).error(f"Cutout process failed: {e}")
+        sys.stderr.write(traceback.format_exc())
+        sys.stderr.flush()
         error_output = {
             "processed_count": 0,
             "total_count": len(source_batch) if "source_batch" in locals() else 0,
             "error": str(e),
         }
         print(json.dumps(error_output))
+        sys.stdout.flush()
         sys.exit(1)
 
 
@@ -443,6 +507,7 @@ def stream_cutouts_via_shm_pool(
     batch_results: List[Dict[str, Any]],
     process_id: str,
     config: "DotMap",
+    batch_info: Optional[Dict[str, Any]] = None,
 ) -> None:
     """
     Stream cutouts to parent via a pre-allocated shared memory pool.
@@ -455,6 +520,9 @@ def stream_cutouts_via_shm_pool(
         batch_results: List of batch result dicts with 'cutouts' and 'metadata'
         process_id: Unique process identifier
         config: Config with shm_pool_name, shm_control_name, shm_pool_config
+        batch_info: Optional FITS-set composition + per-stage performance
+            breakdown, echoed back to the orchestrator on the ``complete``
+            message so it can be exposed via worker events (issue #354).
     """
     pool_config = ShmPoolConfig.from_dict(config.shm_pool_config)
 
@@ -469,7 +537,10 @@ def stream_cutouts_via_shm_pool(
 
     if not all_cutouts:
         logger.warning(f"{process_id}: No cutouts to stream via pool")
-        sys.stdout.write(json.dumps({"type": "complete", "total_cutouts": 0}) + "\n")
+        sys.stdout.write(
+            json.dumps({"type": "complete", "total_cutouts": 0, "batch_info": batch_info or {}})
+            + "\n"
+        )
         sys.stdout.flush()
         return
 
@@ -504,36 +575,38 @@ def stream_cutouts_via_shm_pool(
                 f"{process_id}: Sent chunk ({chunk_count} cutouts) via pool, waiting for ACK"
             )
 
-            # Wait for ACK from parent with timeout to prevent hanging.
-            # We use stdin/stdout pipes (not multiprocessing.Queue) because
-            # workers are subprocess.Popen for full memory isolation.
-            # signal.SIGALRM provides readline timeout on Unix; on Windows
-            # the parent's subprocess timeout handles hung workers.
-            ack_timeout = 60
-            try:
-                if hasattr(signal, "SIGALRM"):
+            # Block until the parent ACKs. There is deliberately NO wall-clock
+            # timeout here: the orchestrator only services ACKs from inside
+            # next_batch(), so the gap between two chunks is bounded by how long
+            # the *consumer* spends on a batch (ML inference, disk writes, ...) —
+            # a duration the worker cannot know. The previous 60s alarm made a
+            # slow consumer indistinguishable from a dead parent and silently
+            # abandoned every remaining chunk, losing cutouts without any error.
+            #
+            # A dead parent is still detected: closing/dropping the pipe yields
+            # EOF (empty read), which is fatal rather than something to absorb.
+            ack = sys.stdin.readline()
+            if ack == "":
+                raise RuntimeError(
+                    f"{process_id}: parent closed the ACK pipe after "
+                    f"{chunk_start} of {len(all_cutouts)} cutouts were transferred"
+                )
 
-                    def timeout_handler(_signum, _frame):
-                        raise TimeoutError("Timeout waiting for ACK from parent")
-
-                    old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-                    signal.alarm(ack_timeout)
-                    try:
-                        ack = sys.stdin.readline().strip()
-                    finally:
-                        signal.alarm(0)
-                        signal.signal(signal.SIGALRM, old_handler)
-                else:
-                    ack = sys.stdin.readline().strip()
-            except TimeoutError:
-                logger.error(f"{process_id}: Timeout waiting for ACK after {ack_timeout}s")
-                return
-
+            ack = ack.strip()
             if ack != "ACK":
-                logger.error(f"{process_id}: Expected ACK, got: {ack}")
+                raise RuntimeError(f"{process_id}: expected 'ACK' from parent, got: {ack!r}")
 
         # Send completion
-        sys.stdout.write(json.dumps({"type": "complete", "total_cutouts": len(all_cutouts)}) + "\n")
+        sys.stdout.write(
+            json.dumps(
+                {
+                    "type": "complete",
+                    "total_cutouts": len(all_cutouts),
+                    "batch_info": batch_info or {},
+                }
+            )
+            + "\n"
+        )
         sys.stdout.flush()
         logger.info(f"{process_id}: Finished streaming {len(all_cutouts)} cutouts via SHM pool")
 

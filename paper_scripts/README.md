@@ -246,4 +246,4 @@ If you use these benchmarks, please cite the Cutana paper (citation TBD).
 
 ## Support
 
-For issues or questions, open an issue on the [Cutana GitHub repository](https://github.com/ESA-Datalabs/Cutana).
+For issues or questions, open an issue on the [Cutana GitHub repository](https://github.com/ESA/Cutana).

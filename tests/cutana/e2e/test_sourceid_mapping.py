@@ -26,15 +26,17 @@ Closes #311.
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from typing import List, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 import pytest
+from astropy.io import fits
 
 from cutana import StreamingOrchestrator, get_default_config
-from cutana.catalogue_preprocessor import preprocess_catalogue
+from cutana.catalogue_preprocessor import extract_filter_name, preprocess_catalogue
 from cutana.direct_cutout import create_cutouts_direct
 from tests.test_data.sourceid_pattern_generator import (
     PATCH_SIZE,
@@ -459,3 +461,56 @@ def test_streaming_path_source_id_and_metadata_match(encoded_catalogue, tmp_path
             f"SourceID {sid!r}: expected ({patch},{patch},{n_bands}) cutout, got shape {arr.shape}"
         )
         _assert_cutout_encodes_source_id(arr, sid, patch, bands=bands)
+
+
+@pytest.mark.parametrize("encoded_catalogue", [4], indirect=True)
+def test_direct_path_loads_only_the_selected_bands(encoded_catalogue, tmp_path):
+    """``create_cutouts_direct`` must narrow a FITS set to ``selected_extensions``.
+
+    Regression test for #420 / #426. The direct path used to load every file in
+    the set, so a 3-band selection against a 4-file set handed ``combine_channels``
+    a 4-channel tensor for 3 weights and it paired them positionally — taking VIS,
+    NIR-H, NIR-J instead of the requested NIR-H, NIR-J, NIR-Y.
+
+    The fixture's companion tiles are byte-identical, so band identity is made
+    observable here by scaling each companion's pixels: with the correct bands the
+    channel means are in ratio 2:3:4, whereas the positional slip would give 1:2:3.
+    """
+    bands: List[str] = encoded_catalogue["bands"]  # VIS, NIR-H, NIR-J, NIR-Y
+    df = encoded_catalogue["catalogue_df"]
+    wanted = bands[1:]  # a proper subset that is NOT a prefix of the set
+    scale_by_band = {"NIR-H": 2.0, "NIR-J": 3.0, "NIR-Y": 4.0}
+
+    # Make each band distinguishable (BG is 0.0, so a scale factor survives as a
+    # proportional change in the channel mean).
+    # Several sources share a tile, so scale each file once rather than once per row.
+    unique_paths = {p for paths in df["fits_file_paths"] for p in ast.literal_eval(paths)}
+    for path in unique_paths:
+        scale = scale_by_band.get(extract_filter_name(path))
+        if scale is None:
+            continue
+        with fits.open(path) as hdul:
+            data, header = hdul[0].data.copy(), hdul[0].header.copy()
+        fits.PrimaryHDU(data=data * scale, header=header).writeto(path, overwrite=True)
+
+    cfg = _make_config(str(tmp_path / "out_direct_subset"))
+    cfg.selected_extensions = wanted
+    cfg.channel_weights = {
+        b: [1.0 if i == j else 0.0 for j in range(len(wanted))] for i, b in enumerate(wanted)
+    }
+
+    cutouts = _direct_cutouts_by_id(cfg, df)
+
+    assert cutouts, "direct path returned no cutouts"
+    for sid, arr in cutouts.items():
+        assert arr.shape[2] == len(wanted), (
+            f"{sid}: expected {len(wanted)} channels for selected_extensions={wanted}, "
+            f"got {arr.shape[2]} — the set was not narrowed"
+        )
+        means = [float(arr[:, :, ch].mean()) for ch in range(arr.shape[2])]
+        assert means[0] > 0, f"{sid}: first channel is empty, cannot check band identity"
+        ratios = [m / means[0] for m in means]
+        # 2:3:4 -> 1.0, 1.5, 2.0. The positional slip (1:2:3) would give 1.0, 2.0, 3.0.
+        assert ratios == pytest.approx([1.0, 1.5, 2.0], rel=1e-3), (
+            f"{sid}: channel means {means} imply bands other than {wanted} were loaded"
+        )

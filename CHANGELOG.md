@@ -7,6 +7,52 @@
 
 # Changelog
 
+## [Unreleased]
+
+## [v0.4.0] – 2026-09-24
+
+### Fixed
+- **`channel_weights` were applied by dictionary order, not by channel**: a weights dict ordered differently from a row's `fits_file_paths` silently mixed the bands. Weights now resolve by channel name
+- **Silent cutout loss**: rows with duplicate `SourceID` that cannot be told apart are now refused, and a slow streaming consumer no longer makes workers drop chunks after 60s
+- **Failed workers reported as success**: a fatal worker error now fails the run, and `Orchestrator` returns `status: failed` with `failed_processes`
+- **A `selected_extensions` that matches no FITS set** raises instead of finishing as an empty run
+- **`create_cutouts_direct()` ignored `selected_extensions`**, loading every file in a set and pairing weights with the wrong bands
+- **`skip_fits_check` had no effect**: it is now a validated config key, default `False`
+- **The `max_workers` default ignored the Kubernetes CPU quota**, oversubscribing Datalab pods
+- **Normalised cutouts were labelled `approx Jy`**: `UNIT` is now `normalised`, and a physical unit is claimed only when the pixel scale is preserved
+- **UI**: asinh runs failed on a missing `asinh_n_samples`, and raw-cutout mode had its forced normalisation overwritten
+- **Catalogue discovery**: rows may list their bands in any order, `-` and `_` are interchangeable in filter names, the mixed-resolution check compares every tile, and estimated source counts show as `~N`
+- **Extraction-only output** raises instead of renaming bands to `channel_1…N`
+- Invalid-cast warning when converting `diameter_arcsec` to pixels
+
+### Added
+- **`combine_channels()` and `apply_normalisation()`** are exported from `cutana`, so raw cutouts can be re-mixed and re-stretched without re-extraction
+- **Source-in-product check**: a source outside its FITS tiles is an error, and a cutout crossing a tile edge is a warning. Large catalogues are sampled; `skip_fits_check` turns it off
+- **`max_workers` on `create_cutouts_direct()`** processes tiles on a thread pool, with a per-FITS-set progress heartbeat
+- **`BUNIT` and `FLUXAPPX` FITS keywords**, written only when the unit is known
+- **`normalisation.asinh_n_samples`**: opt-in subsampling of the asinh bounds for speed. The default stays exact
+- **Streaming profiler** (`benchmarking/profile_cutana.py`, `benchmark` extra) and per-worker stage timings via `StreamingOrchestrator.get_worker_info()`
+
+### Changed
+- **Streaming starts far fewer worker processes**: internal batches are sized by the load balancer instead of 1,000 sources each. The speedup over 0.3.2 depends on per-cutout cost: ~3x at 64 px from a single band (599k sources), and 1.6x in memory or 1.1x to disk at 192 px from 4 bands into 3 channels. With `write_to_disk=True`, `batch_size` is now a minimum
+- **Breaking**: `combine_channels()` requires `channel_names`
+- **Resizing uses OpenCV** (`INTER_AREA`, plus a new `lanczos` option); `scikit-image` is dropped
+- **`fitsbolt>=0.3.1,<0.4`**, with float32 channel combination
+- **`UNIT` on the primary HDU is deprecated** in favour of `BUNIT`
+- **Preview sources** come from the first 10,000 catalogue rows
+- **Streaming failures surface**: worker errors, failed spawns and delivery shortfalls are raised instead of swallowed
+- **UI "Raw cutout" label** shows `[Jy]` only when flux conversion is on
+
+### Testing
+- **Release test suite**: a 12-configuration `--matrix` compared pixel by pixel against Git LFS ground truth, cutout WCS checked against the parent tiles, and throughput compared with the previous release
+
+### Documentation
+- **Documentation site** with a generated API reference, replacing the old `docs/` guides
+- **`REVIEW.md`** with repo-specific review guidance
+
+### Removed
+- 4 obsolete benchmark scripts
+
 ## [v0.3.2] – 2026-07-06
 
 ### Fixed

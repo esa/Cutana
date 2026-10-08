@@ -256,14 +256,42 @@ def test_unexpected_keys_does_not_raise():
     [
         (["VIS", "NIR", "MIR"], {"VIS": [1.0], "NIR": [0.5], "MIR": [0.3]}, False, None),
         (["PRIMARY"], {"PRIMARY": [1.0]}, False, None),
-        (["VIS", "NIR"], {"VIS": [1.0], "MIR": [0.3]}, True, "Channel mismatch"),
-        (["NIR", "VIS"], {"VIS": [1.0], "NIR": [0.5]}, True, "Channel order mismatch"),
+        (["VIS", "NIR"], {"VIS": [1.0], "MIR": [0.3]}, True, "Channel mapping"),
+        (["NIR", "VIS"], {"VIS": [1.0], "NIR": [0.5]}, False, None),
     ],
     ids=["matching_order", "single_channel", "mismatched_sets", "wrong_order"],
 )
 def test_strict_channel_order_validation(names, weights, should_raise, match_pattern):
     if should_raise:
-        with pytest.raises(AssertionError, match=match_pattern):
+        with pytest.raises(ValueError, match=match_pattern):
             validate_channel_order_consistency(names, weights, weak_check=False)
     else:
         validate_channel_order_consistency(names, weights, weak_check=False)
+
+
+# ────────────────────────────────────────────────────────────────────
+# normalisation.asinh_n_samples: required, but may be explicitly None
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_asinh_n_samples_is_required():
+    """A config that dropped the key fails here rather than mid-run.
+
+    Nothing else reads it, so while the key was optional a config without it validated
+    cleanly and only failed once an asinh run handed fitsbolt the DotMap that dot access
+    had invented for it.
+    """
+    cfg = _make_valid_config()
+    del cfg.normalisation["asinh_n_samples"]
+
+    with pytest.raises(
+        ValueError, match="Missing required parameter: normalisation.asinh_n_samples"
+    ):
+        validate_config(cfg, check_paths=False)
+
+
+def test_asinh_n_samples_may_be_none():
+    """None means exact all-pixel percentiles, so requiring the key must still allow it."""
+    cfg = _make_valid_config(**{"normalisation.asinh_n_samples": None})
+
+    validate_config(cfg, check_paths=False)

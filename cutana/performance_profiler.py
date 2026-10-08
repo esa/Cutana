@@ -22,6 +22,38 @@ import numpy as np
 from loguru import logger
 
 
+def _read_process_io_bytes() -> Optional[int]:
+    """Return cumulative bytes this process has fetched from the block device.
+
+    Reads the ``read_bytes`` field of ``/proc/self/io`` (Linux only). That field
+    counts bytes *actually fetched from storage* — including lazy ``memmap``
+    page-faults that happen while FITS cutouts are sliced, and excluding
+    page-cache hits (so a near-zero delta also signals a warm cache). This is a
+    read-only probe: it observes I/O without forcing any eager read, so lazy
+    FITS loading is left untouched.
+
+    Caveat (NFS): the kernel accounts ``read_bytes`` at the block layer
+    (``submit_bio``), so it is accurate only for *block-backed* filesystems. On
+    a network filesystem such as NFS — the Datalabs production store — it stays
+    ``0`` regardless of real network reads. The returned counter is therefore a
+    useful disk-attribution signal on block-backed storage only; downstream
+    consumers treat a zero/absent delta as "unknown" rather than "no I/O".
+
+    Returns:
+        Cumulative ``read_bytes`` as an int, or ``None`` when the counter is
+        unavailable (non-Linux, or a container without ``/proc/self/io``) so
+        callers can degrade gracefully instead of crashing.
+    """
+    try:
+        with open("/proc/self/io", "rb") as handle:
+            for line in handle:
+                if line.startswith(b"read_bytes:"):
+                    return int(line.split(b":", 1)[1])
+    except (OSError, ValueError):
+        return None
+    return None
+
+
 class PerformanceProfiler:
     """
     Lightweight performance profiler for tracking runtime of processing steps.
@@ -48,7 +80,16 @@ class PerformanceProfiler:
 
         self.process_id = process_id or f"cutout_process_{os.getpid()}"
         self.runtime_per_element: Dict[str, List[float]] = {}
+        # Per-step CPU seconds and disk bytes, recorded alongside wall time so a
+        # stage's wall can be split into CPU work vs off-CPU "stall" time
+        # (stall_time = wall - cpu) without changing any read behaviour. Stall is
+        # dominated by blocked-on-I/O in this pipeline, but also includes any
+        # sleeping, lock waiting or OS preemption, so it is named accordingly.
+        self.cpu_per_element: Dict[str, List[float]] = {}
+        self.read_bytes_per_element: Dict[str, List[Optional[int]]] = {}
         self._start_times: Dict[str, float] = {}
+        self._start_cpu: Dict[str, float] = {}
+        self._start_read_bytes: Dict[str, Optional[int]] = {}
         self._total_sources = 0
         self._timing_function = timing_function
         self._profile_start_time = self._timing_function()
@@ -63,6 +104,10 @@ class PerformanceProfiler:
             step: Name of the processing step to time
         """
         self._start_times[step] = self._timing_function()
+        # process_time() is whole-process (all threads) user+system CPU at high
+        # resolution; pairing it with the wall clock yields stall time per stage.
+        self._start_cpu[step] = time.process_time()
+        self._start_read_bytes[step] = _read_process_io_bytes()
         logger.debug(f"{self.process_id}: Started timing {step}")
 
     def end_timing(self, step: str) -> float:
@@ -81,14 +126,30 @@ class PerformanceProfiler:
         if step not in self._start_times:
             raise ValueError(f"start_timing() was not called for step '{step}'")
 
-        duration = self._timing_function() - self._start_times[step]
+        # Pop all three start markers together so per-step bookkeeping stays
+        # symmetric (no marker is left dangling after a step ends).
+        start_time = self._start_times.pop(step)
+        start_cpu = self._start_cpu.pop(step)
+        start_read_bytes = self._start_read_bytes.pop(step)
 
-        # Initialize step list if it doesn't exist
+        duration = self._timing_function() - start_time
+        cpu_duration = time.process_time() - start_cpu
+        end_read_bytes = _read_process_io_bytes()
+        if start_read_bytes is None or end_read_bytes is None:
+            read_bytes_delta: Optional[int] = None
+        else:
+            # Guard against a counter reset / non-monotonic read by clamping at 0.
+            read_bytes_delta = max(0, end_read_bytes - start_read_bytes)
+
+        # Initialize step lists if they don't exist
         if step not in self.runtime_per_element:
             self.runtime_per_element[step] = []
+            self.cpu_per_element[step] = []
+            self.read_bytes_per_element[step] = []
 
         self.runtime_per_element[step].append(duration)
-        del self._start_times[step]
+        self.cpu_per_element[step].append(cpu_duration)
+        self.read_bytes_per_element[step].append(read_bytes_delta)
 
         logger.debug(f"{self.process_id}: {step} took {duration:.4f} seconds")
         return duration
@@ -106,7 +167,7 @@ class PerformanceProfiler:
         """
         stats = {
             "process_id": self.process_id,
-            "total_sources": self._total_sources,
+            "total_sources_processed": self._total_sources,
             "total_runtime": self._timing_function() - self._profile_start_time,
             "steps": {
                 f"{step}": {
@@ -121,6 +182,12 @@ class PerformanceProfiler:
                     "perc_95": np.percentile(times, 95).item(),
                     "max_time": max(times),
                     "time_per_source": sum(times) / max(self._total_sources, 1),
+                    # CPU vs stall split (lazy-safe): stall_time is the wall time
+                    # not accounted for by CPU work — mostly blocked-on-I/O here,
+                    # but also any sleeping / lock waiting / OS preemption.
+                    "cpu_time": sum(self.cpu_per_element[step]),
+                    "stall_time": max(0.0, sum(times) - sum(self.cpu_per_element[step])),
+                    "read_bytes": self._step_read_bytes(step),
                 }
                 for step, times in self.runtime_per_element.items()
             },
@@ -128,11 +195,23 @@ class PerformanceProfiler:
 
         return stats
 
+    def _step_read_bytes(self, step: str) -> Optional[int]:
+        """Total disk bytes fetched during a step, or None if unmeasurable.
+
+        Returns None when any individual measurement was unavailable (e.g.
+        ``/proc/self/io`` missing), so a partial sum is never mistaken for a
+        complete one.
+        """
+        values = self.read_bytes_per_element.get(step, [])
+        if not values or any(value is None for value in values):
+            return None
+        return sum(values)
+
     def log_performance_summary(self) -> None:
         """Log a summary of performance statistics."""
         stats = self.get_statistics()
         total_time = stats["total_runtime"]
-        total_sources = stats["total_sources"]
+        total_sources = stats["total_sources_processed"]
 
         log_parts = []
         log_parts.append(f"Performance Summary for {self.process_id}:")

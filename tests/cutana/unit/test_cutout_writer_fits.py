@@ -19,6 +19,7 @@ Tests cover:
 from pathlib import Path
 from unittest.mock import patch
 
+import fitsbolt
 import numpy as np
 import pytest
 from astropy import units as u
@@ -29,12 +30,126 @@ from dotmap import DotMap
 from cutana import cutout_writer_fits
 from cutana.cutout_extraction import extract_cutouts_vectorized_from_extension
 from cutana.cutout_writer_fits import (
+    CutoutUnits,
     create_wcs_header,
     ensure_output_directory,
     generate_fits_filename,
+    resolve_cutout_units,
     write_fits_batch,
     write_single_fits_cutout,
 )
+
+# write_single_fits_cutout reads these directly, so every cutout_data dict needs
+# them even when the test targets an unrelated failure path.
+_UNIT_KEYS = {
+    "unit": "approx Jy",
+    "bunit": "Jy",
+    "conserved_flux": False,
+    "flux_approximate": True,
+}
+
+
+def _units_config(**overrides):
+    """Build a unit-resolution config that raises on missing keys, like production.
+
+    ``get_default_config`` returns ``DotMap(_dynamic=False)``; a dynamic DotMap
+    would auto-vivify a missing key to an empty DotMap and silently pass.
+    """
+    base = {
+        "do_only_cutout_extraction": False,
+        "normalisation_method": "linear",
+        "data_type": "float32",
+        "flux_conserved_resizing": False,
+        "apply_flux_conversion": True,
+        "user_flux_conversion_function": None,
+        "external_fitsbolt_cfg": None,
+    }
+    return DotMap({**base, **overrides}, _dynamic=False)
+
+
+@pytest.mark.parametrize(
+    ("config_overrides", "expected"),
+    [
+        # Normalisation destroys the physical scale regardless of flux settings.
+        ({}, CutoutUnits("normalised", None, False, False)),
+        ({"flux_conserved_resizing": True}, CutoutUnits("normalised", None, True, False)),
+        # CONVERSION_ONLY with a float32 output dtype is a genuine no-op.
+        ({"normalisation_method": "none"}, CutoutUnits("approx Jy", "Jy", False, True)),
+        (
+            {"normalisation_method": "none", "flux_conserved_resizing": True},
+            CutoutUnits("Jy", "Jy", True, False),
+        ),
+        (
+            {"normalisation_method": "none", "apply_flux_conversion": False},
+            CutoutUnits("approx OriginalUnit", None, False, True),
+        ),
+        # ...but a uint8 output dtype min-max rescales into 0-255, so the physical
+        # scale is gone even though the method is "none".
+        (
+            {"normalisation_method": "none", "data_type": "uint8"},
+            CutoutUnits("normalised", None, False, False),
+        ),
+        # An external fitsbolt config overrides normalisation_method entirely.
+        (
+            {
+                "normalisation_method": "none",
+                "external_fitsbolt_cfg": DotMap(
+                    {"normalisation_method": fitsbolt.NormalisationMethod.LINEAR}
+                ),
+            },
+            CutoutUnits("normalised", None, False, False),
+        ),
+        (
+            {
+                "normalisation_method": "linear",
+                "external_fitsbolt_cfg": DotMap(
+                    {"normalisation_method": fitsbolt.NormalisationMethod.CONVERSION_ONLY}
+                ),
+            },
+            CutoutUnits("approx Jy", "Jy", False, True),
+        ),
+        # A user-supplied conversion replaces the AB-zeropoint maths, so the unit
+        # is the user's, not Jy and not the parent tile's.
+        (
+            {"normalisation_method": "none", "user_flux_conversion_function": lambda img, hdr: img},
+            CutoutUnits("approx UserConversionUnit", None, False, True),
+        ),
+        (
+            {
+                "normalisation_method": "none",
+                "flux_conserved_resizing": True,
+                "user_flux_conversion_function": lambda img, hdr: img,
+            },
+            CutoutUnits("UserConversionUnit", None, True, False),
+        ),
+        # The raw-cutout path skips resizing and normalisation altogether, so the
+        # data_type gate does not apply to it.
+        ({"do_only_cutout_extraction": True}, CutoutUnits("Jy", "Jy", True, False)),
+        (
+            {"do_only_cutout_extraction": True, "data_type": "uint8"},
+            CutoutUnits("Jy", "Jy", True, False),
+        ),
+        (
+            {"do_only_cutout_extraction": True, "apply_flux_conversion": False},
+            CutoutUnits("OriginalUnit", None, True, False),
+        ),
+    ],
+)
+def test_resolve_cutout_units(config_overrides, expected):
+    """The unit description follows normalisation, dtype and flux handling."""
+    assert resolve_cutout_units(_units_config(**config_overrides)) == expected
+
+
+@pytest.mark.parametrize("missing_key", ["data_type", "apply_flux_conversion"])
+def test_resolve_cutout_units_requires_config_keys(missing_key):
+    """A missing config key raises rather than silently resolving to a wrong unit."""
+    # normalisation_method="none" so the data_type gate is actually reached.
+    config = _units_config(normalisation_method="none")
+    del config[missing_key]
+
+    # Non-dynamic DotMap attribute access raises AttributeError, not KeyError.
+    with pytest.raises(AttributeError):
+        resolve_cutout_units(config)
 
 
 @pytest.fixture(autouse=True)
@@ -84,6 +199,13 @@ class TestCutoutWriterFitsFunctions:
 
         return {
             "source_id": "MockSource_00001",
+            # Unit keys are mandatory: write_single_fits_cutout reads them directly
+            # so a caller that forgets them fails loudly instead of writing a
+            # placeholder unit into a science header.
+            "unit": "approx Jy",
+            "bunit": "Jy",
+            "conserved_flux": False,
+            "flux_approximate": True,
             "processed_cutouts": {
                 "VIS": np.random.random((256, 256)).astype(np.float32),
                 "NIR-Y": np.random.random((256, 256)).astype(np.float32),
@@ -187,36 +309,130 @@ class TestCutoutWriterFitsFunctions:
         """UNIT and CONSVFLX from cutout_data are written to the primary header."""
         output_path = temp_output_dir / "unit_header.fits"
 
-        cutout_data = {**mock_cutout_data, "unit": "Jy", "conserved_flux": True}
+        cutout_data = {
+            **mock_cutout_data,
+            "unit": "Jy",
+            "bunit": "Jy",
+            "conserved_flux": True,
+            "flux_approximate": False,
+        }
         success = write_single_fits_cutout(cutout_data, str(output_path), overwrite=True)
 
         assert success is True
         with fits.open(output_path) as hdul:
             assert hdul[0].header["UNIT"] == "Jy"
-            assert bool(hdul[0].header["CONSVFLX"]) is True
+            # Assert the raw header value, not bool(...) — a string "T" would
+            # coerce to True and hide a regression in how the card is written.
+            assert hdul[0].header["CONSVFLX"] is True
+
+    def test_write_single_fits_bunit_on_image_hdus(self, mock_cutout_data, temp_output_dir):
+        """BUNIT/FLUXAPPX land on the image HDUs, not the empty primary HDU."""
+        output_path = temp_output_dir / "bunit_header.fits"
+
+        cutout_data = {
+            **mock_cutout_data,
+            "unit": "approx Jy",
+            "bunit": "Jy",
+            "conserved_flux": False,
+            "flux_approximate": True,
+        }
+        assert write_single_fits_cutout(cutout_data, str(output_path), overwrite=True) is True
+
+        with fits.open(output_path) as hdul:
+            assert "BUNIT" not in hdul[0].header
+            for hdu in hdul[1:]:
+                assert hdu.header["BUNIT"] == "Jy"
+                assert hdu.header["FLUXAPPX"] is True
+
+    def test_write_single_fits_omits_bunit_when_unit_unknown(
+        self, mock_cutout_data, temp_output_dir
+    ):
+        """A None bunit writes no BUNIT card rather than a placeholder value."""
+        output_path = temp_output_dir / "bunit_absent.fits"
+
+        cutout_data = {
+            **mock_cutout_data,
+            "unit": "normalised",
+            "bunit": None,
+            "conserved_flux": False,
+            "flux_approximate": False,
+        }
+        assert write_single_fits_cutout(cutout_data, str(output_path), overwrite=True) is True
+
+        with fits.open(output_path) as hdul:
+            assert hdul[0].header["UNIT"] == "normalised"
+            for hdu in hdul[1:]:
+                # FLUXAPPX qualifies BUNIT, so it must not appear without it.
+                assert "BUNIT" not in hdu.header
+                assert "FLUXAPPX" not in hdu.header
+
+    @pytest.mark.parametrize("unit_key", ["unit", "bunit", "conserved_flux", "flux_approximate"])
+    def test_write_single_fits_requires_unit_keys(
+        self, mock_cutout_data, temp_output_dir, unit_key
+    ):
+        """Missing unit metadata raises instead of inventing a placeholder.
+
+        The unit keys are read before the function's broad error handler, so a
+        caller that forgets them gets a KeyError rather than having the bug
+        downgraded to a logged line and a silently dropped file.
+        """
+        output_path = temp_output_dir / "missing_unit.fits"
+        cutout_data = {k: v for k, v in mock_cutout_data.items() if k != unit_key}
+
+        with pytest.raises(KeyError):
+            write_single_fits_cutout(cutout_data, str(output_path), overwrite=True)
+        assert not output_path.exists()
 
     @pytest.mark.parametrize(
-        ("flux_conserved_resizing", "apply_flux_conversion", "expected_unit", "expected_consvflx"),
+        (
+            "do_only_cutout_extraction",
+            "normalisation_method",
+            "data_type",
+            "flux_conserved_resizing",
+            "apply_flux_conversion",
+            "expected_unit",
+            "expected_bunit",
+            "expected_consvflx",
+        ),
         [
-            (True, True, "Jy", True),
-            (True, False, "OriginalUnit", True),
-            (False, True, "approx Jy", False),
-            (False, False, "approx OriginalUnit", False),
+            # Normalisation off with a float32 dtype: pixels keep their scale.
+            (False, "none", "float32", True, True, "Jy", "Jy", True),
+            (False, "none", "float32", True, False, "OriginalUnit", None, True),
+            (False, "none", "float32", False, True, "approx Jy", "Jy", False),
+            (False, "none", "float32", False, False, "approx OriginalUnit", None, False),
+            # ...but a uint8 dtype min-max rescales into 0-255, losing the scale.
+            (False, "none", "uint8", True, True, "normalised", None, True),
+            (False, "none", "uint8", False, True, "normalised", None, False),
+            # Raw-cutout path: skips resizing and normalisation entirely, so the
+            # dtype gate does not apply.
+            (True, "linear", "float32", False, True, "Jy", "Jy", True),
+            (True, "linear", "uint8", False, True, "Jy", "Jy", True),
+            (True, "linear", "float32", False, False, "OriginalUnit", None, True),
+            # Normalisation on: pixels are stretched into the data_type range and
+            # are dimensionless, whatever the flux settings claim.
+            (False, "linear", "float32", False, True, "normalised", None, False),
+            (False, "linear", "float32", True, True, "normalised", None, True),
+            (False, "zscale", "float32", False, False, "normalised", None, False),
         ],
     )
     def test_write_fits_batch_unit_mapping(
         self,
         temp_output_dir,
+        do_only_cutout_extraction,
+        normalisation_method,
+        data_type,
         flux_conserved_resizing,
         apply_flux_conversion,
         expected_unit,
+        expected_bunit,
         expected_consvflx,
     ):
-        """write_fits_batch maps flux config to the UNIT/CONSVFLX headers it writes."""
+        """write_fits_batch maps the processing config to the unit headers it writes."""
         cutouts_tensor = np.random.random((1, 32, 32, 1)).astype(np.float32)
         batch_data = [
             {
                 "cutouts": cutouts_tensor,
+                "channel_names": ["VIS"],
                 "metadata": [
                     {
                         "source_id": "UnitSource_001",
@@ -231,12 +447,13 @@ class TestCutoutWriterFitsFunctions:
         written_files = write_fits_batch(
             batch_data,
             str(temp_output_dir),
-            config=DotMap(
-                {
-                    "do_only_cutout_extraction": False,
-                    "flux_conserved_resizing": flux_conserved_resizing,
-                    "apply_flux_conversion": apply_flux_conversion,
-                }
+            config=_units_config(
+                do_only_cutout_extraction=do_only_cutout_extraction,
+                normalisation_method=normalisation_method,
+                data_type=data_type,
+                flux_conserved_resizing=flux_conserved_resizing,
+                apply_flux_conversion=apply_flux_conversion,
+                channel_weights={"VIS": [1.0]},
             ),
             file_naming_template="{source_id}_cutout.fits",
             create_subdirs=False,
@@ -246,7 +463,61 @@ class TestCutoutWriterFitsFunctions:
         assert len(written_files) == 1
         with fits.open(written_files[0]) as hdul:
             assert hdul[0].header["UNIT"] == expected_unit
-            assert bool(hdul[0].header["CONSVFLX"]) == expected_consvflx
+            assert hdul[0].header["CONSVFLX"] is expected_consvflx
+            image_hdus = hdul[1:]
+            assert len(image_hdus) == 1
+            if expected_bunit is None:
+                assert "BUNIT" not in image_hdus[0].header
+            else:
+                assert image_hdus[0].header["BUNIT"] == expected_bunit
+
+    def _extraction_only_write(self, batch_data, temp_output_dir):
+        return write_fits_batch(
+            batch_data,
+            str(temp_output_dir),
+            config=_units_config(
+                do_only_cutout_extraction=True,
+                channel_weights={"VIS": [1.0], "NIR-H": [1.0]},
+            ),
+            file_naming_template="{source_id}_cutout.fits",
+            create_subdirs=False,
+            overwrite=True,
+        )
+
+    def test_extraction_only_without_channel_names_key_fails(self, temp_output_dir):
+        """A batch result missing `channel_names` is a broken contract, not a bad count.
+
+        The two used to be indistinguishable: the key was read with a `[]` default, so a
+        producer that never set it surfaced as "0 names for 2 channels" and sent the
+        reader hunting through the channel configuration instead of the producer.
+        """
+        batch_data = [
+            {
+                "cutouts": np.random.random((1, 32, 32, 2)).astype(np.float32),
+                "metadata": [{"source_id": "s0", "ra": 150.0, "dec": 2.0, "tile": "t.fits"}],
+            }
+        ]
+
+        with pytest.raises(KeyError, match="channel_names"):
+            self._extraction_only_write(batch_data, temp_output_dir)
+
+    def test_extraction_only_with_wrong_channel_name_count_fails(self, temp_output_dir):
+        """Losing the labels must not quietly rename named bands to channel_1..N.
+
+        Extraction-only output exists to hand back the input bands as they were; writing
+        generic names for them is the mislabelling the name-resolved channel work removes
+        everywhere else, and it is invisible in the output.
+        """
+        batch_data = [
+            {
+                "cutouts": np.random.random((1, 32, 32, 2)).astype(np.float32),
+                "metadata": [{"source_id": "s0", "ra": 150.0, "dec": 2.0, "tile": "t.fits"}],
+                "channel_names": ["VIS"],
+            }
+        ]
+
+        with pytest.raises(ValueError, match="one channel name per tensor channel"):
+            self._extraction_only_write(batch_data, temp_output_dir)
 
     def test_write_single_fits_with_compression(self, mock_cutout_data, temp_output_dir):
         """Test writing FITS with compression."""
@@ -291,7 +562,7 @@ class TestCutoutWriterFitsFunctions:
         written_files = write_fits_batch(
             batch_data,
             str(temp_output_dir),
-            config=DotMap({"do_only_cutout_extraction": False}),
+            config=_units_config(),
             file_naming_template="{source_id}_cutout.fits",
             create_subdirs=False,
             overwrite=True,
@@ -325,7 +596,7 @@ class TestCutoutWriterFitsFunctions:
         written_files = write_fits_batch(
             batch_data,
             str(temp_output_dir),
-            config=DotMap({"do_only_cutout_extraction": False}),
+            config=_units_config(),
             create_subdirs=True,
             overwrite=True,
         )
@@ -397,6 +668,7 @@ class TestCutoutWriterFitsFunctions:
             "source_id": "EmptySource",
             "processed_cutouts": {},  # No cutouts
             "metadata": {"ra": 150.0, "dec": 2.0},
+            **_UNIT_KEYS,
         }
 
         output_path = temp_output_dir / "empty.fits"
@@ -514,9 +786,7 @@ class TestCutoutWriterFitsFunctions:
     def test_write_fits_batch_edge_cases(self, temp_output_dir):
         """Test write_fits_batch with edge cases."""
         # Test empty batch
-        written_files = write_fits_batch(
-            [], str(temp_output_dir), config=DotMap({"do_only_cutout_extraction": False})
-        )
+        written_files = write_fits_batch([], str(temp_output_dir), config=_units_config())
         assert written_files == []
 
         # Test batch with empty cutouts tensor
@@ -530,7 +800,7 @@ class TestCutoutWriterFitsFunctions:
         written_files = write_fits_batch(
             invalid_batch,
             str(temp_output_dir),
-            config=DotMap({"do_only_cutout_extraction": False}),
+            config=_units_config(),
         )
         assert len(written_files) == 0  # Should skip invalid data
 
@@ -553,7 +823,7 @@ class TestCutoutWriterFitsFunctions:
         written_files = write_fits_batch(
             valid_batch,
             str(temp_output_dir),
-            config=DotMap({"do_only_cutout_extraction": False}),
+            config=_units_config(),
             overwrite=True,
         )
         assert len(written_files) == 1
@@ -565,6 +835,7 @@ class TestCutoutWriterFitsFunctions:
             "source_id": "ErrorTest",
             "processed_cutouts": {"TEST": np.random.random((16, 16))},
             "metadata": {"ra": 150.0, "dec": 2.0},
+            **_UNIT_KEYS,
         }
 
         # Test with FITS writing error
@@ -579,6 +850,7 @@ class TestCutoutWriterFitsFunctions:
             "source_id": "InvalidCutoutTest",
             "processed_cutouts": {"INVALID": "not_an_array"},  # Invalid data type
             "metadata": {},
+            **_UNIT_KEYS,
         }
 
         with patch("astropy.io.fits.ImageHDU", side_effect=Exception("HDU creation failed")):
